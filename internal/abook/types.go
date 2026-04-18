@@ -12,7 +12,14 @@ type Manifest struct {
 	Chapters  []Chapter `json:"chapters"`
 	TTSVoice  string    `json:"tts_voice,omitempty"`
 	STTModel  string    `json:"stt_model,omitempty"`
-	Source    *Source    `json:"source,omitempty"`
+	Source    *Source   `json:"source,omitempty"`
+	// v2 additions — backward compatible
+	Series      string   `json:"series,omitempty"`
+	SeriesIndex float64  `json:"series_index,omitempty"`
+	Cover       string   `json:"cover,omitempty"`       // path within zip, e.g. "cover.jpg"
+	Bookmarks   string   `json:"bookmarks,omitempty"`   // "bookmarks.json" if present
+	Alignments  []string `json:"alignments,omitempty"`  // paths to alignment JSON files
+	Origin      string   `json:"origin,omitempty"`      // origin tag of primary source
 }
 
 type Chapter struct {

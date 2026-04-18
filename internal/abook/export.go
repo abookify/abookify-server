@@ -15,6 +15,13 @@ import (
 
 // Export creates an .abook file from a work.
 func Export(store *db.Store, work *db.Work, outputPath string) error {
+	return ExportWithDirs(store, work, outputPath, "")
+}
+
+// ExportWithDirs is Export with an explicit libraryDir so covers can be
+// bundled from {libraryDir}/covers/work-{id}.jpg. If libraryDir is empty,
+// falls back to common defaults.
+func ExportWithDirs(store *db.Store, work *db.Work, outputPath, libraryDir string) error {
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
@@ -25,13 +32,55 @@ func Export(store *db.Store, work *db.Work, outputPath string) error {
 	defer w.Close()
 
 	manifest := Manifest{
-		Format:    "abook",
-		Version:   1,
-		Title:     work.Title,
-		Author:    work.Author,
-		Language:  "en",
-		Created:   time.Now().UTC().Format(time.RFC3339),
-		Generator: "abookify v0.1.0",
+		Format:      "abook",
+		Version:     2,
+		Title:       work.Title,
+		Author:      work.Author,
+		Series:      work.Series,
+		SeriesIndex: work.SeriesIndex,
+		Language:    "en",
+		Created:     time.Now().UTC().Format(time.RFC3339),
+		Generator:   "abookify v0.2.0",
+	}
+
+	// Include cover art if present. Covers live at {libraryDir}/covers/work-{id}.jpg.
+	coverBases := []string{}
+	if libraryDir != "" {
+		coverBases = append(coverBases, libraryDir+"/covers")
+	}
+	coverBases = append(coverBases, "/library/covers", "./library/covers")
+	for _, base := range coverBases {
+		coverPath := fmt.Sprintf("%s/work-%d.jpg", base, work.ID)
+		if data, err := os.ReadFile(coverPath); err == nil && len(data) > 0 {
+			if err := writeToZip(w, "cover.jpg", data); err == nil {
+				manifest.Cover = "cover.jpg"
+			}
+			break
+		}
+	}
+
+	// Bookmarks for this work.
+	if bookmarks, err := store.ListBookmarks(work.ID); err == nil && len(bookmarks) > 0 {
+		if data, err := json.MarshalIndent(bookmarks, "", "  "); err == nil {
+			if err := writeToZip(w, "bookmarks.json", data); err == nil {
+				manifest.Bookmarks = "bookmarks.json"
+			}
+		}
+	}
+
+	// Alignments (forced alignment pairs) for this work.
+	if alignments, err := store.ListAlignmentsForWork(work.ID); err == nil {
+		for i, a := range alignments {
+			path := fmt.Sprintf("alignments/%d-%d.json", a.FromBookID, a.ToBookID)
+			data, err := json.MarshalIndent(a, "", "  ")
+			if err != nil {
+				continue
+			}
+			if err := writeToZip(w, path, data); err == nil {
+				manifest.Alignments = append(manifest.Alignments, path)
+			}
+			_ = i
+		}
 	}
 
 	// Determine chapter structure.
@@ -89,6 +138,14 @@ func Export(store *db.Store, work *db.Work, outputPath string) error {
 					continue
 				}
 				entry.Audio = audioPath
+
+				// Sync data (word timestamps) if present for karaoke offline.
+				if sync, err := store.GetSyncData(work.ID, af.ID, ch.Index); err == nil && sync != "" {
+					syncPath := fmt.Sprintf("sync/chapter-%s.json", chNum)
+					if err := writeToZip(w, syncPath, []byte(sync)); err == nil {
+						entry.Sync = syncPath
+					}
+				}
 			}
 
 			manifest.Chapters = append(manifest.Chapters, entry)
@@ -109,11 +166,21 @@ func Export(store *db.Store, work *db.Work, outputPath string) error {
 				title = af.Filename
 			}
 
-			manifest.Chapters = append(manifest.Chapters, Chapter{
+			entry := Chapter{
 				Index: i,
 				Title: title,
 				Audio: audioPath,
-			})
+			}
+
+			// Sync data if present (from Whisper transcription).
+			if sync, err := store.GetSyncData(work.ID, af.ID, i); err == nil && sync != "" {
+				syncPath := fmt.Sprintf("sync/chapter-%s.json", chNum)
+				if err := writeToZip(w, syncPath, []byte(sync)); err == nil {
+					entry.Sync = syncPath
+				}
+			}
+
+			manifest.Chapters = append(manifest.Chapters, entry)
 		}
 	}
 

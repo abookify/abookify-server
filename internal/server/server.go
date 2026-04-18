@@ -1062,7 +1062,7 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	if err := abook.Export(s.store, work, tmpPath); err != nil {
+	if err := abook.ExportWithDirs(s.store, work, tmpPath, s.LibraryDir); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
