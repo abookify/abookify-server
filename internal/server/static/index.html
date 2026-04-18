@@ -377,7 +377,8 @@
   <div class="drop-overlay" id="drop-overlay">
     <div class="drop-box">
       <h2>Drop files to import</h2>
-      <p>MP3, M4B, EPUB, TXT — drop your audiobooks and ebooks here</p>
+      <p>Audio: MP3, M4B, M4A, FLAC, AAC &middot; Text: EPUB, MOBI, TXT</p>
+      <p style="margin-top:6px; font-size:0.75rem;">PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" style="color:var(--accent);">Calibre</a>.</p>
     </div>
   </div>
   <audio id="audio-player" preload="auto" style="display:none;"></audio>
@@ -1865,7 +1866,9 @@
         }
         // Reset box content for next drop.
         setTimeout(() => {
-          box.innerHTML = `<h2>Drop files to import</h2><p>MP3, M4B, EPUB, TXT — drop your audiobooks and ebooks here</p>`;
+          box.innerHTML = `<h2>Drop files to import</h2>
+            <p>Audio: MP3, M4B, M4A, FLAC, AAC &middot; Text: EPUB, MOBI, TXT</p>
+            <p style="margin-top:6px; font-size:0.75rem;">PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" style="color:var(--accent);">Calibre</a>.</p>`;
         }, 5000);
       });
     })();
