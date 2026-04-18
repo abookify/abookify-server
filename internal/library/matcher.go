@@ -170,7 +170,17 @@ func MatchAndCreateWorks(store *db.Store) error {
 			workTitle, c.author, len(c.audioIDs), len(c.textIDs))
 	}
 
-	// Create works for unmatched text files
+	// Create works for unmatched text files. If a work with the same
+	// normalized title already exists (e.g. the EPUB was already created as
+	// a work, now we see the MOBI), assign this book to the existing work
+	// instead of creating a duplicate. This is how multi-ebook works form.
+	existingWorks, _ := store.ListWorks()
+	existingByKey := map[string]int64{}
+	for _, w := range existingWorks {
+		key := normalize(w.Title + " " + w.Author)
+		existingByKey[key] = w.ID
+	}
+
 	for _, te := range textEntries {
 		if matchedTextIDs[te.book.ID] {
 			continue
@@ -181,6 +191,16 @@ func MatchAndCreateWorks(store *db.Store) error {
 			title = te.book.Filename
 		}
 
+		// Check if a work with this title+author already exists.
+		key := normalize(title + " " + te.book.Author)
+		if existingID, ok := existingByKey[key]; ok {
+			if err := store.AssignBooksToWork(existingID, []int64{te.book.ID}); err != nil {
+				return err
+			}
+			log.Printf("added %q (%s) to existing work %d", te.book.Filename, te.book.Format, existingID)
+			continue
+		}
+
 		workID, err := store.CreateWork(title, te.book.Author)
 		if err != nil {
 			return err
@@ -188,6 +208,7 @@ func MatchAndCreateWorks(store *db.Store) error {
 		if err := store.AssignBooksToWork(workID, []int64{te.book.ID}); err != nil {
 			return err
 		}
+		existingByKey[key] = workID // track for subsequent matches
 
 		log.Printf("created work (text only): %q by %q", title, te.book.Author)
 	}
