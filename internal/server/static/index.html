@@ -424,7 +424,8 @@
         <option value="2">2x</option>
         <option value="3">3x</option>
       </select>
-      <button onclick="addBookmark()" title="Bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
+      <button onclick="addBookmark()" title="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
+      <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
       <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
     </div>
   </div>
@@ -518,6 +519,13 @@
               <div class="split-view">
                 ${renderAudioPane(work, audioFiles)}
                 ${renderTextPane(work, textFiles)}
+              </div>
+              <div class="bookmarks-panel" id="bookmarks-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                  <span style="font-size:0.75rem;font-weight:600;color:#f0a500;text-transform:uppercase;letter-spacing:1px;">Bookmarks</span>
+                  <button onclick="toggleBookmarks(${work.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.7rem;">hide</button>
+                </div>
+                <div id="bookmarks-list-${work.id}" style="font-size:0.8rem;color:var(--text-muted);">Loading...</div>
               </div>
               ${work.has_text ? `
               <div class="qa-panel">
@@ -1560,6 +1568,60 @@
             note: note || '',
           }),
         });
+      } catch {}
+    }
+
+    // --- Bookmarks panel ---
+    async function toggleBookmarks(workId) {
+      if (!workId) return;
+      const panel = document.getElementById('bookmarks-panel-' + workId);
+      if (!panel) return;
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        await loadBookmarksList(workId);
+      } else {
+        panel.style.display = 'none';
+      }
+    }
+
+    async function loadBookmarksList(workId) {
+      const listEl = document.getElementById('bookmarks-list-' + workId);
+      if (!listEl) return;
+      try {
+        const res = await fetch(`/api/works/${workId}/bookmarks`);
+        const bookmarks = await res.json();
+        if (!bookmarks || bookmarks.length === 0) {
+          listEl.innerHTML = '<div style="color:var(--text-muted);font-style:italic;">No bookmarks yet. Click ★ while playing to add one.</div>';
+          return;
+        }
+        listEl.innerHTML = bookmarks.map(b => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);">
+            <span style="color:${b.color || '#f0a500'};cursor:pointer;" onclick="seekToBookmark(${b.position_secs})" title="Jump to ${formatTime(b.position_secs)}">
+              ★ ${escapeHtml(b.text_snippet || formatTime(b.position_secs))}
+            </span>
+            ${b.note ? `<span style="color:var(--text-muted);font-size:0.75rem;">${escapeHtml(b.note)}</span>` : ''}
+            <span style="flex:1;"></span>
+            <span style="color:var(--text-muted);font-size:0.7rem;">${formatTime(b.position_secs)}</span>
+            <button onclick="deleteBookmark(${b.id}, ${workId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.7rem;" title="Delete">✕</button>
+          </div>
+        `).join('');
+      } catch {
+        listEl.innerHTML = '<div style="color:var(--text-muted);">Failed to load bookmarks</div>';
+      }
+    }
+
+    function seekToBookmark(positionSecs) {
+      const player = document.getElementById('audio-player');
+      if (player) {
+        player.currentTime = positionSecs;
+        if (player.paused) player.play();
+      }
+    }
+
+    async function deleteBookmark(bookmarkId, workId) {
+      try {
+        await fetch(`/api/bookmarks/${bookmarkId}`, { method: 'DELETE' });
+        await loadBookmarksList(workId);
       } catch {}
     }
 
