@@ -902,6 +902,11 @@
     const syncEnabled = {};
     let activeSyncData = null; // current word timestamps
     let syncAnimFrame = null;
+    // When true, the DOM word indices match sync_data 1:1 and karaoke
+    // highlighting is safe. False when rendering ebook HTML without a
+    // composed alignment — words are wrapped for future use but not
+    // highlighted (indices would point at the wrong words).
+    let karaokeHighlightSafe = true;
 
     function toggleSync(workId, enabled) {
       syncEnabled[workId] = enabled;
@@ -943,26 +948,92 @@
       return false;
     }
 
-    // Render text with individually addressable word spans
+    // Render text with individually addressable word spans.
+    //
+    // Two modes:
+    //   1. Reader already has HTML content (from #102 rich-text EPUB): walk
+    //      the DOM, wrap each word in a text node with a <span data-widx="N">,
+    //      preserving all structural markup (headings, paragraphs, emphasis).
+    //   2. Reader is empty or plaintext-only (transcript-only works): build
+    //      a flat span-per-word layout from the timestamps themselves.
     function renderSyncedText(timestamps) {
       const readerId = 'reader-' + currentWorkId;
-      let reader = document.getElementById(readerId);
-
+      const reader = document.getElementById(readerId);
       if (!reader) {
         console.log('Sync: reader element not found:', readerId);
         return;
       }
 
-      console.log('Sync: rendering', timestamps.length, 'words into', readerId);
-
-      // Build text with word spans, preserving natural spacing
-      reader.innerHTML = timestamps.map((t, i) => {
-        const word = t.w || '';
-        return `<span class="sync-word" id="sw-${i}">${escapeHtml(word)}</span>`;
-      }).join('');
-
-      // Force the reader to be visible
       reader.style.minHeight = '200px';
+
+      // Detect mode by checking if the reader currently has any block-level
+      // or inline tags (i.e. rich content from content_html).
+      const hasRichContent = reader.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, em, strong');
+
+      if (hasRichContent) {
+        // Rich HTML mode: word indices in the DOM are EBOOK words, but
+        // sync_data is TRANSCRIPT words. Without a forced alignment (#63)
+        // we can't map between them reliably. So: wrap words for future
+        // alignment use, but don't activate highlighting unless this work
+        // has an alignment stored.
+        wrapWordsInPlace(reader);
+        karaokeHighlightSafe = false;
+        // TODO(#63 composition): when alignment is present, populate a
+        // map from transcript-idx → ebook-widx so the karaoke tick can
+        // highlight the correct ebook span. For now, highlighting is
+        // disabled in rich-HTML mode to avoid showing wrong words.
+        console.log('Sync: rich HTML mode — words wrapped, karaoke disabled (alignment not yet composed)');
+      } else {
+        karaokeHighlightSafe = true;
+        console.log('Sync: rendering flat transcript spans (mode: flat)');
+        reader.innerHTML = timestamps.map((t, i) => {
+          const word = t.w || '';
+          return `<span class="sync-word" data-widx="${i}">${escapeHtml(word)}</span>`;
+        }).join('');
+      }
+    }
+
+    // Walk the DOM under `root` and wrap each visible word in a <span
+    // class="sync-word" data-widx="N"> while preserving surrounding
+    // structure. Idempotent — if a text node sits inside an existing
+    // sync-word span, we skip it.
+    function wrapWordsInPlace(root) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => {
+          // Skip if already inside a sync-word (re-render safety).
+          if (n.parentElement && n.parentElement.classList &&
+              n.parentElement.classList.contains('sync-word')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        },
+      });
+      // Collect first — can't mutate during walk.
+      const nodes = [];
+      let node;
+      while ((node = walker.nextNode())) nodes.push(node);
+
+      let widx = 0;
+      for (const textNode of nodes) {
+        const text = textNode.nodeValue;
+        // Split into [whitespace, word, whitespace, word, ...] preserving gaps.
+        const parts = text.split(/(\s+)/);
+        const frag = document.createDocumentFragment();
+        for (const part of parts) {
+          if (!part) continue;
+          if (/^\s+$/.test(part)) {
+            frag.appendChild(document.createTextNode(part));
+          } else {
+            const span = document.createElement('span');
+            span.className = 'sync-word';
+            span.dataset.widx = String(widx++);
+            span.textContent = part;
+            frag.appendChild(span);
+          }
+        }
+        textNode.parentNode.replaceChild(frag, textNode);
+      }
+      console.log(`Sync: wrapped ${widx} words in HTML reader`);
     }
 
     // Karaoke loop — highlights current word based on audio position
@@ -1002,8 +1073,8 @@
           }
         }
 
-        // Only update DOM if the active word changed
-        if (activeIdx !== lastActiveIdx) {
+        // Only update DOM if the active word changed and highlighting is safe.
+        if (activeIdx !== lastActiveIdx && karaokeHighlightSafe) {
           // Clear previous reading-window and past classes
           document.querySelectorAll('.sync-word.read, .sync-word.past')
             .forEach(el => el.classList.remove('read', 'past'));
@@ -1014,14 +1085,14 @@
             const windowStart = Math.max(0, activeIdx - WINDOW_BEHIND);
             const windowEnd = Math.min(activeSyncData.length - 1, activeIdx + WINDOW_AHEAD);
             for (let i = 0; i < windowStart; i++) {
-              const el = document.getElementById('sw-' + i);
+              const el = document.querySelector(`.sync-word[data-widx="${i}"]`);
               if (el) el.classList.add('past');
             }
             for (let i = windowStart; i <= windowEnd; i++) {
-              const el = document.getElementById('sw-' + i);
+              const el = document.querySelector(`.sync-word[data-widx="${i}"]`);
               if (el) el.classList.add('read');
             }
-            const el = document.getElementById('sw-' + activeIdx);
+            const el = document.querySelector(`.sync-word[data-widx="${activeIdx}"]`);
             if (el) {
               // Scroll within the reader pane only, not the whole page
               const reader = el.closest('.reader-content');
