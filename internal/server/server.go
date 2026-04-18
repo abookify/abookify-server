@@ -56,6 +56,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
+	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
 	mux.HandleFunc("POST /api/works/{id}/merge", s.handleMergeWorks)
 	mux.HandleFunc("DELETE /api/works/{id}", s.handleDeleteWork)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
@@ -585,6 +586,20 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleListAlignments(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	alignments, err := s.store.ListAlignmentsForWork(workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, alignments)
 }
 
 func (s *Server) handleDetectChapters(w http.ResponseWriter, r *http.Request) {

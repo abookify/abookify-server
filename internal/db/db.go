@@ -40,6 +40,36 @@ type Chunk struct {
 	Embedding  []byte  `json:"-"` // binary blob, not in JSON
 }
 
+// AlignmentPair is one matched region between two sources. Stored as JSON
+// inside the Alignment.Pairs blob. Positions are word indices within the
+// source's chapter (from_chapter_idx + from_start → from_end). Confidence
+// is per-pair; the Alignment-level confidence is the aggregate.
+type AlignmentPair struct {
+	FromChapter int     `json:"fc"` // chapter idx in from_book
+	FromStart   int     `json:"fs"` // word start in that chapter
+	FromEnd     int     `json:"fe"` // word end (exclusive)
+	ToChapter   int     `json:"tc"` // chapter idx in to_book
+	ToStart     int     `json:"ts"` // word start in that chapter
+	ToEnd       int     `json:"te"` // word end (exclusive)
+	Confidence  float64 `json:"c"`  // 0.0–1.0 for this specific pair
+}
+
+// Alignment is a pairwise relation between two source materials (books).
+// The pairs blob holds []AlignmentPair as JSON. Method describes how the
+// alignment was computed ("whisper-native", "edit-distance", "manual").
+type Alignment struct {
+	ID         int64     `json:"id"`
+	WorkID     int64     `json:"work_id"`
+	FromBookID int64     `json:"from_book_id"`
+	ToBookID   int64     `json:"to_book_id"`
+	Unit       string    `json:"unit"`       // "word" | "paragraph" | "sentence"
+	Confidence float64   `json:"confidence"` // aggregate
+	Method     string    `json:"method"`
+	Pairs      string    `json:"pairs"` // JSON blob of []AlignmentPair
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type Paragraph struct {
 	ID           int64  `json:"id"`
 	BookID       int64  `json:"book_id"`
@@ -247,6 +277,30 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_sync_work ON sync_data(work_id);
+
+		-- Pairwise alignments between peer sources (audio, transcript, epub, etc.).
+		-- Each row links two books and stores a JSON blob of mapped position pairs.
+		-- Composable: audio→transcript + transcript→epub = audio→epub.
+		CREATE TABLE IF NOT EXISTS alignments (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_id       INTEGER NOT NULL,
+			from_book_id  INTEGER NOT NULL,
+			to_book_id    INTEGER NOT NULL,
+			unit          TEXT NOT NULL DEFAULT 'word',
+			confidence    REAL NOT NULL DEFAULT 0,
+			method        TEXT NOT NULL DEFAULT '',
+			pairs         TEXT NOT NULL DEFAULT '[]',
+			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (work_id) REFERENCES works(id),
+			FOREIGN KEY (from_book_id) REFERENCES books(id),
+			FOREIGN KEY (to_book_id) REFERENCES books(id),
+			UNIQUE(from_book_id, to_book_id, unit)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_alignments_work ON alignments(work_id);
+		CREATE INDEX IF NOT EXISTS idx_alignments_from ON alignments(from_book_id);
+		CREATE INDEX IF NOT EXISTS idx_alignments_to   ON alignments(to_book_id);
 
 		CREATE TABLE IF NOT EXISTS jobs (
 			id           TEXT PRIMARY KEY,
@@ -1004,6 +1058,103 @@ func (s *Store) GetSyncData(workID, audioBookID int64, chapterIdx int) (string, 
 		return "[]", nil
 	}
 	return timestamps, err
+}
+
+// --- Alignments CRUD ---
+
+// SaveAlignment upserts a pairwise alignment between two source books.
+// The pairs blob should be pre-serialized JSON of []AlignmentPair.
+func (s *Store) SaveAlignment(a Alignment) error {
+	_, err := s.db.Exec(`
+		INSERT INTO alignments (work_id, from_book_id, to_book_id, unit, confidence, method, pairs, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(from_book_id, to_book_id, unit) DO UPDATE SET
+			confidence = excluded.confidence,
+			method     = excluded.method,
+			pairs      = excluded.pairs,
+			updated_at = CURRENT_TIMESTAMP
+	`, a.WorkID, a.FromBookID, a.ToBookID, a.Unit, a.Confidence, a.Method, a.Pairs)
+	return err
+}
+
+// GetAlignment returns the alignment between two specific books for a unit,
+// or nil if none exists. Checks both directions (from→to and to→from).
+func (s *Store) GetAlignment(bookA, bookB int64, unit string) (*Alignment, error) {
+	var a Alignment
+	err := s.db.QueryRow(`
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs, created_at, updated_at
+		FROM alignments
+		WHERE ((from_book_id = ? AND to_book_id = ?) OR (from_book_id = ? AND to_book_id = ?))
+		  AND unit = ?
+	`, bookA, bookB, bookB, bookA, unit).Scan(
+		&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
+		&a.Confidence, &a.Method, &a.Pairs, &a.CreatedAt, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// ListAlignmentsForWork returns all alignments associated with a work.
+func (s *Store) ListAlignmentsForWork(workID int64) ([]Alignment, error) {
+	rows, err := s.db.Query(`
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs, created_at, updated_at
+		FROM alignments WHERE work_id = ?
+	`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alignment
+	for rows.Next() {
+		var a Alignment
+		if err := rows.Scan(&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
+			&a.Confidence, &a.Method, &a.Pairs, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ListAlignmentsForBook returns all alignments where the given book is either
+// the from or to side. Used by ResolvePath to build a composition chain.
+func (s *Store) ListAlignmentsForBook(bookID int64) ([]Alignment, error) {
+	rows, err := s.db.Query(`
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs, created_at, updated_at
+		FROM alignments
+		WHERE from_book_id = ? OR to_book_id = ?
+	`, bookID, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alignment
+	for rows.Next() {
+		var a Alignment
+		if err := rows.Scan(&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
+			&a.Confidence, &a.Method, &a.Pairs, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// DeleteAlignment removes a specific alignment by ID.
+func (s *Store) DeleteAlignment(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM alignments WHERE id = ?`, id)
+	return err
+}
+
+// DeleteAlignmentsForBook removes all alignments involving a given book.
+// Used when a source is deleted or re-generated.
+func (s *Store) DeleteAlignmentsForBook(bookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM alignments WHERE from_book_id = ? OR to_book_id = ?`, bookID, bookID)
+	return err
 }
 
 func (s *Store) DeleteJob(id string) error {
