@@ -24,6 +24,9 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// BaseURL returns the configured service URL (for diagnostics / sidecar metadata).
+func (c *Client) BaseURL() string { return c.baseURL }
+
 // Health checks if the TTS service is available.
 func (c *Client) Health() error {
 	resp, err := c.httpClient.Get(c.baseURL + "/v1/models")

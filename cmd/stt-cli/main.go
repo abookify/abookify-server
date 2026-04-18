@@ -28,16 +28,29 @@ var audioExts = map[string]bool{
 func main() {
 	audioPath := flag.String("audio", "", "Path to audio file OR directory of audio files (processed in sorted order as one logical audiobook)")
 	whisperURL := flag.String("whisper", "http://localhost:5200", "Whisper STT service URL")
-	output := flag.String("output", "", "Output JSON file (default: stdout)")
+	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
+	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	detectChapters := flag.Bool("detect-chapters", false, "Detect chapter boundaries in output")
 	flag.Parse()
 
 	if *audioPath == "" {
-		fmt.Fprintf(os.Stderr, "Usage: stt-cli --audio <file|dir> [--whisper url] [--output result.json] [--detect-chapters]\n")
-		fmt.Fprintf(os.Stderr, "  Pass a single audio file for one-shot transcription.\n")
-		fmt.Fprintf(os.Stderr, "  Pass a directory to transcribe every audio file inside as one logical audiobook,\n")
-		fmt.Fprintf(os.Stderr, "  in sorted filename order. Timestamps are continuous across files.\n")
+		fmt.Fprintf(os.Stderr, "Usage: stt-cli --audio <file|dir> [--whisper url] [--output result.json | --stdout] [--detect-chapters]\n")
+		fmt.Fprintf(os.Stderr, "  File input → writes <audio>.stt.json next to the source\n")
+		fmt.Fprintf(os.Stderr, "  Directory input → writes <dir>.stt.json next to the directory\n")
+		fmt.Fprintf(os.Stderr, "  (Directories are transcribed as one logical audiobook with continuous timestamps.)\n")
 		os.Exit(1)
+	}
+
+	// Default sidecar path: <audio>.stt.json next to the input.
+	// For a directory, strip any trailing slash first so the sidecar lands
+	// beside the directory, not inside it.
+	if *output == "" && !*stdoutFlag {
+		base := strings.TrimRight(*audioPath, "/")
+		if info, err := os.Stat(base); err == nil && !info.IsDir() {
+			// File: drop the original extension, append .stt.json
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+		}
+		*output = base + ".stt.json"
 	}
 
 	files, err := resolveInputFiles(*audioPath)

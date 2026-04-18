@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,7 +18,7 @@ func main() {
 	textFile := flag.String("text", "", "Path to text file (plain text or EPUB)")
 	kokoroURL := flag.String("kokoro", "http://localhost:8880", "Kokoro TTS service URL")
 	voice := flag.String("voice", "af_heart", "Voice name (e.g. af_heart, am_adam, bf_emma)")
-	output := flag.String("output", "output.mp3", "Output MP3 file path")
+	output := flag.String("output", "", "Output MP3 file path (default: <text>.<voice>.mp3 next to the text file)")
 	listVoices := flag.Bool("voices", false, "List available voices and exit")
 	flag.Parse()
 
@@ -31,15 +33,21 @@ func main() {
 	}
 
 	if *textFile == "" {
-		// Read from stdin or remaining args
+		// Inline text from positional args (no sidecar).
 		if flag.NArg() > 0 {
 			text := strings.Join(flag.Args(), " ")
-			synthesize(client, text, *voice, *output)
+			out := *output
+			if out == "" {
+				out = fmt.Sprintf("tts-%s-%d.mp3", *voice, time.Now().Unix())
+			}
+			synthesize(client, text, *voice, out, "")
 			return
 		}
 		fmt.Fprintf(os.Stderr, "Usage: tts-cli --text file.txt [--voice af_heart] [--output out.mp3]\n")
 		fmt.Fprintf(os.Stderr, "       tts-cli --voices  (list available voices)\n")
 		fmt.Fprintf(os.Stderr, "       tts-cli \"Some text to speak\" --output out.mp3\n")
+		fmt.Fprintf(os.Stderr, "  If --output is omitted, writes <text-filename>.<voice>.mp3 next to the text file\n")
+		fmt.Fprintf(os.Stderr, "  and a .tts.json sidecar with synthesis params alongside.\n")
 		os.Exit(1)
 	}
 
@@ -49,27 +57,33 @@ func main() {
 	}
 
 	text := string(data)
-	// Basic preprocessing
 	text = library.PreprocessForTTS("", text)
 
-	synthesize(client, text, *voice, *output)
+	// Default output: <text-without-ext>.<voice>.mp3 next to the source.
+	outPath := *output
+	if outPath == "" {
+		base := strings.TrimSuffix(*textFile, filepath.Ext(*textFile))
+		outPath = fmt.Sprintf("%s.%s.mp3", base, *voice)
+	}
+
+	synthesize(client, text, *voice, outPath, *textFile)
 }
 
-func synthesize(client *tts.Client, text, voice, output string) {
+// synthesize produces the audio and writes a sidecar .tts.json with params.
+// sourceFile is included in the sidecar for traceability; empty for inline text.
+func synthesize(client *tts.Client, text, voice, output, sourceFile string) {
 	if err := client.Health(); err != nil {
 		log.Fatalf("Kokoro not reachable: %v", err)
 	}
 
 	words := len(strings.Fields(text))
-	log.Printf("Synthesizing %d words with voice %q", words, voice)
+	log.Printf("Synthesizing %d words with voice %q → %s", words, voice, output)
 
-	// Split into ~500 word chunks for reliability
 	chunks := splitText(text, 500)
 	log.Printf("Split into %d chunks", len(chunks))
 
 	start := time.Now()
 	var allAudio []byte
-
 	for i, chunk := range chunks {
 		log.Printf("  chunk %d/%d (%d words)...", i+1, len(chunks), len(strings.Fields(chunk)))
 		audio, err := client.Synthesize(chunk, voice)
@@ -82,8 +96,41 @@ func synthesize(client *tts.Client, text, voice, output string) {
 	if err := os.WriteFile(output, allAudio, 0644); err != nil {
 		log.Fatalf("Write %s: %v", output, err)
 	}
+	elapsed := time.Since(start).Truncate(time.Second)
+	log.Printf("Wrote %s (%d bytes, %d words, %s)", output, len(allAudio), words, elapsed)
 
-	log.Printf("Wrote %s (%d bytes, %d words, %s)", output, len(allAudio), words, time.Since(start).Truncate(time.Second))
+	// Sidecar JSON describing the synthesis for test fixtures.
+	sidecarPath := strings.TrimSuffix(output, filepath.Ext(output)) + ".tts.json"
+	sidecar := ttsSidecar{
+		OutputMP3:    filepath.Base(output),
+		SourceText:   sourceFile,
+		Voice:        voice,
+		WordCount:    words,
+		ChunkCount:   len(chunks),
+		OutputBytes:  len(allAudio),
+		ElapsedSecs:  elapsed.Seconds(),
+		KokoroURL:    client.BaseURL(),
+		SynthesizedAt: time.Now().Format(time.RFC3339),
+	}
+	sidecarData, _ := json.MarshalIndent(sidecar, "", "  ")
+	if err := os.WriteFile(sidecarPath, sidecarData, 0644); err != nil {
+		log.Printf("Warning: couldn't write sidecar %s: %v", sidecarPath, err)
+	} else {
+		log.Printf("Wrote %s", sidecarPath)
+	}
+}
+
+// ttsSidecar is the JSON emitted next to each TTS output for test fixtures.
+type ttsSidecar struct {
+	OutputMP3     string  `json:"output_mp3"`
+	SourceText    string  `json:"source_text,omitempty"`
+	Voice         string  `json:"voice"`
+	WordCount     int     `json:"word_count"`
+	ChunkCount    int     `json:"chunk_count"`
+	OutputBytes   int     `json:"output_bytes"`
+	ElapsedSecs   float64 `json:"elapsed_secs"`
+	KokoroURL     string  `json:"kokoro_url"`
+	SynthesizedAt string  `json:"synthesized_at"`
 }
 
 func splitText(text string, targetWords int) []string {
