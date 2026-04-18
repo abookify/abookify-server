@@ -68,6 +68,15 @@ type Book struct {
 	Album     string    `json:"album,omitempty"`
 	Duration     float64   `json:"duration_secs,omitempty"`
 	ChapterCount int       `json:"chapter_count,omitempty"`
+	// Origin describes how this source material was produced. Used by the
+	// display resolver to pick the highest-authority source for the reader.
+	// Values: publisher_epub, publisher_mobi, publisher_pdf, author_recording,
+	// narrator_recording, librivox, tts_kokoro, whisper_transcript,
+	// tts_preprocessed, user_upload (default).
+	Origin     string    `json:"origin,omitempty"`
+	// Visibility: "visible" (shown in UI, default) or "internal" (pipeline
+	// intermediates like TTS-preprocessed text that should never be shown).
+	Visibility string    `json:"visibility,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -116,6 +125,8 @@ func migrate(db *sql.DB) error {
 			author     TEXT NOT NULL DEFAULT '',
 			album      TEXT NOT NULL DEFAULT '',
 			duration   REAL NOT NULL DEFAULT 0,
+			origin     TEXT NOT NULL DEFAULT 'user_upload',
+			visibility TEXT NOT NULL DEFAULT 'visible',
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (work_id) REFERENCES works(id)
@@ -240,10 +251,25 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE chapters ADD COLUMN start_sec  REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE chapters ADD COLUMN end_sec    REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE chapters ADD COLUMN confidence REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE books ADD COLUMN origin     TEXT NOT NULL DEFAULT 'user_upload'`,
+		`ALTER TABLE books ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
 		}
+	}
+
+	// Backfill origin for books created before the origin column existed.
+	// Scanner-ingested files get format-derived defaults; pipeline outputs
+	// get their correct origin tags.
+	for _, backfill := range []string{
+		`UPDATE books SET origin = 'publisher_epub' WHERE origin = 'user_upload' AND format = 'epub'`,
+		`UPDATE books SET origin = 'publisher_pdf'  WHERE origin = 'user_upload' AND format = 'pdf'`,
+		`UPDATE books SET origin = 'narrator_recording' WHERE origin = 'user_upload' AND format IN ('mp3','m4b','m4a','flac','aac') AND path NOT LIKE 'generated://%'`,
+		`UPDATE books SET origin = 'whisper_transcript' WHERE origin = 'user_upload' AND format = 'transcript'`,
+		`UPDATE books SET origin = 'tts_kokoro' WHERE origin = 'user_upload' AND path LIKE 'generated://%' AND media_type = 'audio'`,
+	} {
+		db.Exec(backfill) // best-effort; no-op once origins are correct
 	}
 	return nil
 }
@@ -363,9 +389,15 @@ func (s *Store) GetChapterLinks(workID int64) ([]ChapterLink, error) {
 }
 
 func (s *Store) UpsertBook(b Book) error {
+	if b.Origin == "" {
+		b.Origin = "user_upload"
+	}
+	if b.Visibility == "" {
+		b.Visibility = "visible"
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO books (work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO books (work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(path) DO UPDATE SET
 			work_id    = CASE WHEN excluded.work_id != 0 THEN excluded.work_id ELSE books.work_id END,
 			filename   = excluded.filename,
@@ -376,8 +408,10 @@ func (s *Store) UpsertBook(b Book) error {
 			author     = CASE WHEN excluded.author != '' THEN excluded.author ELSE books.author END,
 			album      = CASE WHEN excluded.album != '' THEN excluded.album ELSE books.album END,
 			duration   = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE books.duration END,
+			origin     = CASE WHEN excluded.origin != 'user_upload' THEN excluded.origin ELSE books.origin END,
+			visibility = CASE WHEN excluded.visibility != 'visible' THEN excluded.visibility ELSE books.visibility END,
 			updated_at = CURRENT_TIMESTAMP
-	`, b.WorkID, b.Path, b.Filename, b.Format, b.MediaType, b.SizeBytes, b.Title, b.Author, b.Album, b.Duration)
+	`, b.WorkID, b.Path, b.Filename, b.Format, b.MediaType, b.SizeBytes, b.Title, b.Author, b.Album, b.Duration, b.Origin, b.Visibility)
 	return err
 }
 
@@ -402,7 +436,7 @@ func (s *Store) AssignBooksToWork(workID int64, bookIDs []int64) error {
 
 func (s *Store) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, created_at, updated_at
 		FROM books ORDER BY title, filename
 	`)
 	if err != nil {
@@ -414,7 +448,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -425,10 +459,10 @@ func (s *Store) ListBooks() ([]Book, error) {
 func (s *Store) GetBook(id int64) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, created_at, updated_at
 		FROM books WHERE id = ?
 	`, id).Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-		&b.Title, &b.Author, &b.Album, &b.Duration, &b.CreatedAt, &b.UpdatedAt)
+		&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.CreatedAt, &b.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -521,7 +555,7 @@ func (s *Store) GetWork(id int64) (*Work, error) {
 
 func (s *Store) booksByWork(workID int64) ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, created_at, updated_at
 		FROM books WHERE work_id = ? ORDER BY filename
 	`, workID)
 	if err != nil {
@@ -533,7 +567,7 @@ func (s *Store) booksByWork(workID int64) ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -555,10 +589,40 @@ func (s *Store) booksByWork(workID int64) ([]Book, error) {
 	return books, nil
 }
 
+// OriginAuthority returns a numeric score for a source origin — higher is
+// more authoritative. Used by the display resolver to pick the best source
+// to show in the reader when multiple text (or audio) sources exist.
+func OriginAuthority(origin string) int {
+	switch origin {
+	case "publisher_epub":
+		return 100
+	case "publisher_mobi":
+		return 95
+	case "publisher_pdf":
+		return 90
+	case "author_recording":
+		return 100
+	case "narrator_recording":
+		return 80
+	case "librivox":
+		return 60
+	case "tts_kokoro":
+		return 30
+	case "whisper_transcript":
+		return 20
+	case "tts_preprocessed":
+		return 10
+	case "user_upload":
+		return 50
+	default:
+		return 50
+	}
+}
+
 // UnassignedBooks returns books not yet linked to a work.
 func (s *Store) UnassignedBooks() ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, created_at, updated_at
 		FROM books WHERE work_id = 0 ORDER BY title, filename
 	`)
 	if err != nil {
@@ -570,7 +634,7 @@ func (s *Store) UnassignedBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)

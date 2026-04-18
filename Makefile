@@ -13,10 +13,10 @@ logs:
 	docker compose logs -f --tail=100
 
 build:
-	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go build ./cmd/abookify
+	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go build -buildvcs=false ./cmd/abookify
 
 test:
-	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go test ./internal/... -v
+	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go test -buildvcs=false ./internal/... -v
 
 # Start everything + nullbore tunnel (reads engineering/relay/.env)
 relay:

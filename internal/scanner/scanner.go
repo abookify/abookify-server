@@ -60,6 +60,7 @@ func Scan(root string) ([]db.Book, error) {
 			MediaType: mediaType,
 			SizeBytes: info.Size(),
 			Title:     titleFromFilename(d.Name()),
+			Origin:    originForFormat(format),
 		}
 
 		// Extract metadata from file
@@ -84,6 +85,22 @@ func Scan(root string) ([]db.Book, error) {
 	})
 
 	return results, err
+}
+
+// originForFormat returns the default origin tag for a scanned file. These are
+// conservative defaults — the user can upgrade via the metadata editor later
+// (e.g. from "narrator_recording" to "author_recording").
+func originForFormat(format string) string {
+	switch format {
+	case "epub":
+		return "publisher_epub"
+	case "pdf":
+		return "publisher_pdf"
+	case "mp3", "m4b", "m4a", "flac", "aac":
+		return "narrator_recording"
+	default:
+		return "user_upload"
+	}
 }
 
 func titleFromFilename(name string) string {
