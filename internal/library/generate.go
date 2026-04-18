@@ -520,6 +520,33 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 		log.Printf("stt: transcribed %s (%.1fs, %d words)", af.Filename, result.Duration, len(strings.Fields(result.Text)))
 	}
 
+	// For multi-file books where filenames don't already encode chapters
+	// (e.g. "01.mp3" section splits), try cross-file chapter detection. We
+	// infer "no filename hint" from the absence of chapter_links with
+	// confidence >= 0.8 (filename-match confidence). If links are strong,
+	// detection is skipped to avoid duplicating the filename structure.
+	if len(audioFiles) > 1 {
+		if fresh, _ := g.store.GetWork(workID); fresh != nil {
+			strong := 0
+			for _, link := range fresh.ChapterLinks {
+				if link.Confidence >= 0.8 {
+					strong++
+				}
+			}
+			if strong < len(audioFiles)/2 {
+				if n, err := DetectChaptersMultiFile(g.store, workID); err != nil {
+					log.Printf("detect-chapters-multifile: %v", err)
+				} else if n > 0 {
+					log.Printf("detect-chapters-multifile: wrote %d chapters across files", n)
+					// Re-link so newly detected chapters can match ebook chapters.
+					if relinked, _ := g.store.GetWork(workID); relinked != nil {
+						LinkChapters(g.store, relinked)
+					}
+				}
+			}
+		}
+	}
+
 	job.Progress = 1.0
 	job.Status = "completed"
 	job.CurrentStep = fmt.Sprintf("Transcribed %d audio files", len(audioFiles))
