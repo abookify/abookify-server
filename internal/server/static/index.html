@@ -1571,6 +1571,35 @@
       } catch {}
     }
 
+    // --- Chapter boundary override: right-click scrubber to mark ---
+    document.getElementById('player-scrubber').addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      const p = document.getElementById('audio-player');
+      if (!p.duration || !currentPlayingId) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      const timeSec = pct * p.duration;
+      const title = prompt(`Mark chapter at ${fmtPlayerTime(timeSec)}.\nChapter title:`);
+      if (!title) return;
+      try {
+        await fetch(`/api/books/${currentPlayingId}/chapters`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ title, start_sec: timeSec }),
+        });
+        // Refresh chapter ticks + audio chapter list.
+        renderChapterTicks();
+        if (audioChapterCache[currentPlayingId]) {
+          delete audioChapterCache[currentPlayingId];
+        }
+        const work = allWorks.find(w => w.id === currentWorkId);
+        if (work) {
+          const af = work.audio_files?.find(f => f.id === currentPlayingId);
+          if (af) loadAudioChapterList(af, work);
+        }
+      } catch {}
+    });
+
     // --- Text selection → highlight ---
     // When the user selects text in the reader pane and presses a key or
     // clicks a floating button, create a highlight bookmark.

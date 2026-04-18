@@ -59,6 +59,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
+	mux.HandleFunc("POST /api/books/{id}/chapters", s.handleAddChapter)
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
 	mux.HandleFunc("POST /api/works/{id}/embed", s.handleEmbed)
 	mux.HandleFunc("POST /api/works/{id}/converse", s.handleConverse)
@@ -711,6 +712,38 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleAddChapter(w http.ResponseWriter, r *http.Request) {
+	bookID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Title    string  `json:"title"`
+		StartSec float64 `json:"start_sec"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing title"})
+		return
+	}
+	// Find the next available chapter index for this book.
+	chapters, _ := s.store.ListChapters(bookID)
+	nextIdx := len(chapters)
+	ch := db.Chapter{
+		BookID:     bookID,
+		Index:      nextIdx,
+		Title:      req.Title,
+		Src:        "user",
+		StartSec:   req.StartSec,
+		Confidence: 1.0,
+	}
+	if err := s.store.InsertChapter(ch); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
 }
 
 func (s *Server) handleWaveform(w http.ResponseWriter, r *http.Request) {
