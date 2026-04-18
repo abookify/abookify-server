@@ -1,0 +1,25 @@
+# GPU override — brings up Whisper (and Kokoro if applicable) with CUDA access.
+# Usage on a GPU host (requires nvidia-container-toolkit):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build whisper
+#
+# Or to run only the ML services for CLI testing (skip server/nullbore):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build whisper kokoro
+
+services:
+  whisper:
+    build:
+      context: ./services/whisper
+      dockerfile: Dockerfile.gpu
+    environment:
+      - WHISPER_MODEL=large-v3
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+    ports:
+      - "5200:5200"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

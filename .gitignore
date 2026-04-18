@@ -1,0 +1,32 @@
+# Compiled binaries
+/abookify
+/bin/
+
+# Local runtime data (SQLite database + WAL files)
+/data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Generated audio/transcripts produced by the TTS/STT pipeline
+/generated/
+
+# Test library — large audiobook + ebook files stored outside the repo.
+# Set ABOOKIFY_LIBRARY_PATH or symlink testdata/library to point at yours.
+/testdata/library/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

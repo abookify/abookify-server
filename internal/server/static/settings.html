@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>abookify - Settings</title>
+  <style>
+    :root {
+      --bg: #1a1a2e; --surface: #16213e; --surface-hover: #1a2744;
+      --border: #2a3a5c; --text: #e0e0e0; --text-muted: #8892a8;
+      --accent: #e94560; --epub: #4ecca3; --mp3: #e94560; --generate: #7b68ee;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem;
+    }
+    header h1 { font-size: 1.4rem; font-weight: 600; }
+    header a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; }
+    header a:hover { color: var(--text); }
+
+    .settings { padding: 2rem; max-width: 700px; }
+
+    .section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem;
+    }
+    .section h2 {
+      font-size: 1rem; font-weight: 600; margin-bottom: 1rem;
+      padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+    }
+
+    .field { margin-bottom: 1rem; }
+    .field:last-child { margin-bottom: 0; }
+    .field label {
+      display: block; font-size: 0.8rem; font-weight: 500;
+      color: var(--text-muted); margin-bottom: 0.35rem; text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .field select, .field input[type="text"] {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.5rem 0.75rem; color: var(--text);
+      font-size: 0.9rem;
+    }
+    .field select:focus, .field input:focus { outline: none; border-color: var(--accent); }
+    .field .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+    .status-row {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0; font-size: 0.85rem;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50; flex-shrink: 0;
+      border-radius: 50%;
+    }
+    .status-dot.ok { background: var(--epub); }
+    .status-dot.err { background: var(--accent); }
+
+    .save-btn {
+      background: var(--accent); border: none; border-radius: 6px;
+      color: white; padding: 0.6rem 1.5rem; font-size: 0.9rem;
+      cursor: pointer; font-weight: 500;
+    }
+    .save-btn:hover { opacity: 0.9; }
+    .save-msg { font-size: 0.8rem; color: var(--epub); margin-left: 1rem; display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">&larr; Library</a>
+    <h1>Settings</h1>
+  </header>
+
+  <div class="settings">
+    <div class="section">
+      <h2>Local Services</h2>
+      <div class="hint" style="margin-bottom:12px;">These run locally on your server. No API keys needed, no data leaves your machine.</div>
+      <div class="status-row">
+        <span class="status-dot" id="tts-dot"></span>
+        <span>Text-to-Speech (Kokoro): <span id="tts-status">checking...</span></span>
+      </div>
+      <div class="status-row">
+        <span class="status-dot" id="stt-dot"></span>
+        <span>Speech-to-Text (Whisper): <span id="stt-status">checking...</span></span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Text-to-Speech Voice</h2>
+      <div class="hint" style="margin-bottom:12px;">Choose the voice used when generating audiobooks from ebook text. All voices are powered by Kokoro and run locally.</div>
+      <div class="field">
+        <label>Voice</label>
+        <select id="tts-voice">
+          <optgroup label="Female - American English">
+            <option value="af_heart" selected>Heart (default, natural)</option>
+            <option value="af_bella">Bella</option>
+            <option value="af_nicole">Nicole</option>
+            <option value="af_sarah">Sarah</option>
+            <option value="af_nova">Nova</option>
+            <option value="af_sky">Sky</option>
+            <option value="af_river">River</option>
+            <option value="af_jessica">Jessica</option>
+          </optgroup>
+          <optgroup label="Male - American English">
+            <option value="am_adam">Adam</option>
+            <option value="am_michael">Michael</option>
+            <option value="am_eric">Eric</option>
+            <option value="am_liam">Liam</option>
+            <option value="am_puck">Puck</option>
+          </optgroup>
+          <optgroup label="Female - British English">
+            <option value="bf_emma">Emma</option>
+            <option value="bf_lily">Lily</option>
+            <option value="bf_alice">Alice</option>
+          </optgroup>
+          <optgroup label="Male - British English">
+            <option value="bm_george">George</option>
+            <option value="bm_daniel">Daniel</option>
+            <option value="bm_lewis">Lewis</option>
+          </optgroup>
+        </select>
+        <button onclick="previewVoice()" id="preview-btn" style="margin-top:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:0.85rem;">Preview voice</button>
+        <audio id="preview-audio" style="display:none;"></audio>
+        <div class="hint" style="margin-top:4px;">Generates a short sample with the selected voice. Requires Kokoro to be running.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Speech-to-Text Model</h2>
+      <div class="hint" style="margin-bottom:12px;">Choose the Whisper model used when transcribing audiobooks to text. Larger models are more accurate but slower. Changes apply to new transcription jobs.</div>
+      <div class="field">
+        <label>Model</label>
+        <select id="stt-model">
+          <option value="large-v3">Large V3 (Best quality, slowest)</option>
+          <option value="medium">Medium (Good quality, moderate speed)</option>
+          <option value="small">Small (Decent quality, fast)</option>
+          <option value="base">Base (Basic quality, fastest)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Unload from memory after idle</label>
+        <select id="stt-idle-timeout">
+          <option value="5">5 minutes</option>
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60" selected>1 hour (default)</option>
+          <option value="0">Never (always loaded)</option>
+        </select>
+        <div class="hint">The Whisper model uses ~3 GB of RAM (or VRAM on GPU). Unloading frees memory when not actively transcribing.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Book Q&A</h2>
+      <div class="hint" style="margin-bottom:12px;">Add your own AI API key to enable intelligent question and answer about your books. Your key is stored locally on this server and only sent to the provider you select.</div>
+      <div class="field">
+        <label>Provider</label>
+        <select id="llm-provider">
+          <option value="">Not configured (keyword search only)</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI (ChatGPT)</option>
+          <option value="ollama">Ollama (free, runs locally)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>API Key</label>
+        <input type="text" id="llm-api-key" placeholder="sk-... or leave blank for Ollama">
+      </div>
+      <div class="field">
+        <label>Model (optional)</label>
+        <input type="text" id="llm-model" placeholder="Leave blank for default">
+      </div>
+      <div class="field">
+        <label>Base URL (optional, for proxies or self-hosted)</label>
+        <input type="text" id="llm-base-url" placeholder="Leave blank for default">
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Voice Chat</h2>
+      <div class="hint" style="margin-bottom:12px;">Talk to your books using real-time voice conversation. Requires a speech-to-speech API key. This feature sends audio to an external service.</div>
+      <div class="field">
+        <label>Provider</label>
+        <select id="voice-provider">
+          <option value="">Not configured</option>
+          <option value="gemini">Google Gemini Live</option>
+          <option value="openai-realtime">OpenAI Realtime</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>API Key</label>
+        <input type="text" id="voice-api-key" placeholder="API key for voice chat provider">
+      </div>
+      <div class="hint">Voice chat is a premium feature that uses real-time speech-to-speech AI. Your audio is sent to the selected provider for processing.</div>
+    </div>
+
+    <div class="section">
+      <h2>Mobile App Pairing</h2>
+      <div style="display:flex; gap:1.5rem; align-items:flex-start;">
+        <img id="qr-img" src="/api/pair-qr" width="200" height="200" style="border-radius:8px; background:#fff;">
+        <div>
+          <div class="field">
+            <label>Server URL</label>
+            <div id="server-url" style="font-size:0.9rem; color:var(--text); word-break:break-all;"></div>
+          </div>
+          <div class="hint" style="margin-top:8px;">
+            Open the abookify app on your phone and scan this QR code,<br>
+            or enter the server URL manually.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Library</h2>
+      <div class="field">
+        <label>Library Stats</label>
+        <div id="lib-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading...</div>
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center;">
+      <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+      <span class="save-msg" id="save-msg">Saved!</span>
+    </div>
+  </div>
+
+  <script>
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const settings = await res.json();
+        if (settings.tts_voice) document.getElementById('tts-voice').value = settings.tts_voice;
+        if (settings.stt_model) document.getElementById('stt-model').value = settings.stt_model;
+        if (settings.stt_idle_timeout) document.getElementById('stt-idle-timeout').value = settings.stt_idle_timeout;
+        if (settings.llm_provider) document.getElementById('llm-provider').value = settings.llm_provider;
+        if (settings.llm_api_key) document.getElementById('llm-api-key').value = settings.llm_api_key;
+        if (settings.llm_model) document.getElementById('llm-model').value = settings.llm_model;
+        if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
+        if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
+        if (settings.voice_api_key) document.getElementById('voice-api-key').value = settings.voice_api_key;
+      } catch {}
+    }
+
+    async function saveSettings() {
+      const settings = {
+        tts_voice: document.getElementById('tts-voice').value,
+        stt_model: document.getElementById('stt-model').value,
+        stt_idle_timeout: document.getElementById('stt-idle-timeout').value,
+        llm_provider: document.getElementById('llm-provider').value,
+        llm_api_key: document.getElementById('llm-api-key').value,
+        llm_model: document.getElementById('llm-model').value,
+        llm_base_url: document.getElementById('llm-base-url').value,
+        voice_provider: document.getElementById('voice-provider').value,
+        voice_api_key: document.getElementById('voice-api-key').value,
+      };
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(settings),
+        });
+        const msg = document.getElementById('save-msg');
+        msg.style.display = 'inline';
+        setTimeout(() => msg.style.display = 'none', 2000);
+      } catch {}
+    }
+
+    async function checkServices() {
+      // TTS
+      try {
+        const res = await fetch('/api/health');
+        // Check TTS via proxy
+        const ttsRes = await fetch('http://localhost:5100/health').catch(() => null);
+      } catch {}
+
+      // Just check via our own health + jobs for now
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          document.getElementById('tts-dot').classList.add('ok');
+          document.getElementById('tts-status').textContent = 'Connected';
+          document.getElementById('stt-dot').classList.add('ok');
+          document.getElementById('stt-status').textContent = 'Connected';
+        }
+      } catch {
+        document.getElementById('tts-dot').classList.add('err');
+        document.getElementById('tts-status').textContent = 'Unavailable';
+        document.getElementById('stt-dot').classList.add('err');
+        document.getElementById('stt-status').textContent = 'Unavailable';
+      }
+
+      // Library stats
+      try {
+        const res = await fetch('/api/works');
+        const works = await res.json();
+        const totalFiles = works.reduce((s, w) =>
+          s + (w.audio_files || []).length + (w.text_files || []).length, 0);
+        const paired = works.filter(w => w.has_audio && w.has_text).length;
+        const totalBytes = works.reduce((s, w) => s + (w.total_size || 0), 0);
+        const sizeStr = totalBytes > 1024*1024*1024
+          ? (totalBytes / (1024*1024*1024)).toFixed(1) + ' GB'
+          : (totalBytes / (1024*1024)).toFixed(0) + ' MB';
+        document.getElementById('lib-stats').textContent =
+          `${works.length} works, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
+      } catch {}
+    }
+
+    // Show public URL + fresh pairing token (refresh QR every 9 min to match 10 min TTL)
+    async function refreshPairing() {
+      try {
+        const info = await fetch('/api/server-info').then(r => r.json());
+        document.getElementById('server-url').textContent = info.public_url;
+        document.getElementById('qr-img').src = '/api/pair-qr?_=' + Date.now();
+      } catch {}
+    }
+    refreshPairing();
+    setInterval(refreshPairing, 9 * 60 * 1000);
+
+    async function previewVoice() {
+      const voice = document.getElementById('tts-voice').value;
+      const btn = document.getElementById('preview-btn');
+      const audio = document.getElementById('preview-audio');
+      btn.textContent = 'Generating...';
+      btn.disabled = true;
+      try {
+        audio.src = `/api/tts/preview?voice=${encodeURIComponent(voice)}&_=${Date.now()}`;
+        audio.style.display = 'block';
+        await audio.play();
+      } catch (e) {
+        alert('Preview failed: ' + e.message);
+      } finally {
+        btn.textContent = 'Preview voice';
+        btn.disabled = false;
+      }
+    }
+
+    loadSettings();
+    checkServices();
+  </script>
+</body>
+</html>

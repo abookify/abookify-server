@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TTS Quality Comparison</title>
+  <style>
+    :root { --bg: #1a1a2e; --surface: #16213e; --border: #2a3a5c; --text: #e0e0e0; --muted: #8892a8; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 2rem; }
+    h1 { margin-bottom: 0.5rem; }
+    .subtitle { color: var(--muted); margin-bottom: 2rem; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.1rem; margin-bottom: 0.3rem; }
+    .card .meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 1rem; }
+    .card audio { width: 100%; margin-bottom: 0.75rem; }
+    .passage { font-family: Georgia, serif; font-size: 0.9rem; line-height: 1.6; color: #ccc; padding: 1rem; background: var(--bg); border-radius: 6px; margin-bottom: 1rem; }
+    .result { font-size: 0.85rem; padding: 0.5rem 0.75rem; border-radius: 6px; display: inline-block; }
+    .result.good { background: rgba(78,204,163,0.15); color: #4ecca3; }
+    .result.bad { background: rgba(233,69,96,0.15); color: #e94560; }
+    a { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>TTS Quality Comparison</h1>
+  <p class="subtitle">Listen to the same passage rendered by different engines. <a href="/">Back to library</a></p>
+
+  <div class="passage">
+    <strong>Test passage (Frankenstein):</strong><br>
+    "It was on a dreary night of November that I beheld the accomplishment of my toils. With an anxiety that almost amounted to agony, I collected the instruments of life around me, that I might infuse a spark of being into the lifeless thing that lay at my feet."
+  </div>
+
+  <div class="card">
+    <h2>Kokoro (af_heart)</h2>
+    <div class="meta">82M parameter model, high quality neural TTS</div>
+    <audio controls src="/samples/kokoro-descriptive.wav"></audio>
+    <div class="result good">Round-trip WER: 0.0% — Perfect transcription</div>
+  </div>
+
+  <div class="card">
+    <h2>Piper (lessac-high)</h2>
+    <div class="meta">Lightweight ONNX model, fast CPU inference</div>
+    <audio controls src="/samples/tts-en_US-lessac-high-descriptive.wav"></audio>
+    <div class="result bad">Round-trip WER: 6.1% — "being" misheard as "beating"</div>
+  </div>
+
+  <div class="card">
+    <h2>Kokoro (af_heart) — Short sentence</h2>
+    <div class="meta">Pride and Prejudice opening</div>
+    <audio controls src="/samples/kokoro-short.wav"></audio>
+  </div>
+
+  <div class="card">
+    <h2>Piper (lessac-high) — Short sentence</h2>
+    <div class="meta">Same passage for comparison</div>
+    <audio controls src="/samples/tts-en_US-lessac-high-short.wav"></audio>
+  </div>
+
+  <div class="card">
+    <h2>Piper (ryan-high) — Male voice</h2>
+    <div class="meta">Same Frankenstein passage, male voice</div>
+    <audio controls src="/samples/tts-en_US-ryan-high-descriptive.wav"></audio>
+  </div>
+</body>
+</html>

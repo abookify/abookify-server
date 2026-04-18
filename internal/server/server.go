@@ -1,0 +1,824 @@
+package server
+
+import (
+	"embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/pj/abookify/internal/abook"
+	"github.com/pj/abookify/internal/db"
+	"github.com/pj/abookify/internal/library"
+	"github.com/pj/abookify/internal/llm"
+)
+
+//go:embed static
+var staticFiles embed.FS
+
+type Server struct {
+	store      *db.Store
+	http       *http.Server
+	Events     *EventBus
+	Generator  *library.Generator
+	RAG        *llm.RAG
+	LibraryDir string
+}
+
+func New(store *db.Store, port string) *Server {
+	s := &Server{store: store, Events: NewEventBus()}
+
+	mux := http.NewServeMux()
+
+	// API routes
+	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/info", s.handleInfo)
+	mux.HandleFunc("GET /api/pair-qr", s.handlePairQR)
+	mux.HandleFunc("GET /api/pair-payload", s.handlePairPayload)
+	mux.HandleFunc("GET /api/server-info", s.handleServerInfo)
+	mux.HandleFunc("GET /api/books", s.handleListBooks)
+	mux.HandleFunc("GET /api/books/{id}", s.handleGetBook)
+	mux.HandleFunc("GET /api/books/{id}/stream", s.handleStreamBook)
+	mux.HandleFunc("GET /api/works", s.handleListWorks)
+	mux.HandleFunc("GET /api/works/{id}", s.handleGetWork)
+	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
+	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
+	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
+	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
+	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
+	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
+	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
+	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
+	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
+	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
+	mux.HandleFunc("POST /api/works/{id}/merge", s.handleMergeWorks)
+	mux.HandleFunc("DELETE /api/works/{id}", s.handleDeleteWork)
+	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
+	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
+	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
+	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
+	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
+	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
+	mux.HandleFunc("DELETE /api/bookmarks/{id}", s.handleDeleteBookmark)
+	mux.HandleFunc("GET /api/works/{id}/export.abook", s.handleExportAbook)
+	mux.HandleFunc("POST /api/import", s.handleImportAbook)
+	mux.HandleFunc("POST /api/devices/register", s.handleRegisterDevice)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("POST /api/sync", s.handleSync)
+	mux.HandleFunc("GET /api/ws", s.Events.HandleWS)
+
+	// Serve sample audio files for quality comparison
+	mux.Handle("GET /samples/", http.StripPrefix("/samples/",
+		http.FileServer(http.Dir("/app/testdata/quality"))))
+
+	// Serve embedded web UI
+	staticFS, _ := fs.Sub(staticFiles, "static")
+	mux.Handle("GET /", http.FileServer(http.FS(staticFS)))
+
+	s.http = &http.Server{
+		Addr:    ":" + port,
+		Handler: corsMiddleware(mux),
+	}
+
+	return s
+}
+
+func (s *Server) ListenAndServe() error {
+	return s.http.ListenAndServe()
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":    "abookify",
+		"version": "0.1.0",
+		"port":    s.http.Addr,
+	})
+}
+
+func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
+	books, err := s.store.ListBooks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if books == nil {
+		books = []db.Book{}
+	}
+	writeJSON(w, http.StatusOK, books)
+}
+
+func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
+	book, err := s.getBookByID(w, r)
+	if err != nil || book == nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, book)
+}
+
+func (s *Server) handleStreamBook(w http.ResponseWriter, r *http.Request) {
+	book, err := s.getBookByID(w, r)
+	if err != nil || book == nil {
+		return
+	}
+
+	f, err := os.Open(book.Path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "file not found on disk"})
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot stat file"})
+		return
+	}
+
+	contentType := "application/octet-stream"
+	switch book.Format {
+	case "mp3":
+		contentType = "audio/mpeg"
+	case "m4b", "m4a":
+		contentType = "audio/mp4"
+	case "flac":
+		contentType = "audio/flac"
+	case "aac":
+		contentType = "audio/aac"
+	case "epub":
+		contentType = "application/epub+zip"
+	case "pdf":
+		contentType = "application/pdf"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	http.ServeContent(w, r, book.Filename, stat.ModTime(), f)
+}
+
+func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if works == nil {
+		works = []db.Work{}
+	}
+	writeJSON(w, http.StatusOK, works)
+}
+
+func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	work, err := s.store.GetWork(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, work)
+}
+
+func (s *Server) handleListChapters(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	chapters, err := s.store.ListChapters(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if chapters == nil {
+		chapters = []db.Chapter{}
+	}
+	writeJSON(w, http.StatusOK, chapters)
+}
+
+func (s *Server) handleSearchBook(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing q parameter"})
+		return
+	}
+
+	chunks, err := s.store.SearchChunks(id, query)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if chunks == nil {
+		chunks = []db.Chunk{}
+	}
+	writeJSON(w, http.StatusOK, chunks)
+}
+
+func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	indexStr := strings.TrimSpace(r.PathValue("index"))
+	index, err := strconv.Atoi(indexStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapter index"})
+		return
+	}
+
+	ch, err := s.store.GetChapterContent(id, index)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if ch == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "chapter not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ch)
+}
+
+func (s *Server) handleTTSPreview(w http.ResponseWriter, r *http.Request) {
+	voice := r.URL.Query().Get("voice")
+	if voice == "" {
+		voice = "af_heart"
+	}
+	if s.Generator == nil || s.Generator.TTSClient() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "TTS service not available"})
+		return
+	}
+	audio, err := s.Generator.TTSClient().Synthesize(
+		"Here is a preview of this voice. Once upon a time, in a quiet little village nestled between rolling hills, there lived a curious young reader.",
+		voice,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Write(audio)
+}
+
+func (s *Server) handleMergeWorks(w http.ResponseWriter, r *http.Request) {
+	targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var req struct {
+		SourceID int64 `json:"source_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SourceID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source_id required"})
+		return
+	}
+	if targetID == req.SourceID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot merge a work into itself"})
+		return
+	}
+	if err := s.store.MergeWorks(targetID, req.SourceID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("merged work %d into work %d", req.SourceID, targetID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "merged"})
+}
+
+func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := s.store.DeleteWork(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("deleted work %d", id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "TTS service not configured"})
+		return
+	}
+
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+
+	if !work.HasText || len(work.TextFiles) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no text files to generate audio from"})
+		return
+	}
+
+	// Parse optional voice from request body
+	var req struct {
+		Voice string `json:"voice"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	textBookID := work.TextFiles[0].ID
+	jobID, started := s.Generator.GenerateAudioFromText(workID, textBookID, req.Voice)
+	if !started {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
+}
+
+func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "STT service not configured"})
+		return
+	}
+
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+
+	if !work.HasAudio {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no audio files to transcribe"})
+		return
+	}
+
+	jobID, started := s.Generator.TranscribeAudio(workID)
+	if !started {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
+}
+
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusOK, []library.JobStatus{})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Generator.GetJobs())
+}
+
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	id := r.PathValue("id")
+	job := s.Generator.GetJob(id)
+	if job == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) handleRegenerateChapter(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "TTS not configured"})
+		return
+	}
+
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	var req struct {
+		BookID      int64  `json:"book_id"`
+		ChapterIdx  int    `json:"chapter_idx"`
+		Voice       string `json:"voice"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+
+	// Find the text book
+	bookID := req.BookID
+	if bookID == 0 && len(work.TextFiles) > 0 {
+		bookID = work.TextFiles[0].ID
+	}
+
+	ch, err := s.store.GetChapterContent(bookID, req.ChapterIdx)
+	if err != nil || ch == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "chapter not found"})
+		return
+	}
+
+	voice := req.Voice
+	if voice == "" || strings.HasPrefix(voice, "en_US") {
+		voice = "af_heart"
+	}
+
+	jobID, started := s.Generator.RegenerateChapter(workID, bookID, ch, voice)
+	if !started {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "already running", "job_id": jobID})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
+}
+
+func (s *Server) handleWorkCover(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	coverPath := fmt.Sprintf("%s/covers/work-%d.jpg", s.LibraryDir, id)
+	if _, err := os.Stat(coverPath); err != nil {
+		http.Error(w, "no cover", http.StatusNotFound)
+		return
+	}
+
+	http.ServeFile(w, r, coverPath)
+}
+
+func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
+	if s.RAG == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "No LLM configured. Add an API key in Settings.",
+		})
+		return
+	}
+
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Question == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing question"})
+		return
+	}
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+
+	if !work.HasText || len(work.TextFiles) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no text content to search"})
+		return
+	}
+
+	answer, err := s.RAG.Ask(work.TextFiles[0].ID, req.Question, work.Title)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, answer)
+}
+
+func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	bookmarks, err := s.store.ListBookmarks(workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if bookmarks == nil {
+		bookmarks = []db.Bookmark{}
+	}
+	writeJSON(w, http.StatusOK, bookmarks)
+}
+
+func (s *Server) handleCreateBookmark(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var bm db.Bookmark
+	if err := json.NewDecoder(r.Body).Decode(&bm); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	bm.WorkID = workID
+	id, err := s.store.CreateBookmark(bm)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	if err := s.store.DeleteBookmark(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleDetectChapters(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	n, err := library.DetectChaptersFromStoredSync(s.store, workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chapters_detected": n})
+}
+
+func (s *Server) handleGetSyncData(w http.ResponseWriter, r *http.Request) {
+	workID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	audioBookID, _ := strconv.ParseInt(r.PathValue("audioBookId"), 10, 64)
+	chapterIdx, _ := strconv.Atoi(r.PathValue("chapterIdx"))
+
+	data, err := s.store.GetSyncData(workID, audioBookID, chapterIdx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Return raw JSON array directly
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(data))
+}
+
+func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "inactive" {
+		// Delete all non-running jobs
+		jobs, _ := s.store.ListJobs()
+		for _, j := range jobs {
+			if j.Status != "running" && j.Status != "queued" {
+				s.store.DeleteJob(j.ID)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+		return
+	}
+	s.store.DeleteJob(id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleGetPosition(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	pos, err := s.store.GetPosition(workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if pos == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"work_id": workID, "position_secs": 0, "file_index": 0})
+		return
+	}
+	writeJSON(w, http.StatusOK, pos)
+}
+
+func (s *Server) handleSavePosition(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var pos db.PlaybackPosition
+	if err := json.NewDecoder(r.Body).Decode(&pos); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	pos.WorkID = workID
+	if err := s.store.SavePosition(pos); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	workID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+
+	// Create temp file for the export
+	tmpFile, err := os.CreateTemp("", "abook-export-*.abook")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	if err := abook.Export(s.store, work, tmpPath); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	safeName := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '"' {
+			return '-'
+		}
+		return r
+	}, work.Title)
+
+	w.Header().Set("Content-Type", "application/x-abook+zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.abook"`, safeName))
+	http.ServeFile(w, r, tmpPath)
+}
+
+func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
+	// Limit upload to 500MB
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file"})
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(header.Filename, ".abook") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file must have .abook extension"})
+		return
+	}
+
+	// Save to temp file
+	tmpFile, err := os.CreateTemp("", "abook-import-*.abook")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save upload"})
+		return
+	}
+	tmpFile.Close()
+
+	if err := abook.Import(s.store, tmpPath, s.LibraryDir); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.Events.Broadcast(Event{Type: "library_updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "imported"})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.GetAllSettings()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
+	var body map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	for k, v := range body {
+		if err := s.store.SetSetting(k, v); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, error) {
+	idStr := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return nil, err
+	}
+
+	book, err := s.store.GetBook(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return nil, err
+	}
+	if book == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return nil, nil
+	}
+
+	return book, nil
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("json encode error: %v", err)
+	}
+}

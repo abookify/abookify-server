@@ -1,0 +1,65 @@
+services:
+  server:
+    build: .
+    ports:
+      - "7654:7654"
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - ./testdata/library:/library
+      - generated-audio:/generated
+    environment:
+      - ABOOKIFY_LIBRARY_PATH=/library
+      - ABOOKIFY_DB_PATH=/app/data/abookify.db
+      - ABOOKIFY_PORT=7654
+      - ABOOKIFY_TTS_URL=http://kokoro:8880
+      - ABOOKIFY_STT_URL=http://whisper:5200
+      - ABOOKIFY_GENERATED_PATH=/generated
+      - NULLBORE_BASE_DOMAIN=abookify.nullbore.com
+      - ABOOKIFY_PUBLIC_URL=${ABOOKIFY_PUBLIC_URL:-}
+    depends_on:
+      kokoro:
+        condition: service_started
+      whisper:
+        condition: service_started
+
+  kokoro:
+    build: ./services/kokoro
+    ports:
+      - "8880:8880"
+    volumes:
+      - kokoro-models:/app/api/src/models
+
+  whisper:
+    build: ./services/whisper
+    volumes:
+      - whisper-models:/root/.cache
+    environment:
+      - WHISPER_MODEL=large-v3
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=int8
+    ports:
+      - "5200:5200"
+
+  # Relay tunnel — exposes the local server through a NullBore relay VPS.
+  # Optional: only runs when NULLBORE_API_KEY is set in .env.
+  nullbore:
+    build: ../relay/client
+    restart: unless-stopped
+    environment:
+      NULLBORE_SERVER: ${NULLBORE_SERVER:-https://tunnel.nullbore.com}
+      NULLBORE_API_KEY: ${NULLBORE_API_KEY:-}
+      NULLBORE_TUNNELS: ${NULLBORE_TUNNELS:-server:7654}
+      NULLBORE_TLS_SKIP_VERIFY: ${NULLBORE_TLS_SKIP_VERIFY:-false}
+    profiles:
+      - relay
+    depends_on:
+      - server
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  whisper-models:
+  kokoro-models:
+  generated-audio:
