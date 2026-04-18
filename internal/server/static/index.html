@@ -1571,6 +1571,54 @@
       } catch {}
     }
 
+    // --- Text selection → highlight ---
+    // When the user selects text in the reader pane and presses a key or
+    // clicks a floating button, create a highlight bookmark.
+    document.addEventListener('mouseup', (e) => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !currentWorkId) return;
+      const reader = sel.anchorNode?.parentElement?.closest?.('.reader-content');
+      if (!reader) return;
+      // Check if highlight button already exists.
+      if (document.getElementById('highlight-float')) return;
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const btn = document.createElement('button');
+      btn.id = 'highlight-float';
+      btn.textContent = '🖍 Highlight';
+      btn.style.cssText = `position:fixed;top:${rect.top - 30}px;left:${rect.left}px;z-index:999;
+        background:var(--accent);color:#fff;border:none;border-radius:4px;
+        padding:4px 10px;font-size:0.75rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.3);`;
+      btn.onclick = async () => {
+        const snippet = sel.toString().substring(0, 200);
+        const note = prompt('Add a note (or leave blank):');
+        if (note === null) { btn.remove(); return; }
+        try {
+          await fetch(`/api/works/${currentWorkId}/bookmarks`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              book_id: currentPlayingId || 0,
+              type: 'highlight',
+              chapter_idx: currentAudioIndex,
+              text_snippet: snippet,
+              note: note || '',
+              color: '#f0e68c',
+            }),
+          });
+        } catch {}
+        btn.remove();
+        sel.removeAllRanges();
+      };
+      document.body.appendChild(btn);
+      // Auto-remove after 5s or next click.
+      setTimeout(() => btn.remove(), 5000);
+    });
+    document.addEventListener('mousedown', () => {
+      const btn = document.getElementById('highlight-float');
+      if (btn) btn.remove();
+    });
+
     // --- Bookmarks panel ---
     async function toggleBookmarks(workId) {
       if (!workId) return;
