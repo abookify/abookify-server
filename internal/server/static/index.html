@@ -202,6 +202,20 @@
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Now playing bar */
+    /* Custom audio player */
+    .player-scrubber { position: relative; flex: 1; height: 24px; cursor: pointer; display: flex; align-items: center; }
+    .player-scrubber .scrub-track { position: absolute; top: 50%; left: 0; right: 0; height: 6px; transform: translateY(-50%); background: var(--border); border-radius: 3px; }
+    .player-scrubber .scrub-fill { position: absolute; top: 50%; left: 0; height: 6px; transform: translateY(-50%); background: var(--accent); border-radius: 3px; pointer-events: none; }
+    .player-scrubber .scrub-thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+    .player-scrubber .chapter-tick { position: absolute; top: 50%; width: 2px; height: 14px; background: var(--text-muted); opacity: 0.5; transform: translate(-50%, -50%); pointer-events: none; border-radius: 1px; }
+    .player-scrubber .chapter-tick:hover { opacity: 1; }
+    .player-time { font-size: 0.7rem; font-variant-numeric: tabular-nums; color: var(--text-muted); white-space: nowrap; min-width: 36px; }
+    .player-vol { display: flex; align-items: center; gap: 4px; }
+    .player-vol input[type=range] { width: 70px; accent-color: var(--accent); cursor: pointer; }
+    .player-vol .vol-icon { font-size: 0.85rem; cursor: pointer; color: var(--text-muted); background: none; border: none; padding: 0; }
+    .player-btn { background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.2rem; padding: 4px; line-height: 1; }
+    .player-btn:hover { color: var(--accent); }
+    .player-controls { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
     .now-playing {
       position: fixed; bottom: 0; left: 0; right: 0;
       background: var(--surface); border-top: 1px solid var(--border);
@@ -354,21 +368,34 @@
   <div class="jobs-bar" id="jobs-bar"></div>
   <div class="works-list" id="works-list"></div>
 
+  <audio id="audio-player" preload="auto" style="display:none;"></audio>
   <div class="now-playing" id="now-playing">
     <div class="np-info">
       <div class="np-title" id="np-title"></div>
       <div class="np-work" id="np-work"></div>
     </div>
-    <div style="display:flex; align-items:center; gap:0.4rem;">
-      <button onclick="skipChapter(-1)" title="Previous chapter" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1rem;">&#9198;</button>
-      <button onclick="skipTime(-30)" title="Back 30s" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.75rem;">-30s</button>
-      <audio id="audio-player" controls style="height:40px;width:100%;"></audio>
-      <button onclick="skipTime(30)" title="Forward 30s" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.75rem;">+30s</button>
-      <button onclick="skipChapter(1)" title="Next chapter" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1rem;">&#9197;</button>
+    <div class="player-controls" style="flex:1;">
+      <button class="player-btn" onclick="skipChapter(-1)" title="Previous chapter">&#9198;</button>
+      <button class="player-btn" onclick="skipTime(-30)" title="Back 30s" style="font-size:0.7rem;">-30</button>
+      <button class="player-btn" id="play-pause-btn" onclick="togglePlayPause()" title="Play/Pause" style="font-size:1.5rem;">&#9654;</button>
+      <button class="player-btn" onclick="skipTime(30)" title="Forward 30s" style="font-size:0.7rem;">+30</button>
+      <button class="player-btn" onclick="skipChapter(1)" title="Next chapter">&#9197;</button>
+      <span class="player-time" id="player-cur">0:00</span>
+      <div class="player-scrubber" id="player-scrubber">
+        <div class="scrub-track"></div>
+        <div class="scrub-fill" id="scrub-fill"></div>
+        <div class="scrub-thumb" id="scrub-thumb"></div>
+        <!-- Chapter ticks inserted dynamically -->
+      </div>
+      <span class="player-time" id="player-dur">0:00</span>
     </div>
-    <div style="display:flex; align-items:center; gap:0.5rem;">
+    <div style="display:flex; align-items:center; gap:6px;">
+      <div class="player-vol">
+        <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute/Unmute">&#128266;</button>
+        <input type="range" id="vol-slider" min="0" max="100" value="100" oninput="setVolume(this.value)" title="Volume">
+      </div>
       <select id="speed-select" onchange="setSpeed(this.value)" title="Playback speed"
-        style="background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.75rem;cursor:pointer;">
+        style="background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
         <option value="0.5">0.5x</option>
         <option value="0.75">0.75x</option>
         <option value="1" selected>1x</option>
@@ -377,10 +404,8 @@
         <option value="2">2x</option>
         <option value="3">3x</option>
       </select>
-      <button onclick="addBookmark()" title="Bookmark this position"
-        style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.2rem 0.5rem;font-size:0.8rem;">&#9733;</button>
-      <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer"
-        style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.2rem 0.5rem;font-size:0.75rem;">Sleep</button>
+      <button onclick="addBookmark()" title="Bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
+      <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
     </div>
   </div>
 
@@ -1156,6 +1181,112 @@
     }
 
     // Player controls
+    // --- Custom player controls ---
+
+    function togglePlayPause() {
+      const p = document.getElementById('audio-player');
+      const btn = document.getElementById('play-pause-btn');
+      if (p.paused) { p.play(); btn.innerHTML = '&#9646;&#9646;'; }
+      else { p.pause(); btn.innerHTML = '&#9654;'; }
+    }
+
+    // Update play/pause icon when state changes externally.
+    document.getElementById('audio-player').addEventListener('play', () => {
+      document.getElementById('play-pause-btn').innerHTML = '&#9646;&#9646;';
+    });
+    document.getElementById('audio-player').addEventListener('pause', () => {
+      document.getElementById('play-pause-btn').innerHTML = '&#9654;';
+    });
+
+    // Scrubber: timeupdate → move fill + thumb.
+    document.getElementById('audio-player').addEventListener('timeupdate', () => {
+      const p = document.getElementById('audio-player');
+      if (!p.duration || isNaN(p.duration)) return;
+      const pct = (p.currentTime / p.duration) * 100;
+      document.getElementById('scrub-fill').style.width = pct + '%';
+      document.getElementById('scrub-thumb').style.left = pct + '%';
+      document.getElementById('player-cur').textContent = fmtPlayerTime(p.currentTime);
+    });
+    document.getElementById('audio-player').addEventListener('loadedmetadata', () => {
+      const p = document.getElementById('audio-player');
+      document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
+      renderChapterTicks();
+    });
+    document.getElementById('audio-player').addEventListener('durationchange', () => {
+      const p = document.getElementById('audio-player');
+      document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
+      renderChapterTicks();
+    });
+
+    // Scrubber: click/drag to seek.
+    (function initScrubber() {
+      const bar = document.getElementById('player-scrubber');
+      let dragging = false;
+      function seekTo(e) {
+        const rect = bar.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const p = document.getElementById('audio-player');
+        if (p.duration) p.currentTime = pct * p.duration;
+      }
+      bar.addEventListener('mousedown', (e) => { dragging = true; seekTo(e); });
+      window.addEventListener('mousemove', (e) => { if (dragging) seekTo(e); });
+      window.addEventListener('mouseup', () => { dragging = false; });
+      // Touch support for mobile testing in desktop browser.
+      bar.addEventListener('touchstart', (e) => { seekTo(e.touches[0]); });
+      bar.addEventListener('touchmove', (e) => { seekTo(e.touches[0]); });
+    })();
+
+    // Volume slider + mute toggle.
+    function setVolume(val) {
+      const p = document.getElementById('audio-player');
+      p.volume = val / 100;
+      updateVolIcon();
+      localStorage.setItem(PREF_KEYS.volume, String(p.volume));
+    }
+    function toggleMute() {
+      const p = document.getElementById('audio-player');
+      p.muted = !p.muted;
+      updateVolIcon();
+    }
+    function updateVolIcon() {
+      const p = document.getElementById('audio-player');
+      const icon = document.getElementById('vol-icon');
+      if (p.muted || p.volume === 0) icon.innerHTML = '&#128263;';
+      else if (p.volume < 0.5) icon.innerHTML = '&#128265;';
+      else icon.innerHTML = '&#128266;';
+    }
+
+    // Render chapter ticks on the scrubber bar when detected chapters exist.
+    function renderChapterTicks() {
+      const bar = document.getElementById('player-scrubber');
+      const p = document.getElementById('audio-player');
+      if (!bar || !p.duration) return;
+      // Remove old ticks.
+      bar.querySelectorAll('.chapter-tick').forEach(el => el.remove());
+      // Get detected chapters from audioChapterCache for the current book.
+      const chapters = currentPlayingId ? audioChapterCache[currentPlayingId] : null;
+      if (!chapters || chapters.length < 2) return;
+      for (const ch of chapters) {
+        if (!ch.start_sec || ch.start_sec <= 0) continue;
+        const pct = (ch.start_sec / p.duration) * 100;
+        if (pct > 99) continue;
+        const tick = document.createElement('div');
+        tick.className = 'chapter-tick';
+        tick.style.left = pct + '%';
+        tick.title = ch.title;
+        bar.appendChild(tick);
+      }
+    }
+
+    function fmtPlayerTime(secs) {
+      if (!secs || isNaN(secs)) return '0:00';
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      return m + ':' + String(s).padStart(2, '0');
+    }
+
     function skipTime(secs) {
       const player = document.getElementById('audio-player');
       if (player.src) player.currentTime = Math.max(0, player.currentTime + secs);
@@ -1192,16 +1323,23 @@
     // Restore saved volume/rate on load and persist future changes.
     (function initPlayerPrefs() {
       const player = document.getElementById('audio-player');
+      const volSlider = document.getElementById('vol-slider');
       const v = parseFloat(localStorage.getItem(PREF_KEYS.volume));
-      if (!isNaN(v)) player.volume = Math.max(0, Math.min(1, v));
+      if (!isNaN(v)) {
+        player.volume = Math.max(0, Math.min(1, v));
+        if (volSlider) volSlider.value = Math.round(player.volume * 100);
+      }
+      updateVolIcon();
       const r = parseFloat(localStorage.getItem(PREF_KEYS.rate));
       if (!isNaN(r) && r > 0) {
         player.playbackRate = r;
-        const sel = document.querySelector('[onchange^="setSpeed"]');
+        const sel = document.getElementById('speed-select');
         if (sel) sel.value = String(r);
       }
       player.addEventListener('volumechange', () => {
         localStorage.setItem(PREF_KEYS.volume, String(player.volume));
+        if (volSlider) volSlider.value = Math.round(player.volume * 100);
+        updateVolIcon();
       });
       player.addEventListener('ratechange', () => {
         localStorage.setItem(PREF_KEYS.rate, String(player.playbackRate));
