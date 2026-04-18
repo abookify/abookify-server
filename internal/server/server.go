@@ -55,6 +55,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
+	mux.HandleFunc("POST /api/works/{id}/embed", s.handleEmbed)
 	mux.HandleFunc("GET /api/works/{id}/divergence", s.handleDivergence)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
@@ -633,6 +634,33 @@ func (s *Server) handleDivergence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
+	if s.RAG == nil || s.RAG.Client() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "LLM not configured — add OpenAI API key in Settings"})
+		return
+	}
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+	totalEmbedded := 0
+	for _, tf := range work.TextFiles {
+		n, err := library.EmbedChunksForBook(s.store, s.RAG.Client(), tf.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		totalEmbedded += n
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chunks_embedded": totalEmbedded})
 }
 
 func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {

@@ -17,6 +17,11 @@ func NewRAG(store *db.Store, client *Client) *RAG {
 	return &RAG{store: store, client: client}
 }
 
+// Client returns the underlying LLM client (used for embeddings).
+func (r *RAG) Client() *Client {
+	return r.client
+}
+
 // Citation references a specific location in the text.
 type Citation struct {
 	ChapterIdx int    `json:"chapter_idx"`

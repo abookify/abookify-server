@@ -912,6 +912,61 @@ func (s *Store) SearchChunks(bookID int64, query string) ([]Chunk, error) {
 	return chunks, rows.Err()
 }
 
+// ListChunks returns all chunks for a book WITH their embedding blobs.
+// Used for batch embedding population and vector search.
+func (s *Store) ListChunks(bookID int64) ([]Chunk, error) {
+	rows, err := s.db.Query(`
+		SELECT id, book_id, chapter_idx, chunk_idx, content, start_word, end_word, embedding
+		FROM chunks WHERE book_id = ? ORDER BY chapter_idx, chunk_idx
+	`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var chunks []Chunk
+	for rows.Next() {
+		var c Chunk
+		if err := rows.Scan(&c.ID, &c.BookID, &c.ChapterIdx, &c.ChunkIdx,
+			&c.Content, &c.StartWord, &c.EndWord, &c.Embedding); err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, c)
+	}
+	return chunks, rows.Err()
+}
+
+// UpdateChunkEmbedding updates just the embedding blob for a chunk.
+func (s *Store) UpdateChunkEmbedding(chunkID int64, embedding []byte) error {
+	_, err := s.db.Exec(`UPDATE chunks SET embedding = ? WHERE id = ?`, embedding, chunkID)
+	return err
+}
+
+// ListAllChunksWithEmbeddings returns all chunks across ALL books that have
+// non-null embeddings. Used for global vector search in Q&A.
+func (s *Store) ListAllChunksWithEmbeddings(workID int64) ([]Chunk, error) {
+	rows, err := s.db.Query(`
+		SELECT c.id, c.book_id, c.chapter_idx, c.chunk_idx, c.content, c.start_word, c.end_word, c.embedding
+		FROM chunks c
+		JOIN books b ON b.id = c.book_id
+		WHERE b.work_id = ? AND c.embedding IS NOT NULL AND length(c.embedding) > 0
+		ORDER BY c.chapter_idx, c.chunk_idx
+	`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var chunks []Chunk
+	for rows.Next() {
+		var c Chunk
+		if err := rows.Scan(&c.ID, &c.BookID, &c.ChapterIdx, &c.ChunkIdx,
+			&c.Content, &c.StartWord, &c.EndWord, &c.Embedding); err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, c)
+	}
+	return chunks, rows.Err()
+}
+
 type Bookmark struct {
 	ID           int64   `json:"id"`
 	WorkID       int64   `json:"work_id"`
