@@ -1082,6 +1082,24 @@ type Bookmark struct {
 	CreatedAt    string  `json:"created_at"`
 }
 
+// UpdateBookmark updates the mutable fields on an existing bookmark
+// (note, color). Immutable fields like position/word range stay.
+func (s *Store) UpdateBookmark(id int64, note, color string) error {
+	if note != "" && color != "" {
+		_, err := s.db.Exec(`UPDATE bookmarks SET note = ?, color = ? WHERE id = ?`, note, color, id)
+		return err
+	}
+	if note != "" {
+		_, err := s.db.Exec(`UPDATE bookmarks SET note = ? WHERE id = ?`, note, id)
+		return err
+	}
+	if color != "" {
+		_, err := s.db.Exec(`UPDATE bookmarks SET color = ? WHERE id = ?`, color, id)
+		return err
+	}
+	return nil
+}
+
 func (s *Store) CreateBookmark(b Bookmark) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO bookmarks (work_id, book_id, type, chapter_idx, position_secs, start_word, end_word, text_snippet, note, color)
