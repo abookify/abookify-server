@@ -542,9 +542,17 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := s.RAG.Ask(work.TextFiles[0].ID, req.Question, work.Title)
+	// New path: vector search + alignment-aware citations with audio times.
+	// Falls back gracefully when embeddings aren't populated.
+	answer, err := library.AskWithCitations(s.store, s.RAG, workID, req.Question)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		// Legacy fallback: keyword-only search on the first text file
+		legacy, err2 := s.RAG.Ask(work.TextFiles[0].ID, req.Question, work.Title)
+		if err2 != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, legacy)
 		return
 	}
 

@@ -22,13 +22,20 @@ func (r *RAG) Client() *Client {
 	return r.client
 }
 
-// Citation references a specific location in the text.
+// Citation references a specific location in the text — and, when
+// forced alignment is available, the corresponding audio time range.
 type Citation struct {
-	ChapterIdx int    `json:"chapter_idx"`
-	ChapterTitle string `json:"chapter_title,omitempty"`
-	StartWord  int    `json:"start_word"`
-	EndWord    int    `json:"end_word"`
-	Excerpt    string `json:"excerpt"`
+	BookID       int64   `json:"book_id"`
+	ChapterIdx   int     `json:"chapter_idx"`
+	ChapterTitle string  `json:"chapter_title,omitempty"`
+	StartWord    int     `json:"start_word"`
+	EndWord      int     `json:"end_word"`
+	// Audio time range in the aligned audio (via alignments table).
+	// Zero if no alignment is available for this chunk's book.
+	AudioStartSec float64 `json:"audio_start_sec,omitempty"`
+	AudioEndSec   float64 `json:"audio_end_sec,omitempty"`
+	AudioBookID   int64   `json:"audio_book_id,omitempty"`
+	Excerpt      string   `json:"excerpt"`
 }
 
 // Answer is the result of a RAG query.
