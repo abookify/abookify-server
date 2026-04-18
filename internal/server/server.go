@@ -56,6 +56,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
 	mux.HandleFunc("POST /api/works/{id}/embed", s.handleEmbed)
+	mux.HandleFunc("POST /api/works/{id}/converse", s.handleConverse)
 	mux.HandleFunc("GET /api/works/{id}/divergence", s.handleDivergence)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
@@ -642,6 +643,67 @@ func (s *Server) handleDivergence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// handleConverse: voice conversation round-trip. Expects multipart/form-data
+// with "audio" field (user's recorded question) and optional "voice" field
+// for the answer TTS. Returns transcribed question, generated answer,
+// citations, and TTS audio (base64-encoded mp3).
+func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "generation engine not available"})
+		return
+	}
+	if s.RAG == nil || s.RAG.Client() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "LLM not configured"})
+		return
+	}
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB cap
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse form: " + err.Error()})
+		return
+	}
+	file, header, err := r.FormFile("audio")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing audio file"})
+		return
+	}
+	defer file.Close()
+	voice := r.FormValue("voice")
+	if voice == "" {
+		voice = "af_heart"
+	}
+	// Detect extension from filename.
+	ext := "webm"
+	if header != nil {
+		if n := header.Filename; n != "" {
+			if dot := strings.LastIndex(n, "."); dot >= 0 {
+				ext = n[dot+1:]
+			}
+		}
+	}
+	audioBytes, err := io.ReadAll(file)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read upload: " + err.Error()})
+		return
+	}
+	tmpPath, err := library.SaveUploadedAudio(audioBytes, ext)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save upload: " + err.Error()})
+		return
+	}
+	defer os.Remove(tmpPath)
+
+	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), s.RAG, workID, tmpPath, voice)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {

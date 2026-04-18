@@ -110,6 +110,7 @@ func (g *Generator) worker() {
 }
 
 func (g *Generator) TTSClient() *tts.Client { return g.ttsClient }
+func (g *Generator) STTClient() *stt.Client { return g.sttClient }
 
 func (g *Generator) GetJobs() []JobStatus {
 	dbJobs, _ := g.store.ListJobs()
