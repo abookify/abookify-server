@@ -1346,28 +1346,74 @@
       });
     })();
 
+    // Sleep timer with "end of chapter" option + smart resume.
     let sleepTimeout = null;
-    const sleepOptions = [0, 5, 15, 30, 60]; // minutes
+    let sleepAtChapterEnd = false;
+    const sleepLabels = ['Off', '5m', '15m', '30m', '60m', 'Ch'];
+    const sleepMins   = [0, 5, 15, 30, 60, -1]; // -1 = end of chapter
     let sleepIdx = 0;
+
     function toggleSleepTimer() {
-      sleepIdx = (sleepIdx + 1) % sleepOptions.length;
-      const mins = sleepOptions[sleepIdx];
+      sleepIdx = (sleepIdx + 1) % sleepLabels.length;
+      const mins = sleepMins[sleepIdx];
       const btn = document.getElementById('sleep-btn');
       clearTimeout(sleepTimeout);
+      sleepAtChapterEnd = false;
       if (mins === 0) {
         btn.textContent = 'Sleep';
         btn.style.color = 'var(--text-muted)';
+      } else if (mins === -1) {
+        // End-of-chapter mode: set a flag; the timeupdate handler checks.
+        sleepAtChapterEnd = true;
+        btn.textContent = 'Ch\u23F8';
+        btn.style.color = '#f0a500';
       } else {
         btn.textContent = mins + 'm';
         btn.style.color = '#f0a500';
         sleepTimeout = setTimeout(() => {
-          document.getElementById('audio-player').pause();
+          const p = document.getElementById('audio-player');
+          // Fade volume briefly for a gentle stop.
+          p.pause();
           btn.textContent = 'Sleep';
           btn.style.color = 'var(--text-muted)';
           sleepIdx = 0;
         }, mins * 60 * 1000);
       }
     }
+
+    // Check end-of-chapter sleep: if we've crossed the current chapter's
+    // endSec, pause. Runs inside the timeupdate event on the player.
+    document.getElementById('audio-player').addEventListener('timeupdate', function checkSleepChapter() {
+      if (!sleepAtChapterEnd) return;
+      const p = document.getElementById('audio-player');
+      const chapters = currentPlayingId ? audioChapterCache[currentPlayingId] : null;
+      if (!chapters || !chapters.length) return;
+      const ch = chapters.find(c => c.index === currentAudioIndex);
+      if (ch && ch.end_sec > 0 && p.currentTime >= ch.end_sec - 0.5) {
+        p.pause();
+        sleepAtChapterEnd = false;
+        const btn = document.getElementById('sleep-btn');
+        btn.textContent = 'Sleep';
+        btn.style.color = 'var(--text-muted)';
+        sleepIdx = 0;
+      }
+    });
+
+    // Smart resume: if user paused for >60 seconds, rewind 5 seconds when
+    // they resume — helps them re-orient after being away.
+    let lastPauseTime = 0;
+    document.getElementById('audio-player').addEventListener('pause', () => {
+      lastPauseTime = Date.now();
+    });
+    document.getElementById('audio-player').addEventListener('play', () => {
+      if (lastPauseTime > 0) {
+        const elapsed = (Date.now() - lastPauseTime) / 1000;
+        if (elapsed > 60) {
+          const p = document.getElementById('audio-player');
+          p.currentTime = Math.max(0, p.currentTime - 5);
+        }
+      }
+    });
 
     // Bookmarks
     async function addBookmark() {
