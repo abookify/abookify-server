@@ -54,6 +54,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
+	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
 	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
@@ -600,6 +601,23 @@ func (s *Server) handleListAlignments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, alignments)
+}
+
+func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	aligned, conf, err := library.ComputeTranscriptEbookAlignment(s.store, workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chapters_aligned":    aligned,
+		"average_confidence":  conf,
+	})
 }
 
 func (s *Server) handleDetectChapters(w http.ResponseWriter, r *http.Request) {
