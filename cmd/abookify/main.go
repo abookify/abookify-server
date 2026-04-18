@@ -53,15 +53,24 @@ func main() {
 		log.Printf("warning: matching failed: %v", err)
 	}
 
-	// Extract chapters from EPUB files
+	// Extract chapters from EPUB files (or re-extract if content_html is missing)
 	allBooks, _ := store.ListBooks()
 	for _, b := range allBooks {
 		if b.Format != "epub" {
 			continue
 		}
 		count, _ := store.ChapterCount(b.ID)
-		if count > 0 {
+		needsExtract := count == 0
+		if !needsExtract {
+			// Check if existing chapters are missing HTML (pre-#102 data).
+			needsExtract = store.HasChaptersMissingHTML(b.ID)
+		}
+		if !needsExtract {
 			continue
+		}
+		// Clear old chapters before re-extracting.
+		if count > 0 {
+			store.DeleteChaptersByBook(b.ID)
 		}
 		chapters, err := library.ExtractEPUBChapters(b.Path, b.ID)
 		if err != nil {
@@ -71,8 +80,8 @@ func main() {
 		for _, ch := range chapters {
 			store.InsertChapter(ch)
 		}
-		log.Printf("extracted %d chapters from %s", len(chapters), b.Filename)
-		// Populate paragraph anchors for alignment/annotation targeting.
+		log.Printf("extracted %d chapters from %s (with HTML)", len(chapters), b.Filename)
+		// Refresh paragraph anchors.
 		if _, err := library.PopulateParagraphsForBook(store, b.ID); err != nil {
 			log.Printf("warning: paragraph population failed for %s: %v", b.Filename, err)
 		}

@@ -91,8 +91,13 @@ type Chapter struct {
 	StartSec   float64 `json:"start_sec,omitempty"`
 	EndSec     float64 `json:"end_sec,omitempty"`
 	Confidence float64 `json:"confidence,omitempty"`
-	// Content is only loaded on demand, not in list responses
+	// Content is plaintext — used for search, alignment, word counting.
+	// Only loaded on demand, not in list responses.
 	Content string `json:"content,omitempty"`
+	// ContentHTML is sanitized HTML from the source EPUB. When present,
+	// the reader renders this instead of Content for visual fidelity
+	// (headings, emphasis, paragraphs). Empty for transcripts.
+	ContentHTML string `json:"content_html,omitempty"`
 }
 
 type Book struct {
@@ -177,16 +182,17 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_books_media_type ON books(media_type);
 
 		CREATE TABLE IF NOT EXISTS chapters (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			book_id    INTEGER NOT NULL,
-			index_num  INTEGER NOT NULL,
-			title      TEXT NOT NULL DEFAULT '',
-			src        TEXT NOT NULL DEFAULT '',
-			content    TEXT NOT NULL DEFAULT '',
-			word_count INTEGER NOT NULL DEFAULT 0,
-			start_sec  REAL NOT NULL DEFAULT 0,
-			end_sec    REAL NOT NULL DEFAULT 0,
-			confidence REAL NOT NULL DEFAULT 0,
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			book_id      INTEGER NOT NULL,
+			index_num    INTEGER NOT NULL,
+			title        TEXT NOT NULL DEFAULT '',
+			src          TEXT NOT NULL DEFAULT '',
+			content      TEXT NOT NULL DEFAULT '',
+			content_html TEXT NOT NULL DEFAULT '',
+			word_count   INTEGER NOT NULL DEFAULT 0,
+			start_sec    REAL NOT NULL DEFAULT 0,
+			end_sec      REAL NOT NULL DEFAULT 0,
+			confidence   REAL NOT NULL DEFAULT 0,
 			FOREIGN KEY (book_id) REFERENCES books(id),
 			UNIQUE(book_id, index_num)
 		);
@@ -331,6 +337,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE chapters ADD COLUMN confidence REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE books ADD COLUMN origin     TEXT NOT NULL DEFAULT 'user_upload'`,
 		`ALTER TABLE books ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'`,
+		`ALTER TABLE chapters ADD COLUMN content_html TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -722,9 +729,9 @@ func (s *Store) UnassignedBooks() ([]Book, error) {
 
 func (s *Store) InsertChapter(ch Chapter) error {
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO chapters (book_id, index_num, title, src, content, word_count, start_sec, end_sec, confidence)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, ch.BookID, ch.Index, ch.Title, ch.Src, ch.Content, ch.WordCount, ch.StartSec, ch.EndSec, ch.Confidence)
+		INSERT OR REPLACE INTO chapters (book_id, index_num, title, src, content, content_html, word_count, start_sec, end_sec, confidence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, ch.BookID, ch.Index, ch.Title, ch.Src, ch.Content, ch.ContentHTML, ch.WordCount, ch.StartSec, ch.EndSec, ch.Confidence)
 	return err
 }
 
@@ -733,6 +740,18 @@ func (s *Store) InsertChapter(ch Chapter) error {
 func (s *Store) DeleteChaptersByBook(bookID int64) error {
 	_, err := s.db.Exec(`DELETE FROM chapters WHERE book_id = ?`, bookID)
 	return err
+}
+
+// HasChaptersMissingHTML returns true if any chapter for this book has
+// empty content_html. Used on boot to detect pre-#102 data that needs
+// re-extraction from the source EPUB.
+func (s *Store) HasChaptersMissingHTML(bookID int64) bool {
+	var count int
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM chapters
+		WHERE book_id = ? AND content_html = '' AND content != ''
+	`, bookID).Scan(&count)
+	return count > 0
 }
 
 func (s *Store) ChapterCount(bookID int64) (int, error) {
@@ -763,13 +782,13 @@ func (s *Store) ListChapters(bookID int64) ([]Chapter, error) {
 	return chapters, rows.Err()
 }
 
-// GetChapterContent returns a single chapter with its content.
+// GetChapterContent returns a single chapter with its content (plain + HTML).
 func (s *Store) GetChapterContent(bookID int64, index int) (*Chapter, error) {
 	var ch Chapter
 	err := s.db.QueryRow(`
-		SELECT id, book_id, index_num, title, src, content, word_count, start_sec, end_sec, confidence
+		SELECT id, book_id, index_num, title, src, content, content_html, word_count, start_sec, end_sec, confidence
 		FROM chapters WHERE book_id = ? AND index_num = ?
-	`, bookID, index).Scan(&ch.ID, &ch.BookID, &ch.Index, &ch.Title, &ch.Src, &ch.Content, &ch.WordCount, &ch.StartSec, &ch.EndSec, &ch.Confidence)
+	`, bookID, index).Scan(&ch.ID, &ch.BookID, &ch.Index, &ch.Title, &ch.Src, &ch.Content, &ch.ContentHTML, &ch.WordCount, &ch.StartSec, &ch.EndSec, &ch.Confidence)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -674,6 +674,21 @@
 
     // Used by playAudio to update the reader pane without triggering a
     // recursive audio seek (we're already playing).
+    // Renders chapter content in the reader pane. Uses sanitized HTML when
+    // available (EPUB sources), falls back to plaintext for transcripts.
+    function renderChapterContent(reader, cached) {
+      if (typeof cached === 'string') {
+        // Legacy cache entry (plain string) — backward compatibility.
+        reader.textContent = cached;
+        return;
+      }
+      if (cached.html) {
+        reader.innerHTML = cached.html;
+      } else {
+        reader.textContent = cached.text || '';
+      }
+    }
+
     function loadTextChapterNoSeek(bookId, index, workId) {
       loadChapter(bookId, index, workId, { skipAudioSeek: true });
     }
@@ -709,7 +724,8 @@
 
       // Check cache
       if (chapterCache[bookId]?.loadedContent[index]) {
-        reader.textContent = chapterCache[bookId].loadedContent[index];
+        const cached = chapterCache[bookId].loadedContent[index];
+        renderChapterContent(reader, cached);
         reader.scrollTop = 0;
         return;
       }
@@ -719,8 +735,10 @@
       try {
         const res = await fetch(`/api/books/${bookId}/chapters/${index}`);
         const ch = await res.json();
-        chapterCache[bookId].loadedContent[index] = ch.content;
-        reader.textContent = ch.content;
+        // Cache both plain + HTML; prefer HTML for rendering.
+        const cached = { text: ch.content, html: ch.content_html || '' };
+        chapterCache[bookId].loadedContent[index] = cached;
+        renderChapterContent(reader, cached);
         reader.scrollTop = 0;
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';

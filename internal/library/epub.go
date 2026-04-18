@@ -130,14 +130,19 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 			continue
 		}
 
-		// Extract text from HTML
-		text := htmlToText(string(content))
+		rawHTML := string(content)
+
+		// Extract text from HTML (for search, alignment, word count)
+		text := htmlToText(rawHTML)
 		text = strings.TrimSpace(text)
 
 		if len(text) < 20 {
 			// Skip near-empty pages (title pages, etc.)
 			continue
 		}
+
+		// Sanitized HTML for rich-text rendering in the reader
+		richHTML := sanitizeHTML(rawHTML)
 
 		// Find title from NCX or extract from content
 		title := ""
@@ -146,7 +151,7 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 			title = t
 		}
 		if title == "" {
-			title = extractFirstHeading(string(content))
+			title = extractFirstHeading(rawHTML)
 		}
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", chapterIdx+1)
@@ -155,12 +160,13 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		wordCount := len(strings.Fields(text))
 
 		chapters = append(chapters, db.Chapter{
-			BookID:    bookID,
-			Index:     chapterIdx,
-			Title:     title,
-			Src:       item.Href,
-			Content:   text,
-			WordCount: wordCount,
+			BookID:      bookID,
+			Index:       chapterIdx,
+			Title:       title,
+			Src:         item.Href,
+			Content:     text,
+			ContentHTML: richHTML,
+			WordCount:   wordCount,
 		})
 		chapterIdx++
 	}
@@ -209,6 +215,71 @@ var scriptRe = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 var styleRe = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 var blockCloseRe = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li|br|tr)>`)
 var brRe = regexp.MustCompile(`(?i)<br\s*/?\s*>`)
+
+// safeTagRe matches opening and closing tags we want to KEEP in sanitized HTML.
+// Everything not matched gets stripped. We keep: h1-h6, p, em, strong, i, b,
+// blockquote, ul, ol, li, br, sup, sub, span (for karaoke word wrapping later).
+var safeTagRe = regexp.MustCompile(`(?i)<(/?)(h[1-6]|p|em|strong|i|b|blockquote|ul|ol|li|br|sup|sub|span)(\s[^>]*)?>`)
+
+// sanitizeHTML strips unsafe tags from EPUB XHTML while keeping structural
+// markup (headings, paragraphs, emphasis, lists). Removes all attributes
+// except on span (where we'll later need data- attrs for karaoke anchoring).
+func sanitizeHTML(raw string) string {
+	// Remove script/style blocks entirely.
+	s := scriptRe.ReplaceAllString(raw, "")
+	s = styleRe.ReplaceAllString(s, "")
+
+	// Extract body content if present.
+	if idx := strings.Index(strings.ToLower(s), "<body"); idx >= 0 {
+		if end := strings.Index(s[idx:], ">"); end >= 0 {
+			s = s[idx+end+1:]
+		}
+	}
+	if idx := strings.Index(strings.ToLower(s), "</body>"); idx >= 0 {
+		s = s[:idx]
+	}
+
+	// Walk through and keep only safe tags, stripping attributes on most.
+	var out strings.Builder
+	out.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != '<' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		// Find end of this tag.
+		end := strings.IndexByte(s[i:], '>')
+		if end < 0 {
+			// Malformed tag, skip the '<'.
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		tag := s[i : i+end+1]
+		if safeTagRe.MatchString(tag) {
+			// Emit the tag but strip attributes (except on self-closing br).
+			m := safeTagRe.FindStringSubmatch(tag)
+			if m != nil {
+				slash := m[1]
+				name := strings.ToLower(m[2])
+				if name == "br" {
+					out.WriteString("<br>")
+				} else {
+					out.WriteString("<" + slash + name + ">")
+				}
+			}
+		}
+		// Unsafe tag: silently dropped (its text content still emits).
+		i += end + 1
+	}
+
+	result := strings.TrimSpace(out.String())
+	// Collapse runs of whitespace (but preserve single newlines for readability).
+	result = whitespaceRe.ReplaceAllString(result, " ")
+	return result
+}
 
 func htmlToText(html string) string {
 	// Remove script and style blocks
