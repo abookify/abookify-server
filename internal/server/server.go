@@ -66,6 +66,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
 	mux.HandleFunc("PUT /api/works/{id}", s.handleUpdateWork)
 	mux.HandleFunc("GET /api/works/duplicates", s.handleListDuplicates)
+	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /api/works/{id}/merge", s.handleMergeWorks)
 	mux.HandleFunc("DELETE /api/works/{id}", s.handleDeleteWork)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
@@ -618,6 +619,24 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if d := r.URL.Query().Get("days"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+			days = n
+		}
+	}
+	daily, _ := s.store.PlaybackStatsByDay(days)
+	total, _ := s.store.PlaybackTotalSeconds()
+	works, _ := s.store.ListWorks()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_listening_seconds": total,
+		"total_listening_hours":   total / 3600,
+		"total_works":             len(works),
+		"daily":                   daily,
+	})
+}
+
 func (s *Server) handleListDuplicates(w http.ResponseWriter, r *http.Request) {
 	groups, err := library.FindDuplicateWorks(s.store)
 	if err != nil {
@@ -943,6 +962,10 @@ func (s *Server) handleSavePosition(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Record a 10-second listening event for analytics. The web/mobile
+	// clients save position every 10 seconds while playing — each save
+	// represents ~10s of actual listening time.
+	s.store.RecordPlayback(workID, "listen", 10)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -327,6 +327,19 @@ func migrate(db *sql.DB) error {
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 
+		CREATE TABLE IF NOT EXISTS playback_events (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_id   INTEGER NOT NULL,
+			event     TEXT NOT NULL,
+			seconds   REAL NOT NULL DEFAULT 0,
+			date      TEXT NOT NULL DEFAULT (date('now')),
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (work_id) REFERENCES works(id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_playback_events_date ON playback_events(date);
+		CREATE INDEX IF NOT EXISTS idx_playback_events_work ON playback_events(work_id);
+
 		CREATE TABLE IF NOT EXISTS settings (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
@@ -402,6 +415,55 @@ func (s *Store) GetPosition(workID int64) (*PlaybackPosition, error) {
 		return nil, err
 	}
 	return &pos, nil
+}
+
+// --- Playback analytics ---
+
+// RecordPlayback logs a listening event (e.g. "played 300 seconds of work 9").
+// Events are bucketed by date for daily/weekly/monthly aggregation.
+func (s *Store) RecordPlayback(workID int64, event string, seconds float64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO playback_events (work_id, event, seconds)
+		VALUES (?, ?, ?)
+	`, workID, event, seconds)
+	return err
+}
+
+// PlaybackStats returns aggregated listening time per day for the last N days.
+type DailyStats struct {
+	Date    string  `json:"date"`
+	Seconds float64 `json:"seconds"`
+	Works   int     `json:"works"` // distinct works listened to
+}
+
+func (s *Store) PlaybackStatsByDay(days int) ([]DailyStats, error) {
+	rows, err := s.db.Query(`
+		SELECT date, SUM(seconds), COUNT(DISTINCT work_id)
+		FROM playback_events
+		WHERE date >= date('now', '-' || ? || ' days')
+		GROUP BY date
+		ORDER BY date
+	`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stats []DailyStats
+	for rows.Next() {
+		var d DailyStats
+		if err := rows.Scan(&d.Date, &d.Seconds, &d.Works); err != nil {
+			return nil, err
+		}
+		stats = append(stats, d)
+	}
+	return stats, rows.Err()
+}
+
+// PlaybackTotalSeconds returns total listening time across all time.
+func (s *Store) PlaybackTotalSeconds() (float64, error) {
+	var total float64
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(seconds), 0) FROM playback_events`).Scan(&total)
+	return total, err
 }
 
 func (s *Store) SetSetting(key, value string) error {
