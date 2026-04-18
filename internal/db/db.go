@@ -21,6 +21,10 @@ type Work struct {
 	Author      string `json:"author"`
 	HasAudio    bool   `json:"has_audio"`
 	HasText     bool   `json:"has_text"`
+	// Series metadata — extracted from EPUB Calibre tags or title patterns.
+	// Empty series string = standalone work.
+	Series      string  `json:"series,omitempty"`
+	SeriesIndex float64 `json:"series_index,omitempty"` // supports fractional (e.g. 2.5 for novellas)
 	AudioFiles   []Book         `json:"audio_files,omitempty"`
 	TextFiles    []Book         `json:"text_files,omitempty"`
 	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
@@ -151,12 +155,15 @@ func (s *Store) Close() error {
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS works (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			title      TEXT NOT NULL DEFAULT '',
-			author     TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			title        TEXT NOT NULL DEFAULT '',
+			author       TEXT NOT NULL DEFAULT '',
+			series       TEXT NOT NULL DEFAULT '',
+			series_index REAL NOT NULL DEFAULT 0,
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+		CREATE INDEX IF NOT EXISTS idx_works_series ON works(series);
 
 		CREATE TABLE IF NOT EXISTS books (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -338,6 +345,8 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE books ADD COLUMN origin     TEXT NOT NULL DEFAULT 'user_upload'`,
 		`ALTER TABLE books ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'`,
 		`ALTER TABLE chapters ADD COLUMN content_html TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE works ADD COLUMN series       TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE works ADD COLUMN series_index REAL NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -510,6 +519,16 @@ func (s *Store) CreateWork(title, author string) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SetSeries updates just the series + series_index for a work.
+// Used by EPUB metadata extraction during scan.
+func (s *Store) SetSeries(id int64, series string, index float64) error {
+	_, err := s.db.Exec(`
+		UPDATE works SET series = ?, series_index = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, series, index, id)
+	return err
+}
+
 // UpdateWork updates the title and author of a work. Empty strings are
 // treated as "no change" (keeps existing value).
 func (s *Store) UpdateWork(id int64, title, author string) error {
@@ -577,7 +596,8 @@ func (s *Store) GetBook(id int64) (*Book, error) {
 
 func (s *Store) ListWorks() ([]Work, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, author, created_at, updated_at FROM works ORDER BY title
+		SELECT id, title, author, series, series_index, created_at, updated_at
+		FROM works ORDER BY series, series_index, title
 	`)
 	if err != nil {
 		return nil, err
@@ -587,7 +607,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -624,8 +644,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

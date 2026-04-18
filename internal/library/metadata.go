@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,10 +17,12 @@ import (
 
 // Metadata holds extracted information from a media file.
 type Metadata struct {
-	Title    string
-	Author   string
-	Album    string
-	Duration float64 // seconds; 0 if unavailable
+	Title       string
+	Author      string
+	Album       string
+	Duration    float64 // seconds; 0 if unavailable
+	Series      string  // e.g. "The Lord of the Rings"
+	SeriesIndex float64 // 0 = no series, 2.5 = novella between books 2 and 3
 }
 
 // probeDuration shells out to ffprobe to get a file's duration in seconds.
@@ -69,10 +72,16 @@ type epubContainer struct {
 }
 
 // epubPackage represents the OPF package document.
+// Calibre writes series info as <meta name="calibre:series" content="..."/>
+// and <meta name="calibre:series_index" content="2.5"/>.
 type epubPackage struct {
 	Metadata struct {
 		Title   []string `xml:"title"`
 		Creator []string `xml:"creator"`
+		Meta    []struct {
+			Name    string `xml:"name,attr"`
+			Content string `xml:"content,attr"`
+		} `xml:"meta"`
 	} `xml:"metadata"`
 }
 
@@ -119,8 +128,61 @@ func ExtractEPUBMetadata(path string) (Metadata, error) {
 	if len(pkg.Metadata.Creator) > 0 {
 		meta.Author = pkg.Metadata.Creator[0]
 	}
+	// Calibre-style series metadata.
+	for _, m := range pkg.Metadata.Meta {
+		switch m.Name {
+		case "calibre:series":
+			meta.Series = strings.TrimSpace(m.Content)
+		case "calibre:series_index":
+			if v, err := strconv.ParseFloat(strings.TrimSpace(m.Content), 64); err == nil {
+				meta.SeriesIndex = v
+			}
+		}
+	}
+	// Fallback: detect "Book N of Series" / "Series #N" patterns in title.
+	if meta.Series == "" && meta.Title != "" {
+		if s, idx, ok := detectSeriesFromTitle(meta.Title); ok {
+			meta.Series = s
+			meta.SeriesIndex = idx
+		}
+	}
 
 	return meta, nil
+}
+
+var seriesFromTitleRe = []*regexp.Regexp{
+	// "Series Name, Book 2" or "Series Name - Book 2"
+	regexp.MustCompile(`(?i)^(.+?)[,\-—]\s*book\s+(\d+(?:\.\d+)?)`),
+	// "Series Name #2"
+	regexp.MustCompile(`^(.+?)\s+#(\d+(?:\.\d+)?)`),
+	// "Book N of Series"
+	regexp.MustCompile(`(?i)^book\s+(\d+(?:\.\d+)?)\s+of\s+(.+)$`),
+}
+
+func detectSeriesFromTitle(title string) (string, float64, bool) {
+	title = strings.TrimSpace(title)
+	for _, re := range seriesFromTitleRe {
+		m := re.FindStringSubmatch(title)
+		if m == nil {
+			continue
+		}
+		// Different regex groups — handle based on which matched.
+		var series string
+		var idx float64
+		if strings.HasPrefix(re.String(), "(?i)^book") {
+			// "Book N of Series" → group 1 = N, group 2 = series
+			idx, _ = strconv.ParseFloat(m[1], 64)
+			series = strings.TrimSpace(m[2])
+		} else {
+			// first two forms: group 1 = series, group 2 = index
+			series = strings.TrimSpace(m[1])
+			idx, _ = strconv.ParseFloat(m[2], 64)
+		}
+		if series != "" && idx > 0 {
+			return series, idx, true
+		}
+	}
+	return "", 0, false
 }
 
 func findOPFPath(r *zip.Reader) (string, error) {
