@@ -55,6 +55,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
+	mux.HandleFunc("GET /api/works/{id}/divergence", s.handleDivergence)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
 	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
@@ -614,6 +615,24 @@ func (s *Server) handleListAlignments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, alignments)
+}
+
+func (s *Server) handleDivergence(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	report, err := library.ComputeDivergence(s.store, workID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if report == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "no alignment available"})
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
