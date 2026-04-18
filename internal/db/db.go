@@ -510,6 +510,24 @@ func (s *Store) CreateWork(title, author string) (int64, error) {
 	return res.LastInsertId()
 }
 
+// UpdateWork updates the title and author of a work. Empty strings are
+// treated as "no change" (keeps existing value).
+func (s *Store) UpdateWork(id int64, title, author string) error {
+	if title != "" && author != "" {
+		_, err := s.db.Exec(`UPDATE works SET title = ?, author = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, title, author, id)
+		return err
+	}
+	if title != "" {
+		_, err := s.db.Exec(`UPDATE works SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, title, id)
+		return err
+	}
+	if author != "" {
+		_, err := s.db.Exec(`UPDATE works SET author = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, author, id)
+		return err
+	}
+	return nil
+}
+
 func (s *Store) AssignBooksToWork(workID int64, bookIDs []int64) error {
 	for _, id := range bookIDs {
 		if _, err := s.db.Exec(`UPDATE books SET work_id = ? WHERE id = ?`, workID, id); err != nil {

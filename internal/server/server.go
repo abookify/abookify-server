@@ -64,6 +64,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
 	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
+	mux.HandleFunc("PUT /api/works/{id}", s.handleUpdateWork)
 	mux.HandleFunc("POST /api/works/{id}/merge", s.handleMergeWorks)
 	mux.HandleFunc("DELETE /api/works/{id}", s.handleDeleteWork)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
@@ -614,6 +615,27 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Title  string `json:"title"`
+		Author string `json:"author"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if err := s.store.UpdateWork(workID, req.Title, req.Author); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (s *Server) handleSearchWork(w http.ResponseWriter, r *http.Request) {
