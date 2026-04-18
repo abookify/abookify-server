@@ -217,6 +217,14 @@
     .player-btn { background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.2rem; padding: 4px; line-height: 1; }
     .player-btn:hover { color: var(--accent); }
     .player-controls { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+    /* Full-screen NowPlaying overlay */
+    .fullscreen-np { display:none; position:fixed; inset:0; z-index:500; background:var(--bg); flex-direction:column; }
+    .fullscreen-np.active { display:flex; }
+    .fullscreen-np .fnp-header { display:flex; align-items:center; padding:16px 24px; gap:16px; border-bottom:1px solid var(--border); }
+    .fullscreen-np .fnp-title { font-size:1.3rem; font-weight:700; color:var(--text); flex:1; }
+    .fullscreen-np .fnp-subtitle { font-size:0.85rem; color:var(--text-muted); }
+    .fullscreen-np .fnp-close { background:none; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer; }
+    .fullscreen-np .fnp-body { flex:1; overflow:auto; padding:24px; font-family:Georgia,serif; font-size:17px; line-height:28px; color:var(--text); }
     /* Divergence visualization: paragraphs without audio coverage */
     .reader-content .para-missing { opacity: 0.35; cursor: default; }
     .reader-content .para-missing::before {
@@ -380,6 +388,18 @@
   <div class="jobs-bar" id="jobs-bar"></div>
   <div class="works-list" id="works-list"></div>
 
+  <div class="fullscreen-np" id="fullscreen-np">
+    <div class="fnp-header">
+      <div>
+        <div class="fnp-title" id="fnp-title"></div>
+        <div class="fnp-subtitle" id="fnp-subtitle"></div>
+      </div>
+      <button class="fnp-close" onclick="closeFullscreenNP()" title="Close">✕</button>
+    </div>
+    <div class="fnp-body" id="fnp-body">
+      <div class="placeholder">Select a chapter to read</div>
+    </div>
+  </div>
   <div class="drop-overlay" id="drop-overlay">
     <div class="drop-box">
       <h2>Drop files to import</h2>
@@ -427,6 +447,7 @@
       <button onclick="addBookmark()" title="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
       <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
       <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
+      <button onclick="openFullscreenNP()" title="Full-screen reading" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">⛶</button>
     </div>
   </div>
 
@@ -1570,6 +1591,29 @@
         });
       } catch {}
     }
+
+    // --- Full-screen NowPlaying overlay ---
+    function openFullscreenNP() {
+      const overlay = document.getElementById('fullscreen-np');
+      overlay.classList.add('active');
+      document.getElementById('fnp-title').textContent =
+        document.getElementById('np-title')?.textContent || '';
+      document.getElementById('fnp-subtitle').textContent =
+        document.getElementById('np-work')?.textContent || '';
+      // Copy reader content into the fullscreen body.
+      const reader = document.getElementById('reader-' + currentWorkId);
+      const body = document.getElementById('fnp-body');
+      if (reader && reader.innerHTML) {
+        body.innerHTML = reader.innerHTML;
+      }
+    }
+    function closeFullscreenNP() {
+      document.getElementById('fullscreen-np').classList.remove('active');
+    }
+    // Escape to close.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeFullscreenNP();
+    });
 
     // --- Chapter boundary override: right-click scrubber to mark ---
     document.getElementById('player-scrubber').addEventListener('contextmenu', async (e) => {
