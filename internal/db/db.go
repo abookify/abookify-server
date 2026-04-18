@@ -360,6 +360,8 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE chapters ADD COLUMN content_html TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN series       TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN series_index REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -386,28 +388,32 @@ type PlaybackPosition struct {
 	BookID       int64   `json:"book_id"`
 	FileIndex    int     `json:"file_index"`
 	PositionSecs float64 `json:"position_secs"`
+	DeviceID     string  `json:"device_id,omitempty"`   // which device saved this
+	DeviceName   string  `json:"device_name,omitempty"` // human-readable, e.g. "PJ's iPhone"
 	UpdatedAt    string  `json:"updated_at"`
 }
 
 func (s *Store) SavePosition(pos PlaybackPosition) error {
 	_, err := s.db.Exec(`
-		INSERT INTO playback_positions (work_id, book_id, file_index, position_secs, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO playback_positions (work_id, book_id, file_index, position_secs, device_id, device_name, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(work_id) DO UPDATE SET
 			book_id = excluded.book_id,
 			file_index = excluded.file_index,
 			position_secs = excluded.position_secs,
+			device_id = CASE WHEN excluded.device_id != '' THEN excluded.device_id ELSE playback_positions.device_id END,
+			device_name = CASE WHEN excluded.device_name != '' THEN excluded.device_name ELSE playback_positions.device_name END,
 			updated_at = CURRENT_TIMESTAMP
-	`, pos.WorkID, pos.BookID, pos.FileIndex, pos.PositionSecs)
+	`, pos.WorkID, pos.BookID, pos.FileIndex, pos.PositionSecs, pos.DeviceID, pos.DeviceName)
 	return err
 }
 
 func (s *Store) GetPosition(workID int64) (*PlaybackPosition, error) {
 	var pos PlaybackPosition
 	err := s.db.QueryRow(`
-		SELECT work_id, book_id, file_index, position_secs, updated_at
+		SELECT work_id, book_id, file_index, position_secs, device_id, device_name, updated_at
 		FROM playback_positions WHERE work_id = ?
-	`, workID).Scan(&pos.WorkID, &pos.BookID, &pos.FileIndex, &pos.PositionSecs, &pos.UpdatedAt)
+	`, workID).Scan(&pos.WorkID, &pos.BookID, &pos.FileIndex, &pos.PositionSecs, &pos.DeviceID, &pos.DeviceName, &pos.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
