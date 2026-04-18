@@ -620,14 +620,28 @@
         </div></div>`;
       }
 
-      const book = files[0];
+      // Pick the display-text source (highest authority) or first available.
+      let book = files[0];
+      if (work.display_text_id) {
+        const preferred = files.find(f => f.id === work.display_text_id);
+        if (preferred) book = preferred;
+      }
       const readerId = 'reader-' + work.id;
       const chListId = 'text-chapters-' + book.id;
+
+      // Edition picker: shown when multiple text files exist.
+      const editionPicker = files.length > 1 ? `
+        <select onchange="switchTextEdition(${work.id}, this.value)"
+          style="margin-left:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
+          ${files.map(f => `<option value="${f.id}" ${f.id === book.id ? 'selected' : ''}>
+            ${escapeHtml(f.edition || f.format.toUpperCase())} (${escapeHtml(f.origin || 'unknown')})
+          </option>`).join('')}
+        </select>` : '';
 
       if (book.chapter_count > 0) {
         return `
           <div class="split-pane">
-            <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters</div>
+            <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters${editionPicker}</div>
             <div class="chapter-list" id="${chListId}" style="max-height:250px">
               <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">
                 Loading chapters...
@@ -675,6 +689,19 @@
         if (work && work.has_audio) {
           resumeIfSaved(workId);
         }
+      }
+    }
+
+    // Switch to a different text edition when the user picks from the dropdown.
+    async function switchTextEdition(workId, bookId) {
+      bookId = parseInt(bookId);
+      // Reload the chapter list for the new book.
+      delete chapterCache[bookId]; // force reload
+      await loadChapterList(bookId, workId);
+      // Load the first chapter.
+      const chapters = chapterCache[bookId]?.chapters;
+      if (chapters && chapters.length > 0) {
+        loadChapter(bookId, chapters[0].index, workId);
       }
     }
 
