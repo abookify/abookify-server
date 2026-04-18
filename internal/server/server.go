@@ -51,6 +51,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
+	mux.HandleFunc("GET /api/works/{id}/search", s.handleSearchWork)
 	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
@@ -613,6 +614,25 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleSearchWork(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing q parameter"})
+		return
+	}
+	hits, err := library.SearchWork(s.store, workID, query, 20)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, hits)
 }
 
 func (s *Server) handleListAlignments(w http.ResponseWriter, r *http.Request) {
