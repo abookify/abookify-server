@@ -49,6 +49,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works", s.handleListWorks)
 	mux.HandleFunc("GET /api/works/{id}", s.handleGetWork)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
+	mux.HandleFunc("POST /api/works/{id}/fetch-cover", s.handleFetchCover)
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
@@ -516,6 +517,26 @@ func (s *Server) handleWorkCover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, coverPath)
+}
+
+func (s *Server) handleFetchCover(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+	coversDir := s.LibraryDir + "/covers"
+	path := library.FetchCoverFromOpenLibrary(work.Title, work.Author, coversDir, workID)
+	if path == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no cover found on OpenLibrary"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "path": path})
 }
 
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
