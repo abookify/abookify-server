@@ -216,6 +216,12 @@
     .player-btn { background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.2rem; padding: 4px; line-height: 1; }
     .player-btn:hover { color: var(--accent); }
     .player-controls { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+    /* Drag-and-drop upload overlay */
+    .drop-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; }
+    .drop-overlay.active { display: flex; }
+    .drop-overlay .drop-box { background: var(--surface); border: 3px dashed var(--accent); border-radius: 16px; padding: 48px 64px; text-align: center; color: var(--text); }
+    .drop-overlay .drop-box h2 { margin: 0 0 8px; font-size: 1.5rem; }
+    .drop-overlay .drop-box p { color: var(--text-muted); margin: 0; font-size: 0.9rem; }
     .now-playing {
       position: fixed; bottom: 0; left: 0; right: 0;
       background: var(--surface); border-top: 1px solid var(--border);
@@ -368,6 +374,12 @@
   <div class="jobs-bar" id="jobs-bar"></div>
   <div class="works-list" id="works-list"></div>
 
+  <div class="drop-overlay" id="drop-overlay">
+    <div class="drop-box">
+      <h2>Drop files to import</h2>
+      <p>MP3, M4B, EPUB, TXT — drop your audiobooks and ebooks here</p>
+    </div>
+  </div>
   <audio id="audio-player" preload="auto" style="display:none;"></audio>
   <div class="now-playing" id="now-playing">
     <div class="np-info">
@@ -1810,6 +1822,53 @@
     }
 
     connectWS();
+    // --- Drag-and-drop upload ---
+    (function initDropUpload() {
+      const overlay = document.getElementById('drop-overlay');
+      let dragCounter = 0; // track nested enter/leave from child elements
+
+      document.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        if (e.dataTransfer && e.dataTransfer.types.includes('Files')) {
+          overlay.classList.add('active');
+        }
+      });
+      document.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) { overlay.classList.remove('active'); dragCounter = 0; }
+      });
+      document.addEventListener('dragover', (e) => e.preventDefault());
+      document.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        overlay.classList.remove('active');
+        dragCounter = 0;
+        const files = e.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+
+        const box = overlay.querySelector('.drop-box');
+        box.innerHTML = `<h2>Uploading ${files.length} file${files.length > 1 ? 's' : ''}...</h2><p>Please wait</p>`;
+        overlay.classList.add('active');
+
+        const form = new FormData();
+        for (const f of files) form.append('files', f);
+        try {
+          const res = await fetch('/api/upload', { method: 'POST', body: form });
+          const data = await res.json();
+          box.innerHTML = `<h2>Uploaded ${data.uploaded || 0} file${data.uploaded !== 1 ? 's' : ''}</h2><p>Library rescanning...</p>`;
+          // Wait a moment for the rescan goroutine, then refresh.
+          setTimeout(() => { overlay.classList.remove('active'); loadWorks(); }, 2000);
+        } catch (err) {
+          box.innerHTML = `<h2>Upload failed</h2><p>${err.message}</p>`;
+          setTimeout(() => overlay.classList.remove('active'), 3000);
+        }
+        // Reset box content for next drop.
+        setTimeout(() => {
+          box.innerHTML = `<h2>Drop files to import</h2><p>MP3, M4B, EPUB, TXT — drop your audiobooks and ebooks here</p>`;
+        }, 5000);
+      });
+    })();
   </script>
 </body>
 </html>

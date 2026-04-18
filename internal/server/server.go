@@ -16,6 +16,7 @@ import (
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
+	"github.com/pj/abookify/internal/scanner"
 )
 
 //go:embed static
@@ -57,6 +58,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
 	mux.HandleFunc("POST /api/works/{id}/embed", s.handleEmbed)
 	mux.HandleFunc("POST /api/works/{id}/converse", s.handleConverse)
+	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("GET /api/works/{id}/divergence", s.handleDivergence)
 	mux.HandleFunc("POST /api/works/{id}/regenerate-chapter", s.handleRegenerateChapter)
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
@@ -649,6 +651,62 @@ func (s *Server) handleDivergence(w http.ResponseWriter, r *http.Request) {
 // with "audio" field (user's recorded question) and optional "voice" field
 // for the answer TTS. Returns transcribed question, generated answer,
 // citations, and TTS audio (base64-encoded mp3).
+// handleUpload accepts multipart file uploads and saves them to the library
+// directory under an "imports/" subfolder. After saving, triggers a library
+// rescan. Used by the drag-and-drop import in the web UI.
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if s.LibraryDir == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
+		return
+	}
+	if err := r.ParseMultipartForm(512 << 20); err != nil { // 512MB cap
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse form: " + err.Error()})
+		return
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no files provided"})
+		return
+	}
+	importDir := s.LibraryDir + "/imports"
+	if err := os.MkdirAll(importDir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create imports dir: " + err.Error()})
+		return
+	}
+	var saved []string
+	for _, fh := range files {
+		src, err := fh.Open()
+		if err != nil {
+			continue
+		}
+		destPath := importDir + "/" + fh.Filename
+		dst, err := os.Create(destPath)
+		if err != nil {
+			src.Close()
+			continue
+		}
+		io.Copy(dst, src)
+		dst.Close()
+		src.Close()
+		saved = append(saved, fh.Filename)
+		log.Printf("upload: saved %s (%d bytes)", fh.Filename, fh.Size)
+	}
+	// Trigger a library rescan in the background.
+	go func() {
+		results, err := scanner.Scan(s.LibraryDir)
+		if err != nil {
+			log.Printf("upload: rescan failed: %v", err)
+			return
+		}
+		for _, r := range results {
+			s.store.UpsertBook(r)
+		}
+		library.MatchAndCreateWorks(s.store)
+		log.Printf("upload: rescan complete, %d files found", len(results))
+	}()
+	writeJSON(w, http.StatusOK, map[string]any{"uploaded": len(saved), "files": saved})
+}
+
 func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 	if s.Generator == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "generation engine not available"})
