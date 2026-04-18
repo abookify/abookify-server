@@ -217,6 +217,11 @@
     .player-btn { background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.2rem; padding: 4px; line-height: 1; }
     .player-btn:hover { color: var(--accent); }
     .player-controls { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+    /* Divergence visualization: paragraphs without audio coverage */
+    .reader-content .para-missing { opacity: 0.35; cursor: default; }
+    .reader-content .para-missing::before {
+      content: '⊘ '; color: var(--text-muted); font-size: 0.7rem;
+    }
     /* Drag-and-drop upload overlay */
     .drop-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; }
     .drop-overlay.active { display: flex; }
@@ -807,6 +812,8 @@
         chapterCache[bookId].loadedContent[index] = cached;
         renderChapterContent(reader, cached);
         reader.scrollTop = 0;
+        // Apply divergence dimming (if alignment data is available).
+        applyDivergence(workId, index);
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';
       }
@@ -1304,6 +1311,38 @@
     }
 
     // Render chapter ticks on the scrubber bar when detected chapters exist.
+    // Divergence visualization: after loading a chapter, fetch the work's
+    // divergence report and dim any paragraphs without audio coverage.
+    const divergenceCache = {};
+    async function applyDivergence(workId, chapterIdx) {
+      const readerId = 'reader-' + workId;
+      const reader = document.getElementById(readerId);
+      if (!reader) return;
+      // Fetch divergence (cached per work).
+      if (!divergenceCache[workId]) {
+        try {
+          const res = await fetch(`/api/works/${workId}/divergence`);
+          const data = await res.json();
+          if (data.paragraphs) divergenceCache[workId] = data;
+        } catch { return; }
+      }
+      const report = divergenceCache[workId];
+      if (!report || !report.paragraphs) return;
+      // Find missing paragraphs for this chapter.
+      const missing = new Set();
+      for (const p of report.paragraphs) {
+        if (p.chapter_idx === chapterIdx && p.status === 'missing') {
+          missing.add(p.paragraph_idx);
+        }
+      }
+      if (missing.size === 0) return;
+      // Apply to <p> elements in the reader (for HTML-rendered chapters).
+      const paragraphs = reader.querySelectorAll('p');
+      paragraphs.forEach((el, i) => {
+        if (missing.has(i)) el.classList.add('para-missing');
+      });
+    }
+
     // Waveform rendering: fetch peaks once per book, draw as vertical
     // bars on the scrubber canvas. Runs after loadedmetadata.
     const waveformCache = {};
