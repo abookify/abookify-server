@@ -694,6 +694,12 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 		}
 	}
 
+	// Incremental re-alignment: only this chapter gets re-aligned, not the
+	// whole book. Runs silently — failure doesn't affect the regeneration.
+	if err := RealignChapter(g.store, workID, ch.Index); err != nil {
+		log.Printf("realign-chapter: %v", err)
+	}
+
 	job.Progress = 1.0
 	job.Status = "completed"
 	job.CurrentStep = fmt.Sprintf("Regenerated: %s", ch.Title)

@@ -291,6 +291,110 @@ func ComputeTranscriptEbookAlignment(store *db.Store, workID int64) (int, float6
 	return aligned, avgConf, nil
 }
 
+// RealignChapter re-runs forced alignment for a single chapter within a work.
+// Updates the existing alignment's pairs blob, replacing only the pairs whose
+// FromChapter == chapterIdx. Much faster than full-book re-alignment for
+// single-chapter TTS regeneration.
+func RealignChapter(store *db.Store, workID int64, chapterIdx int) error {
+	work, err := store.GetWork(workID)
+	if err != nil || work == nil {
+		return err
+	}
+
+	var transcriptBook, ebookBook *db.Book
+	for i := range work.TextFiles {
+		o := work.TextFiles[i].Origin
+		if o == "whisper_transcript" && transcriptBook == nil {
+			transcriptBook = &work.TextFiles[i]
+		}
+		if (o == "publisher_epub" || o == "publisher_mobi" || o == "publisher_pdf") &&
+			(ebookBook == nil || db.OriginAuthority(o) > db.OriginAuthority(ebookBook.Origin)) {
+			ebookBook = &work.TextFiles[i]
+		}
+	}
+	if transcriptBook == nil || ebookBook == nil {
+		return nil
+	}
+
+	// Load chapters for this index.
+	tCh, err := store.GetChapterContent(transcriptBook.ID, chapterIdx)
+	if err != nil || tCh == nil || tCh.Content == "" {
+		return nil
+	}
+	eCh, err := store.GetChapterContent(ebookBook.ID, chapterIdx)
+	if err != nil || eCh == nil || eCh.Content == "" {
+		return nil
+	}
+
+	tWords := strings.Fields(tCh.Content)
+	eWords := strings.Fields(eCh.Content)
+	tNorm := make([]string, len(tWords))
+	eNorm := make([]string, len(eWords))
+	for i, w := range tWords {
+		tNorm[i] = normalizeWord(w)
+	}
+	for i, w := range eWords {
+		eNorm[i] = normalizeWord(w)
+	}
+	matches := alignWordsDP(eNorm, tNorm)
+	if matches == nil {
+		return nil
+	}
+	conf := alignmentConfidence(matches, eNorm, tNorm)
+
+	// Build new pairs for this chapter.
+	var newPairs []db.AlignmentPair
+	paragraphs, _ := store.ListParagraphs(ebookBook.ID, chapterIdx)
+	if len(paragraphs) == 0 {
+		tStart, tEnd := transcriptRangeForEbookRange(matches, 0, len(eWords))
+		if tStart >= 0 {
+			newPairs = append(newPairs, db.AlignmentPair{
+				FromChapter: chapterIdx, FromStart: 0, FromEnd: len(eWords),
+				ToChapter: chapterIdx, ToStart: tStart, ToEnd: tEnd, Confidence: conf,
+			})
+		}
+	} else {
+		for _, p := range paragraphs {
+			tStart, tEnd := transcriptRangeForEbookRange(matches, p.WordStart, p.WordEnd)
+			if tStart < 0 {
+				continue
+			}
+			newPairs = append(newPairs, db.AlignmentPair{
+				FromChapter: chapterIdx, FromStart: p.WordStart, FromEnd: p.WordEnd,
+				ToChapter: chapterIdx, ToStart: tStart, ToEnd: tEnd, Confidence: conf,
+			})
+		}
+	}
+
+	// Load existing alignment and patch: keep all pairs except this chapter.
+	existing, err := store.GetAlignment(ebookBook.ID, transcriptBook.ID, "word")
+	if err != nil {
+		return err
+	}
+	var existingPairs []db.AlignmentPair
+	if existing != nil && existing.Pairs != "" {
+		json.Unmarshal([]byte(existing.Pairs), &existingPairs)
+	}
+	// Filter out old pairs for this chapter, append new ones.
+	var merged []db.AlignmentPair
+	for _, p := range existingPairs {
+		if p.FromChapter != chapterIdx {
+			merged = append(merged, p)
+		}
+	}
+	merged = append(merged, newPairs...)
+
+	pairsJSON, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return store.SaveAlignment(db.Alignment{
+		WorkID: workID, FromBookID: ebookBook.ID, ToBookID: transcriptBook.ID,
+		Unit: "word", Confidence: conf, Method: "edit-distance",
+		Pairs: string(pairsJSON),
+	})
+}
+
 // transcriptRangeForEbookRange finds the min/max transcript indices that are
 // matched to ebook words in the range [ebookStart, ebookEnd).
 func transcriptRangeForEbookRange(matches []wordMatch, ebookStart, ebookEnd int) (int, int) {
