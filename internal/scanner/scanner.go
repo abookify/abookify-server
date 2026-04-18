@@ -13,6 +13,9 @@ import (
 // Supported file extensions mapped to format names.
 var supportedFormats = map[string]string{
 	".epub": "epub",
+	".mobi": "mobi",
+	".azw3": "mobi",
+	".azw":  "mobi",
 	".pdf":  "pdf",
 	".txt":  "txt",
 	".text": "txt",
@@ -96,6 +99,8 @@ func originForFormat(format string) string {
 	switch format {
 	case "epub":
 		return "publisher_epub"
+	case "mobi":
+		return "publisher_mobi"
 	case "pdf":
 		return "publisher_pdf"
 	case "txt":
