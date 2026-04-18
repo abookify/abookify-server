@@ -14,6 +14,8 @@ import (
 var supportedFormats = map[string]string{
 	".epub": "epub",
 	".pdf":  "pdf",
+	".txt":  "txt",
+	".text": "txt",
 	".mp3":  "mp3",
 	".m4b":  "m4b",
 	".m4a":  "m4a",
@@ -96,6 +98,8 @@ func originForFormat(format string) string {
 		return "publisher_epub"
 	case "pdf":
 		return "publisher_pdf"
+	case "txt":
+		return "user_upload"
 	case "mp3", "m4b", "m4a", "flac", "aac":
 		return "narrator_recording"
 	default:

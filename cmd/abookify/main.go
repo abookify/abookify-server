@@ -81,7 +81,29 @@ func main() {
 			store.InsertChapter(ch)
 		}
 		log.Printf("extracted %d chapters from %s (with HTML)", len(chapters), b.Filename)
-		// Refresh paragraph anchors.
+		if _, err := library.PopulateParagraphsForBook(store, b.ID); err != nil {
+			log.Printf("warning: paragraph population failed for %s: %v", b.Filename, err)
+		}
+	}
+
+	// Extract chapters from plain-text files (.txt)
+	for _, b := range allBooks {
+		if b.Format != "txt" {
+			continue
+		}
+		count, _ := store.ChapterCount(b.ID)
+		if count > 0 {
+			continue
+		}
+		chapters, err := library.ExtractTXTChapters(b.Path, b.ID)
+		if err != nil {
+			log.Printf("warning: txt chapter extraction failed for %s: %v", b.Filename, err)
+			continue
+		}
+		for _, ch := range chapters {
+			store.InsertChapter(ch)
+		}
+		log.Printf("extracted %d chapters from %s (txt)", len(chapters), b.Filename)
 		if _, err := library.PopulateParagraphsForBook(store, b.ID); err != nil {
 			log.Printf("warning: paragraph population failed for %s: %v", b.Filename, err)
 		}
