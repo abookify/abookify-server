@@ -40,6 +40,16 @@ type Chunk struct {
 	Embedding  []byte  `json:"-"` // binary blob, not in JSON
 }
 
+type Paragraph struct {
+	ID           int64  `json:"id"`
+	BookID       int64  `json:"book_id"`
+	ChapterIdx   int    `json:"chapter_idx"`
+	ParagraphIdx int    `json:"paragraph_idx"`
+	WordStart    int    `json:"word_start"`
+	WordEnd      int    `json:"word_end"`
+	Text         string `json:"text,omitempty"`
+}
+
 type Chapter struct {
 	ID        int64  `json:"id"`
 	BookID    int64  `json:"book_id"`
@@ -152,6 +162,20 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_chapters_book_id ON chapters(book_id);
+
+		CREATE TABLE IF NOT EXISTS paragraphs (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			book_id        INTEGER NOT NULL,
+			chapter_idx    INTEGER NOT NULL,
+			paragraph_idx  INTEGER NOT NULL,
+			word_start     INTEGER NOT NULL DEFAULT 0,
+			word_end       INTEGER NOT NULL DEFAULT 0,
+			text           TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (book_id) REFERENCES books(id),
+			UNIQUE(book_id, chapter_idx, paragraph_idx)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_paragraphs_book_chapter ON paragraphs(book_id, chapter_idx);
 
 		CREATE TABLE IF NOT EXISTS chunks (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -699,6 +723,81 @@ func (s *Store) GetChapterContent(bookID int64, index int) (*Chapter, error) {
 		return nil, err
 	}
 	return &ch, nil
+}
+
+// InsertParagraph writes a paragraph row. Idempotent via
+// (book_id, chapter_idx, paragraph_idx) unique constraint.
+func (s *Store) InsertParagraph(p Paragraph) error {
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO paragraphs (book_id, chapter_idx, paragraph_idx, word_start, word_end, text)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, p.BookID, p.ChapterIdx, p.ParagraphIdx, p.WordStart, p.WordEnd, p.Text)
+	return err
+}
+
+// DeleteParagraphsByBook removes all paragraph rows for a book. Used before
+// re-populating (e.g. after transcript re-split or chapter re-extraction).
+func (s *Store) DeleteParagraphsByBook(bookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM paragraphs WHERE book_id = ?`, bookID)
+	return err
+}
+
+// ReplaceParagraphsForBook atomically replaces every paragraph for a book.
+// Used for fast bulk population; one transaction regardless of size.
+func (s *Store) ReplaceParagraphsForBook(bookID int64, paragraphs []Paragraph) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM paragraphs WHERE book_id = ?`, bookID); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO paragraphs (book_id, chapter_idx, paragraph_idx, word_start, word_end, text)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, p := range paragraphs {
+		if _, err := stmt.Exec(p.BookID, p.ChapterIdx, p.ParagraphIdx, p.WordStart, p.WordEnd, p.Text); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ListParagraphs returns all paragraphs for a chapter in order.
+func (s *Store) ListParagraphs(bookID int64, chapterIdx int) ([]Paragraph, error) {
+	rows, err := s.db.Query(`
+		SELECT id, book_id, chapter_idx, paragraph_idx, word_start, word_end, text
+		FROM paragraphs
+		WHERE book_id = ? AND chapter_idx = ?
+		ORDER BY paragraph_idx
+	`, bookID, chapterIdx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Paragraph
+	for rows.Next() {
+		var p Paragraph
+		if err := rows.Scan(&p.ID, &p.BookID, &p.ChapterIdx, &p.ParagraphIdx,
+			&p.WordStart, &p.WordEnd, &p.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ParagraphCount returns the total paragraphs stored for a book (across all chapters).
+func (s *Store) ParagraphCount(bookID int64) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM paragraphs WHERE book_id = ?`, bookID).Scan(&count)
+	return count, err
 }
 
 func (s *Store) InsertChunk(c Chunk) error {

@@ -72,7 +72,31 @@ func main() {
 			store.InsertChapter(ch)
 		}
 		log.Printf("extracted %d chapters from %s", len(chapters), b.Filename)
+		// Populate paragraph anchors for alignment/annotation targeting.
+		if _, err := library.PopulateParagraphsForBook(store, b.ID); err != nil {
+			log.Printf("warning: paragraph population failed for %s: %v", b.Filename, err)
+		}
 	}
+
+	// Backfill paragraphs for any text book missing them in the background
+	// so HTTP startup isn't blocked on large libraries. Idempotent — next
+	// boot will skip books that were already populated.
+	go func() {
+		for _, b := range allBooks {
+			if b.MediaType != "text" {
+				continue
+			}
+			pcount, _ := store.ParagraphCount(b.ID)
+			if pcount > 0 {
+				continue
+			}
+			chcount, _ := store.ChapterCount(b.ID)
+			if chcount == 0 {
+				continue
+			}
+			library.PopulateParagraphsForBook(store, b.ID)
+		}
+	}()
 
 	// Populate embedded chapter markers for audio files that have them
 	// (M4B, some MP3s with ID3 CHAP frames). Runs before linking so the

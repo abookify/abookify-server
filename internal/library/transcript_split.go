@@ -75,6 +75,11 @@ func SplitTranscriptByChapters(
 		written++
 	}
 	log.Printf("transcript-split: wrote %d chapters on book %d", written, transcriptBookID)
+	// Refresh paragraph anchors for the transcript now that chapter content
+	// has changed. Alignment and annotation layers use these as targets.
+	if _, err := PopulateParagraphsForBook(store, transcriptBookID); err != nil {
+		log.Printf("transcript-split: paragraph repopulate failed: %v", err)
+	}
 	return written, nil
 }
 
