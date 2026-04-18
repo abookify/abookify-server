@@ -336,7 +336,7 @@
   </header>
 
   <div class="toolbar">
-    <input type="search" id="search" placeholder="Search library...">
+    <input type="search" id="search" placeholder="Search library... (Ctrl+K)">
     <button class="filter-btn active" data-filter="all">All</button>
     <button class="filter-btn" data-filter="paired">Paired</button>
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
@@ -1453,6 +1453,25 @@
     });
 
     document.getElementById('search').addEventListener('input', render);
+
+    // Ctrl+K (or Cmd+K on Mac) to focus search; Escape to clear + blur.
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        const searchEl = document.getElementById('search');
+        searchEl.focus();
+        searchEl.select();
+      }
+      if (e.key === 'Escape') {
+        const searchEl = document.getElementById('search');
+        if (document.activeElement === searchEl) {
+          searchEl.value = '';
+          searchEl.blur();
+          render();
+        }
+      }
+    });
+
     loadWorks();
     // Clear any terminal-state notifications from previous sessions so a fresh
     // page load feels fresh. Running/queued jobs are preserved server-side.
