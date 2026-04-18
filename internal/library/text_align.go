@@ -92,9 +92,8 @@ func tokenize(text string) []token {
 			hadSpace = true
 		} else {
 			current.WriteRune(r)
-			if current.Len() == 1 {
-				hadSpace = hadSpace // preserve
-			}
+			// hadSpace is preserved — no action needed here (it was
+			// last set when we emitted the previous token's trailing space).
 		}
 	}
 	if current.Len() > 0 {

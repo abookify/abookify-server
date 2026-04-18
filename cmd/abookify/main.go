@@ -189,6 +189,7 @@ func main() {
 	// Set up HTTP server
 	srv := server.New(store, *port)
 	srv.LibraryDir = *libraryPath
+	srv.GeneratedDir = *generatedPath
 
 	// Set up TTS/STT clients and generator
 	var ttsClient *tts.Client

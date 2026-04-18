@@ -208,6 +208,7 @@
     .player-scrubber .scrub-fill { position: absolute; top: 50%; left: 0; height: 6px; transform: translateY(-50%); background: var(--accent); border-radius: 3px; pointer-events: none; }
     .player-scrubber .scrub-thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
     .player-scrubber .chapter-tick { position: absolute; top: 50%; width: 2px; height: 14px; background: var(--text-muted); opacity: 0.5; transform: translate(-50%, -50%); pointer-events: none; border-radius: 1px; }
+    .player-scrubber canvas.waveform { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
     .player-scrubber .chapter-tick:hover { opacity: 1; }
     .player-time { font-size: 0.7rem; font-variant-numeric: tabular-nums; color: var(--text-muted); white-space: nowrap; min-width: 36px; }
     .player-vol { display: flex; align-items: center; gap: 4px; }
@@ -396,7 +397,8 @@
       <span class="player-time" id="player-cur">0:00</span>
       <div class="player-scrubber" id="player-scrubber">
         <div class="scrub-track"></div>
-        <div class="scrub-fill" id="scrub-fill"></div>
+        <canvas class="waveform" id="scrub-waveform" width="1000" height="24"></canvas>
+        <div class="scrub-fill" id="scrub-fill" style="mix-blend-mode: color-dodge;"></div>
         <div class="scrub-thumb" id="scrub-thumb"></div>
         <!-- Chapter ticks inserted dynamically -->
       </div>
@@ -1224,11 +1226,16 @@
       const p = document.getElementById('audio-player');
       document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
       renderChapterTicks();
+      if (currentPlayingId) renderWaveform(currentPlayingId);
     });
     document.getElementById('audio-player').addEventListener('durationchange', () => {
       const p = document.getElementById('audio-player');
       document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
       renderChapterTicks();
+    });
+    // Re-render waveform when window resizes (canvas width changes).
+    window.addEventListener('resize', () => {
+      if (currentPlayingId) renderWaveform(currentPlayingId);
     });
 
     // Scrubber: click/drag to seek.
@@ -1270,6 +1277,41 @@
     }
 
     // Render chapter ticks on the scrubber bar when detected chapters exist.
+    // Waveform rendering: fetch peaks once per book, draw as vertical
+    // bars on the scrubber canvas. Runs after loadedmetadata.
+    const waveformCache = {};
+    async function renderWaveform(bookId) {
+      const canvas = document.getElementById('scrub-waveform');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let peaks = waveformCache[bookId];
+      if (!peaks) {
+        try {
+          const res = await fetch(`/api/books/${bookId}/waveform`);
+          const data = await res.json();
+          peaks = data.peaks;
+          waveformCache[bookId] = peaks;
+        } catch { return; }
+      }
+      if (!peaks || !peaks.length) return;
+      // Resize canvas to its displayed width for crisp drawing.
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width);
+      canvas.height = Math.floor(rect.height);
+      const w = canvas.width, h = canvas.height;
+      const bars = Math.min(peaks.length, Math.floor(w / 2));
+      const step = peaks.length / bars;
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-muted') || '#888';
+      for (let i = 0; i < bars; i++) {
+        const idx = Math.floor(i * step);
+        const peak = peaks[idx];
+        const barH = Math.max(1, peak * h * 0.85);
+        const x = Math.floor(i * w / bars);
+        ctx.fillRect(x, (h - barH) / 2, 1, barH);
+      }
+    }
+
     function renderChapterTicks() {
       const bar = document.getElementById('player-scrubber');
       const p = document.getElementById('audio-player');

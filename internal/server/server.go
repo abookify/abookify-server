@@ -28,7 +28,8 @@ type Server struct {
 	Events     *EventBus
 	Generator  *library.Generator
 	RAG        *llm.RAG
-	LibraryDir string
+	LibraryDir   string
+	GeneratedDir string
 }
 
 func New(store *db.Store, port string) *Server {
@@ -52,6 +53,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
 	mux.HandleFunc("GET /api/works/{id}/search", s.handleSearchWork)
+	mux.HandleFunc("GET /api/books/{id}/waveform", s.handleWaveform)
 	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
@@ -665,6 +667,29 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleWaveform(w http.ResponseWriter, r *http.Request) {
+	bookID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	book, err := s.store.GetBook(bookID)
+	if err != nil || book == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "book not found"})
+		return
+	}
+	genDir := s.GeneratedDir
+	if genDir == "" {
+		genDir = "/generated"
+	}
+	wf, err := library.GenerateWaveform(*book, genDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, wf)
 }
 
 func (s *Server) handleSearchWork(w http.ResponseWriter, r *http.Request) {
