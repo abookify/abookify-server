@@ -65,6 +65,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/sync/{audioBookId}/{chapterIdx}", s.handleGetSyncData)
 	mux.HandleFunc("GET /api/works/{id}/alignments", s.handleListAlignments)
 	mux.HandleFunc("PUT /api/works/{id}", s.handleUpdateWork)
+	mux.HandleFunc("GET /api/works/duplicates", s.handleListDuplicates)
 	mux.HandleFunc("POST /api/works/{id}/merge", s.handleMergeWorks)
 	mux.HandleFunc("DELETE /api/works/{id}", s.handleDeleteWork)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
@@ -615,6 +616,15 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleListDuplicates(w http.ResponseWriter, r *http.Request) {
+	groups, err := library.FindDuplicateWorks(s.store)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
 }
 
 func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
