@@ -199,7 +199,20 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, work)
+	// Enrich with display-source hints so the UI knows which source to show.
+	type workWithDisplay struct {
+		*db.Work
+		DisplayTextID  *int64 `json:"display_text_id,omitempty"`
+		DisplayAudioID *int64 `json:"display_audio_id,omitempty"`
+	}
+	resp := workWithDisplay{Work: work}
+	if dt := library.ResolveDisplayText(work); dt != nil {
+		resp.DisplayTextID = &dt.ID
+	}
+	if da := library.ResolveDisplayAudio(work); da != nil {
+		resp.DisplayAudioID = &da.ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListChapters(w http.ResponseWriter, r *http.Request) {
