@@ -411,31 +411,100 @@ const (
 
 // detectChaptersFromPauses walks the word timestamps and flags indexes where
 // the gap to the next word exceeds CHAPTER_PAUSE_SECS. These are candidate
-// chapter starts — combine with narrator-pattern for higher confidence.
+// chapter starts. Titles are inferred from the first few words after each
+// boundary — looking for "Chapter N", "Part N", "Foreword", etc. — so the
+// TOC reads meaningfully instead of just "Chapter 1, 2, 3…".
 func detectChaptersFromPauses(words []sttWord) []sttChapter {
 	if len(words) < 2 {
 		return nil
 	}
 	var chapters []sttChapter
-	chapIdx := 0
-	// First chapter always starts at word 0.
-	chapters = append(chapters, sttChapter{
-		Title:   fmt.Sprintf("Chapter %d", chapIdx+1),
-		Start:   words[0].Start,
-		WordIdx: 0,
-	})
+	// Boundary starts: [0, i1, i2, …] where each i is the first word after
+	// a chapter-sized gap.
+	starts := []int{0}
 	for i := 0; i < len(words)-1; i++ {
 		gap := words[i+1].Start - words[i].End
 		if gap >= CHAPTER_PAUSE_SECS {
-			chapIdx++
-			chapters = append(chapters, sttChapter{
-				Title:   fmt.Sprintf("Chapter %d", chapIdx+1),
-				Start:   words[i+1].Start,
-				WordIdx: i + 1,
-			})
+			starts = append(starts, i+1)
 		}
 	}
+	for n, s := range starts {
+		chapters = append(chapters, sttChapter{
+			Title:   inferChapterTitle(words, s, n+1),
+			Start:   words[s].Start,
+			WordIdx: s,
+		})
+	}
 	return chapters
+}
+
+// Section-type prefix words we recognise at the start of a chapter. Keep
+// this list conservative — a recognized prefix becomes the chapter title,
+// so false positives produce mislabels.
+var sectionPrefixes = []string{
+	"chapter", "part", "book", "section",
+	"prologue", "epilogue", "foreword", "afterword", "introduction",
+	"preface", "dedication", "acknowledgments", "acknowledgements",
+}
+
+// inferChapterTitle reads the first ~15 words starting at `start` and
+// returns a human-sounding chapter title. Detection priority:
+//  1. "Chapter|Part|Book N[: Subtitle]" → keep the whole clause.
+//  2. "Prologue", "Foreword", "Introduction", etc. → use the word.
+//  3. Else → short snippet (≤8 words) for TOC display.
+func inferChapterTitle(words []sttWord, start, chapNum int) string {
+	const peek = 15
+	end := start + peek
+	if end > len(words) {
+		end = len(words)
+	}
+
+	// Peek tokens — both trimmed (for pattern match) and with original spacing
+	// (for the display title, which looks better with the narrator's cadence).
+	var rawTokens, displayTokens []string
+	for i := start; i < end; i++ {
+		t := strings.TrimSpace(words[i].Word)
+		if t != "" {
+			rawTokens = append(rawTokens, t)
+			displayTokens = append(displayTokens, words[i].Word)
+		}
+	}
+	if len(rawTokens) == 0 {
+		return fmt.Sprintf("Chapter %d", chapNum)
+	}
+	lower := strings.ToLower(strings.Join(rawTokens, " "))
+
+	// Case 1: "chapter/part/book N…" with optional subtitle up to first period.
+	// Cut at period/exclaim/question so we don't swallow the next sentence;
+	// keep colon (subtitles like "Part One: This Thing Called Sleep" are
+	// exactly the kind of title we want to surface).
+	for _, prefix := range []string{"chapter", "part", "book"} {
+		if strings.HasPrefix(lower, prefix+" ") {
+			text := strings.TrimSpace(strings.Join(displayTokens, ""))
+			if idx := strings.IndexAny(text, ".!?"); idx > 0 && idx < 80 {
+				text = text[:idx]
+			} else if len(text) > 80 {
+				text = text[:80] + "…"
+			}
+			return strings.TrimSpace(text)
+		}
+	}
+
+	// Case 2: single-word section marker.
+	firstLower := strings.ToLower(rawTokens[0])
+	for _, p := range sectionPrefixes {
+		if firstLower == p {
+			// Capitalise properly.
+			return strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+
+	// Case 3: snippet fallback.
+	snippet := rawTokens
+	if len(snippet) > 8 {
+		snippet = snippet[:8]
+	}
+	return fmt.Sprintf("Ch %d · %s…", chapNum, strings.Join(snippet, " "))
 }
 
 // detectParagraphsFromPauses walks the words in [start, end) and flags

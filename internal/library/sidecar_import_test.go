@@ -74,6 +74,37 @@ func TestDetectParagraphsFromPauses_NoGaps(t *testing.T) {
 	}
 }
 
+func TestInferChapterTitle(t *testing.T) {
+	mk := func(ss ...string) []sttWord {
+		out := make([]sttWord, len(ss))
+		for i, s := range ss {
+			out[i] = sttWord{Word: s}
+		}
+		return out
+	}
+	cases := []struct {
+		name string
+		in   []sttWord
+		want string
+	}{
+		{"chapter cuts at period", mk("Chapter ", "1", ".", " The", " Discovery", ".", " Next"), "Chapter 1"},
+		{"chapter numbered only", mk("Chapter ", "two"), "Chapter two"},
+		{"part with colon subtitle kept", mk("Part ", "One", ":", " This", " Thing"), "Part One: This Thing"},
+		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
+		{"preface", mk("Preface"), "Preface"},
+		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
+		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner , for help , for…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := inferChapterTitle(c.in, 0, 1)
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // Content builder should insert \n\n at pause boundaries so the FE can
 // split on double-newline.
 func TestBuildChapterContentByIdx_InsertsParagraphBreaks(t *testing.T) {

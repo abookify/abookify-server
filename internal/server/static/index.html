@@ -253,12 +253,20 @@
       background: #fff; border: 1px solid #ddd; border-radius: 4px;
       padding: 2px 6px; font-size: 0.75rem;
     }
+    /* Sync paragraphs — muted by default so only the active reading window
+       pops. Un-wrapped text (future paragraphs, not yet karaoke-touched) is
+       also muted via .sync-para so there's no jarring color jump as the
+       reader moves through the chapter. */
+    .reader-content .sync-para {
+      color: #8a8478;
+      transition: color 0.15s;
+    }
     .reader-content .sync-word {
       transition: color 0.15s;
       color: #8a8478;
     }
     .reader-content .sync-word.read {
-      color: #2a2520;
+      color: #1a1a1a;
       font-weight: 500;
     }
     .reader-content .sync-word.past {
@@ -808,10 +816,14 @@
       // These chapter rows hide physical file boundaries, which the user
       // shouldn't need to care about ("why we sleep part 1/2/3" is storage,
       // not content).
+      // Use single quotes for the attribute and escape the title for JS-in-
+      // attribute context. JSON.stringify here embeds a double-quoted string
+      // INSIDE a double-quoted attribute and breaks the HTML parser.
       mount.innerHTML = chapters.map((ch, i) => {
         const dur = (ch.end_sec || 0) - (ch.start_sec || 0);
+        const titleForJs = escapeJs(ch.title || `Chapter ${i + 1}`);
         return `
-          <div class="chapter-row" id="audio-ch-${work.id}-${ch.index}" onclick="seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, ${JSON.stringify(ch.title)})">
+          <div class="chapter-row" id="audio-ch-${work.id}-${ch.index}" onclick='seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, "${titleForJs}")'>
             <button class="play-btn">&#9654;</button>
             <span class="chapter-name">${escapeHtml(ch.title)}</span>
             <span class="chapter-size">${formatTime(dur)}</span>
