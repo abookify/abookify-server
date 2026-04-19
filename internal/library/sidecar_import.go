@@ -447,37 +447,64 @@ var sectionPrefixes = []string{
 	"preface", "dedication", "acknowledgments", "acknowledgements",
 }
 
+// TITLE_PAUSE_SECS is the gap size we treat as the end of a chapter title.
+// Narrators typically pause between "Chapter Two" and the title proper, and
+// again between the title and the first sentence of body text. 0.6s matches
+// the paragraph-break threshold which is roughly the same acoustic signature.
+const TITLE_PAUSE_SECS = 0.6
+
 // inferChapterTitle reads the first ~15 words starting at `start` and
 // returns a human-sounding chapter title. Detection priority:
-//  1. "Chapter|Part|Book N[: Subtitle]" → keep the whole clause.
+//  1. "Chapter|Part|Book N[: Subtitle]" → keep through the first major pause
+//     or end-of-sentence punctuation, whichever comes first.
 //  2. "Prologue", "Foreword", "Introduction", etc. → use the word.
 //  3. Else → short snippet (≤8 words) for TOC display.
+//
+// The pause-based cut is important for audiobooks where Whisper doesn't
+// reliably punctuate the announcement. In "Chapter Two [1.5s pause]
+// Caffeine, Jet Lag and Melatonin [0.8s pause] Losing and Gaining…" the
+// period-based cutoff alone produces a runon ("Chapter Two Caffeine, Jet
+// Lag and Melatonin Losing and Gaining Control…") because Whisper often
+// skips the header-to-body period.
 func inferChapterTitle(words []sttWord, start, chapNum int) string {
-	const peek = 15
+	const peek = 20
 	end := start + peek
 	if end > len(words) {
 		end = len(words)
 	}
 
-	// Peek tokens — both trimmed (for pattern match) and with original spacing
-	// (for the display title, which looks better with the narrator's cadence).
+	// Gather tokens from start up to the first pause >= TITLE_PAUSE_SECS.
+	// That gap is almost always the narrator's breath between title and body.
 	var rawTokens, displayTokens []string
+	cutAt := end
 	for i := start; i < end; i++ {
 		t := strings.TrimSpace(words[i].Word)
 		if t != "" {
 			rawTokens = append(rawTokens, t)
 			displayTokens = append(displayTokens, words[i].Word)
 		}
+		// Look ahead at the gap to word i+1. If it's a significant pause
+		// AND we're past the first couple of words (so "Chapter" [pause] "N"
+		// doesn't cut off the number), this is our title boundary.
+		if i+1 < end && i > start+1 {
+			gap := words[i+1].Start - words[i].End
+			if gap >= TITLE_PAUSE_SECS {
+				cutAt = i + 1
+				break
+			}
+		}
 	}
+	_ = cutAt // reserved for future use if we extend past the peek window
+
 	if len(rawTokens) == 0 {
 		return fmt.Sprintf("Chapter %d", chapNum)
 	}
 	lower := strings.ToLower(strings.Join(rawTokens, " "))
 
-	// Case 1: "chapter/part/book N…" with optional subtitle up to first period.
-	// Cut at period/exclaim/question so we don't swallow the next sentence;
-	// keep colon (subtitles like "Part One: This Thing Called Sleep" are
-	// exactly the kind of title we want to surface).
+	// Case 1: "chapter/part/book N…" with optional subtitle.
+	// Cut at period/exclaim/question (sentence end) OR at the pause already
+	// captured by our token window. Keep colon (subtitles like
+	// "Part One: This Thing Called Sleep" are exactly what we want).
 	for _, prefix := range []string{"chapter", "part", "book"} {
 		if strings.HasPrefix(lower, prefix+" ") {
 			text := strings.TrimSpace(strings.Join(displayTokens, ""))
@@ -494,17 +521,23 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 	firstLower := strings.ToLower(rawTokens[0])
 	for _, p := range sectionPrefixes {
 		if firstLower == p {
-			// Capitalise properly.
 			return strings.ToUpper(p[:1]) + p[1:]
 		}
 	}
 
-	// Case 3: snippet fallback.
+	// Case 3: snippet fallback. The pause-based tokenization above already
+	// capped the snippet at the first significant pause, so this typically
+	// gives a clean opening phrase rather than a runon.
 	snippet := rawTokens
 	if len(snippet) > 8 {
 		snippet = snippet[:8]
 	}
-	return fmt.Sprintf("Ch %d · %s…", chapNum, strings.Join(snippet, " "))
+	suffix := "…"
+	if len(rawTokens) <= 8 && cutAt < end {
+		// Full natural phrase fit without a pause; no ellipsis needed.
+		suffix = ""
+	}
+	return fmt.Sprintf("Ch %d · %s%s", chapNum, strings.Join(snippet, " "), suffix)
 }
 
 // detectParagraphsFromPauses walks the words in [start, end) and flags

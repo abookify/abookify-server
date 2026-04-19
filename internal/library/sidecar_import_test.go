@@ -75,10 +75,13 @@ func TestDetectParagraphsFromPauses_NoGaps(t *testing.T) {
 }
 
 func TestInferChapterTitle(t *testing.T) {
+	// mk builds word slices with zero gaps between them (default case).
 	mk := func(ss ...string) []sttWord {
 		out := make([]sttWord, len(ss))
+		t := 0.0
 		for i, s := range ss {
-			out[i] = sttWord{Word: s}
+			out[i] = sttWord{Start: t, End: t + 0.3, Word: s}
+			t += 0.3
 		}
 		return out
 	}
@@ -95,6 +98,28 @@ func TestInferChapterTitle(t *testing.T) {
 		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
 		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner , for help , for…"},
 	}
+	// Pause-based cut: Whisper often skips the period between the chapter
+	// title and the first body sentence, so we rely on the narrator's breath.
+	// Here "Chapter Two Caffeine Jet Lag Melatonin" is said with tight word
+	// gaps, then a 1.0s pause before the body starts.
+	t.Run("pause cuts title from body", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 0.0, End: 0.5, Word: "Chapter"},
+			{Start: 0.5, End: 0.9, Word: " Two"},
+			{Start: 1.0, End: 1.4, Word: " Caffeine"},  // tight gap — title continues
+			{Start: 1.4, End: 1.6, Word: " Jet"},
+			{Start: 1.6, End: 1.8, Word: " Lag"},
+			{Start: 1.8, End: 2.3, Word: " Melatonin"}, // end of title
+			{Start: 3.3, End: 3.7, Word: " Losing"},    // 1.0s pause — body starts
+			{Start: 3.7, End: 3.9, Word: " and"},
+			{Start: 3.9, End: 4.2, Word: " Gaining"},
+		}
+		got := inferChapterTitle(ws, 0, 2)
+		want := "Chapter Two Caffeine Jet Lag Melatonin"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := inferChapterTitle(c.in, 0, 1)
