@@ -166,15 +166,29 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 		return fmt.Errorf("save sync_data: %w", err)
 	}
 
-	// Import detected chapters (if any). Backfill end_sec from successive
-	// start_sec values when the sidecar omits it.
-	if len(sc.Chapters) > 0 {
+	// Decide which chapter list to use on the audio book. Priority:
+	//   1. Narrator-pattern chapters from sidecar, if reliable (prior check).
+	//   2. Pause-based detection (word gaps >= CHAPTER_PAUSE_SECS) when the
+	//      sidecar's chapter list is missing or unreliable.
+	// Pause-based is a last resort — it depends purely on audio gaps, so for
+	// a tightly-edited audiobook it can still over- or under-segment.
+	audioChapters := sc.Chapters
+	if !chaptersLookReliable(sc.Chapters, sc.Duration) {
+		paused := detectChaptersFromPauses(sc.Words)
+		if len(paused) > 1 {
+			log.Printf("sidecar-import: pause-based detection found %d chapter boundaries (narrator-pattern was unreliable)", len(paused))
+			audioChapters = paused
+		} else {
+			audioChapters = nil
+		}
+	}
+	if len(audioChapters) > 0 {
 		store.DeleteChaptersByBook(audioBookID)
-		for i, ch := range sc.Chapters {
+		for i, ch := range audioChapters {
 			end := ch.End
 			if end <= ch.Start {
-				if i+1 < len(sc.Chapters) {
-					end = sc.Chapters[i+1].Start
+				if i+1 < len(audioChapters) {
+					end = audioChapters[i+1].Start
 				} else if sc.Duration > 0 {
 					end = sc.Duration
 				} else {
@@ -259,15 +273,28 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// Build chapter content by slicing the words array by timestamp range.
 	// If no chapter boundaries, write a single "Full Transcript" chapter.
 	ranges := []sttChapter{}
-	useChapters := len(sc.Chapters) > 0 && chaptersLookReliable(sc.Chapters, sc.Duration)
+	// Prefer narrator-pattern detection if reliable. Otherwise use pause
+	// detection from word gaps (no ffmpeg — just read the existing timestamps).
+	chaptersToUse := sc.Chapters
+	reliable := chaptersLookReliable(sc.Chapters, sc.Duration)
+	useChapters := len(sc.Chapters) > 0 && reliable
+	if !useChapters {
+		paused := detectChaptersFromPauses(sc.Words)
+		// Only adopt pause-based chapters if they produce plausible counts.
+		if len(paused) >= 3 && len(paused) <= 80 {
+			chaptersToUse = paused
+			useChapters = true
+			log.Printf("sidecar-import: using pause-based chapters (%d found) on text book",
+				len(paused))
+		}
+	}
 	if useChapters {
 		// If the first detected chapter doesn't start at the beginning of the
-		// book (a common failure mode of narrator-pattern chapter detection —
-		// it misses the intro and picks up the first "chapter X" the narrator
-		// mentions mid-book), prepend a "Prelude" covering [0, firstStart].
-		// Without this, the first hour+ of audio has no readable text.
-		firstStart := sc.Chapters[0].Start
-		firstWordIdx := sc.Chapters[0].WordIdx
+		// book, prepend a "Prelude" covering [0, firstStart]. Without this,
+		// the first hour+ of audio has no readable text when narrator-pattern
+		// detection missed the intro.
+		firstStart := chaptersToUse[0].Start
+		firstWordIdx := chaptersToUse[0].WordIdx
 		if firstStart > 60 || firstWordIdx > 100 {
 			ranges = append(ranges, sttChapter{
 				Title:   "Prelude",
@@ -276,12 +303,11 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 				WordIdx: 0,
 			})
 		}
-		// Backfill end_sec so ranges are well-formed.
-		for i, ch := range sc.Chapters {
+		for i, ch := range chaptersToUse {
 			end := ch.End
 			if end <= ch.Start {
-				if i+1 < len(sc.Chapters) {
-					end = sc.Chapters[i+1].Start
+				if i+1 < len(chaptersToUse) {
+					end = chaptersToUse[i+1].Start
 				} else if sc.Duration > 0 {
 					end = sc.Duration
 				} else {
@@ -315,6 +341,12 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// timestamp-range when word_idx isn't provided.
 	wordIdxRanges := buildWordIdxRanges(sc, ranges)
 
+	// Accumulate paragraphs across all chapters and write in one atomic
+	// transaction after the chapter loop — ReplaceParagraphsForBook deletes
+	// all existing paragraphs first, so per-chapter calls would wipe each
+	// other's work.
+	allParas := []db.Paragraph{}
+
 	for idx, r := range ranges {
 		wStart, wEnd := wordIdxRanges[idx].start, wordIdxRanges[idx].end
 		content := buildChapterContentByIdx(sc.Words, wStart, wEnd)
@@ -333,9 +365,97 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 			EndSec:     r.End,
 			Confidence: 0.9,
 		})
+
+		// Build paragraph rows from pause detection. These let the FE render
+		// the chapter as real paragraphs and only wrap sync-spans for the
+		// active one (bounded DOM cost regardless of chapter size).
+		pRanges := detectParagraphsFromPauses(sc.Words, wStart, wEnd)
+		for pi, pr := range pRanges {
+			// pr.start/end are chapter-local word indices.
+			text := buildChapterContentByIdx(sc.Words, wStart+pr.start, wStart+pr.end)
+			if text == "" {
+				continue
+			}
+			allParas = append(allParas, db.Paragraph{
+				BookID:       textBookID,
+				ChapterIdx:   idx,
+				ParagraphIdx: pi,
+				WordStart:    pr.start,
+				WordEnd:      pr.end,
+				Text:         text,
+			})
+		}
+	}
+
+	if len(allParas) > 0 {
+		if err := store.ReplaceParagraphsForBook(textBookID, allParas); err != nil {
+			log.Printf("sidecar-import: paragraph insert failed for book %d: %v", textBookID, err)
+		}
 	}
 
 	return nil
+}
+
+// Pause thresholds for post-processing the word timestamp stream. Tuned
+// against 438 Days, Why We Sleep, and PHM. No audio re-processing needed —
+// we just read gaps in the existing sidecar data.
+//
+// - CHAPTER_PAUSE_SECS: a really long gap, almost always a chapter boundary
+//   (includes silence + the narrator resetting + production edits).
+// - PARAGRAPH_PAUSE_SECS: a medium gap, typical sentence-break-plus-breath
+//   but also used for soft paragraph divisions in audiobooks.
+const (
+	CHAPTER_PAUSE_SECS   = 3.0
+	PARAGRAPH_PAUSE_SECS = 0.6
+)
+
+// detectChaptersFromPauses walks the word timestamps and flags indexes where
+// the gap to the next word exceeds CHAPTER_PAUSE_SECS. These are candidate
+// chapter starts — combine with narrator-pattern for higher confidence.
+func detectChaptersFromPauses(words []sttWord) []sttChapter {
+	if len(words) < 2 {
+		return nil
+	}
+	var chapters []sttChapter
+	chapIdx := 0
+	// First chapter always starts at word 0.
+	chapters = append(chapters, sttChapter{
+		Title:   fmt.Sprintf("Chapter %d", chapIdx+1),
+		Start:   words[0].Start,
+		WordIdx: 0,
+	})
+	for i := 0; i < len(words)-1; i++ {
+		gap := words[i+1].Start - words[i].End
+		if gap >= CHAPTER_PAUSE_SECS {
+			chapIdx++
+			chapters = append(chapters, sttChapter{
+				Title:   fmt.Sprintf("Chapter %d", chapIdx+1),
+				Start:   words[i+1].Start,
+				WordIdx: i + 1,
+			})
+		}
+	}
+	return chapters
+}
+
+// detectParagraphsFromPauses walks the words in [start, end) and flags
+// paragraph boundaries at gaps exceeding PARAGRAPH_PAUSE_SECS. Returns
+// chapter-local word-index ranges.
+func detectParagraphsFromPauses(words []sttWord, start, end int) []idxRange {
+	if end <= start || end > len(words) {
+		return nil
+	}
+	var paras []idxRange
+	paraStart := start
+	for i := start; i < end-1; i++ {
+		gap := words[i+1].Start - words[i].End
+		if gap >= PARAGRAPH_PAUSE_SECS {
+			paras = append(paras, idxRange{paraStart - start, i + 1 - start})
+			paraStart = i + 1
+		}
+	}
+	paras = append(paras, idxRange{paraStart - start, end - start})
+	return paras
 }
 
 // chaptersLookReliable applies heuristics to decide whether the sidecar's
@@ -431,6 +551,11 @@ func buildWordIdxRanges(sc *sttSidecar, ranges []sttChapter) []idxRange {
 // buildChapterContentByIdx joins the word texts at [start, end). Leading
 // spaces from Whisper tokens are preserved since that matches natural prose
 // spacing and punctuation attachment.
+//
+// Also inserts paragraph breaks (double newlines) at gaps exceeding
+// PARAGRAPH_PAUSE_SECS. These breaks let the FE render the transcript as
+// real paragraphs and wrap sync-spans on-demand per paragraph (bounded DOM
+// cost regardless of chapter size).
 func buildChapterContentByIdx(words []sttWord, start, end int) string {
 	if start < 0 {
 		start = 0
@@ -444,6 +569,14 @@ func buildChapterContentByIdx(words []sttWord, start, end int) string {
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		b.WriteString(words[i].Word)
+		// Insert a paragraph break on a significant pause (but not after the
+		// last word of the chunk — that would add a trailing blank line).
+		if i+1 < end {
+			gap := words[i+1].Start - words[i].End
+			if gap >= PARAGRAPH_PAUSE_SECS {
+				b.WriteString("\n\n")
+			}
+		}
 	}
 	return strings.TrimSpace(b.String())
 }

@@ -1371,42 +1371,104 @@
 
       reader.style.minHeight = '200px';
 
-      // Detect mode by checking if the reader currently has any block-level
-      // or inline tags (i.e. rich content from content_html).
-      const hasRichContent = reader.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, em, strong');
-
-      // Per-word <span> rendering does not scale indefinitely. A full-length
-      // non-fiction audiobook can produce 60k–160k sync words; writing that
-      // many span elements to innerHTML locks the main thread for seconds on
-      // a laptop and can silently fail on mobile. Above this cap we still
-      // show the text (in plain-text form) but skip karaoke wrapping.
-      const MAX_KARAOKE_WORDS = 8000;
-      const isTooBigForSpans = timestamps.length > MAX_KARAOKE_WORDS;
-
-      if (isTooBigForSpans) {
-        // Leave the reader's plain-text render intact and disable highlighting.
-        karaokeHighlightSafe = false;
-        console.warn(`Sync: ${timestamps.length} words > ${MAX_KARAOKE_WORDS} cap — karaoke disabled for this chapter. Fix by re-running with chapter detection so each chapter is smaller.`);
+      // For transcript-derived text, we render as paragraphs and lazy-wrap
+      // sync spans only inside the active paragraph. This keeps the DOM
+      // bounded — a 150k-word book produces ~2000 <p> elements, and we only
+      // pay the span-wrapping cost for the paragraph currently being read.
+      // The content blob has paragraph breaks pre-inserted by the sidecar
+      // importer (double-newline at each >0.6s pause).
+      if (textIsTranscript) {
+        renderParagraphedTranscript(reader, timestamps);
         return;
       }
 
+      // Non-transcript path: ebook HTML or plain text. Existing behavior.
+      const hasRichContent = reader.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, em, strong');
       if (hasRichContent) {
-        // Rich HTML in the reader. Two subcases:
-        //   a) Text came from a transcript → DOM words == sync words (1:1),
-        //      so we can wrap-in-place AND enable highlighting safely.
-        //   b) Text came from an ebook without a composed alignment → indices
-        //      don't match, so wrap for future use but leave highlighting off.
         wrapWordsInPlace(reader);
-        karaokeHighlightSafe = !!textIsTranscript;
-        console.log(`Sync: rich HTML mode — words wrapped, karaoke=${karaokeHighlightSafe ? 'on (transcript)' : 'off (ebook, no alignment)'}`);
+        karaokeHighlightSafe = false;
+        console.log('Sync: rich HTML mode — words wrapped, karaoke=off (ebook, no alignment)');
       } else {
+        // Small plaintext — full flat span wrap is fine.
         karaokeHighlightSafe = true;
-        console.log('Sync: rendering flat transcript spans (mode: flat)');
         reader.innerHTML = timestamps.map((t, i) => {
           const word = t.w || '';
           return `<span class="sync-word" data-widx="${i}">${escapeHtml(word)}</span>`;
         }).join('');
       }
+    }
+
+    // Transcript renderer with lazy per-paragraph span wrapping.
+    //
+    // Splits the reader's plain-text content on double-newlines (inserted by
+    // the sidecar importer at pause boundaries). Each paragraph becomes a
+    // <p data-widx-start="A" data-widx-end="B"> element containing plain
+    // text. When the karaoke loop enters a paragraph, lazyWrapParagraph()
+    // walks it once, replaces the text node with <span class="sync-word">
+    // elements, and caches that we've done so. Previously-visited
+    // paragraphs stay wrapped (cheap to keep; unwrap adds complexity).
+    function renderParagraphedTranscript(reader, timestamps) {
+      const raw = reader.textContent || '';
+      // Split on paragraph markers. Importer inserts "\n\n" at pauses.
+      const paraTexts = raw.split(/\n\n+/).filter(p => p.trim().length > 0);
+      if (paraTexts.length === 0) {
+        karaokeHighlightSafe = false;
+        return;
+      }
+
+      // Walk each paragraph's words and attribute them to sync timestamps
+      // by count. Words in the paragraph text and words in the timestamps
+      // list should be 1:1 for transcript content.
+      const paras = [];
+      let widx = 0;
+      for (const pt of paraTexts) {
+        const wordsInPara = pt.trim().split(/\s+/).length;
+        paras.push({
+          text: pt.trim(),
+          widxStart: widx,
+          widxEnd: widx + wordsInPara,
+        });
+        widx += wordsInPara;
+      }
+
+      // Guard: word-count mismatch against timestamps means our paragraph
+      // word counts have drifted. Log and fall back to non-sync rendering.
+      if (Math.abs(widx - timestamps.length) > timestamps.length * 0.05) {
+        console.warn(`Sync: paragraph word count ${widx} diverges from sync ${timestamps.length}; karaoke disabled for this chapter.`);
+        karaokeHighlightSafe = false;
+        reader.innerHTML = paraTexts.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+        return;
+      }
+
+      reader.innerHTML = paras.map(p => (
+        `<p class="sync-para" data-widx-start="${p.widxStart}" data-widx-end="${p.widxEnd}">${escapeHtml(p.text)}</p>`
+      )).join('');
+      karaokeHighlightSafe = true;
+      console.log(`Sync: transcript rendered as ${paras.length} paragraphs, ${widx} words total`);
+    }
+
+    // Wrap a single paragraph's words into sync-span elements. Idempotent:
+    // repeat calls no-op thanks to the `data-wrapped` attribute.
+    function lazyWrapParagraph(para, timestamps) {
+      if (!para || para.dataset.wrapped) return;
+      const wStart = parseInt(para.dataset.widxStart, 10);
+      const wEnd = parseInt(para.dataset.widxEnd, 10);
+      const text = para.textContent;
+      // Tokenize by whitespace, preserving whitespace as-is.
+      const parts = text.split(/(\s+)/);
+      let widx = wStart;
+      let html = '';
+      for (const part of parts) {
+        if (!part) continue;
+        if (/^\s+$/.test(part)) {
+          html += part;
+        } else {
+          html += `<span class="sync-word" data-widx="${widx}">${escapeHtml(part)}</span>`;
+          widx++;
+        }
+      }
+      para.innerHTML = html;
+      para.dataset.wrapped = '1';
     }
 
     // Walk the DOM under `root` and wrap each visible word in a <span
@@ -1450,6 +1512,19 @@
         textNode.parentNode.replaceChild(frag, textNode);
       }
       console.log(`Sync: wrapped ${widx} words in HTML reader`);
+    }
+
+    // Find the .sync-para whose [widxStart, widxEnd) contains the given
+    // word index. Returns null if none found or reader isn't transcript-
+    // rendered. Linear scan — paragraphs are usually <2000 per chapter.
+    function findParagraphForWord(reader, widx) {
+      const paras = reader.querySelectorAll('.sync-para');
+      for (const p of paras) {
+        const s = parseInt(p.dataset.widxStart, 10);
+        const e = parseInt(p.dataset.widxEnd, 10);
+        if (widx >= s && widx < e) return p;
+      }
+      return null;
     }
 
     // Karaoke loop — highlights current word based on audio position
@@ -1500,6 +1575,24 @@
             .forEach(el => el.classList.remove('read', 'past'));
 
           if (activeIdx >= 0) {
+            // Lazy-wrap the active paragraph's words into sync-spans on
+            // demand. This is how we keep DOM cost bounded on giant
+            // chapters — paragraphs are plain <p> text until the user's
+            // current audio position enters them.
+            const reader = document.getElementById('reader-' + currentWorkId);
+            if (reader) {
+              const activePara = findParagraphForWord(reader, activeIdx);
+              if (activePara) {
+                lazyWrapParagraph(activePara, activeSyncData);
+                // Also wrap +/- 1 neighbor so highlight spills work across
+                // paragraph boundaries without a visible pop-in.
+                const prev = activePara.previousElementSibling;
+                const next = activePara.nextElementSibling;
+                if (prev && prev.classList?.contains('sync-para')) lazyWrapParagraph(prev, activeSyncData);
+                if (next && next.classList?.contains('sync-para')) lazyWrapParagraph(next, activeSyncData);
+              }
+            }
+
             // Soft reading window: a handful of words around the current
             // position are highlighted (brightened), everything earlier fades.
             const windowStart = Math.max(0, activeIdx - WINDOW_BEHIND);
@@ -1514,7 +1607,6 @@
             }
             const el = document.querySelector(`.sync-word[data-widx="${activeIdx}"]`);
             if (el) {
-              // Scroll within the reader pane only, not the whole page
               const reader = el.closest('.reader-content');
               if (reader) {
                 const elTop = el.offsetTop - reader.offsetTop;
