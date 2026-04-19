@@ -151,18 +151,107 @@
     .sync-toggle input { accent-color: var(--epub); }
     .sync-toggle label { cursor: pointer; }
 
-    /* Reader pane */
+    /* Sync panel above the ebook reader: toggle + lead-time tuning. */
+    .sync-panel {
+      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+      padding: 0.5rem 1.25rem; border-bottom: 1px solid var(--border);
+      font-size: 0.8rem; color: var(--text-muted); background: rgba(255,255,255,0.02);
+    }
+    .sync-panel-item { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+    .sync-panel-item input[type=checkbox] { accent-color: var(--epub); }
+    .sync-panel-item input[type=number] {
+      font-variant-numeric: tabular-nums;
+    }
+    .sync-resync-btn {
+      margin-left: auto; background: none; border: 1px solid var(--text-muted);
+      color: var(--text-muted); border-radius: 4px; padding: 2px 8px;
+      cursor: pointer; font-size: 0.7rem;
+    }
+    .sync-resync-btn:hover { color: var(--text); border-color: var(--text); }
+
+    /* Custom tooltip — replaces native `title` so we control delay & styling.
+       Appears within ~150ms of hover (vs the browser's ~1s).  */
+    #custom-tooltip {
+      position: fixed; pointer-events: none; z-index: 9999;
+      background: #16213e; color: #e0e0e0;
+      border: 1px solid #2a3a5c; border-radius: 4px;
+      padding: 4px 8px; font-size: 0.75rem; white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      opacity: 0; transition: opacity 0.12s ease-out 0.1s;
+    }
+    #custom-tooltip.visible { opacity: 1; }
+
+    /* Reader pane — typography tuned for long-form reading.
+       Defaults based on Bringhurst (45–75 CPL, 66 ideal), Butterick ("Point
+       size on screen: 15–25px"), WCAG 1.4.12 (content must survive 1.5
+       line-height). Stack: Iowan Old Style (Apple) → Charter (Windows/macOS)
+       → Georgia (universal) → ui-serif. Degrades gracefully without web-font
+       cost. User can override via settings. */
+    :root {
+      --reader-font-size: 18px;
+      --reader-line-height: 1.55;
+      --reader-measure: 33rem;   /* ~66 CPL at 18px */
+      --reader-font: "Iowan Old Style", "Charter", Georgia, ui-serif, serif;
+    }
     .reader-content {
       padding: 1.5rem 2rem;
       max-height: 450px;
       overflow-y: scroll;
-      font-family: Georgia, 'Times New Roman', serif;
-      font-size: 0.95rem;
-      line-height: 1.8;
+      font-family: var(--reader-font);
+      font-size: var(--reader-font-size);
+      line-height: var(--reader-line-height);
       color: #1a1a1a;
       background: #f5f0e8;
       word-wrap: break-word;
       border-top: 1px solid var(--border);
+      hyphens: auto;
+    }
+    /* Wrap child content in a max-width column so lines don't run the full
+       pane width. Applies in both embedded and fullscreen modes. */
+    .reader-content > * {
+      max-width: var(--reader-measure);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* Full-screen reader: same element, position:fixed, wider whitespace,
+       bottom padding reserved for the now-playing bar. Karaoke state
+       survives transition because the DOM node is not replaced — only its
+       className changes. */
+    .reader-content.fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 400;
+      max-height: none;
+      padding: 4.5rem 2rem 10rem;
+      background: #fafaf7;
+    }
+    .reader-fs-topbar {
+      display: none;
+      position: fixed; top: 0; left: 0; right: 0; z-index: 401;
+      padding: 0.75rem 1.25rem; gap: 1rem; align-items: center;
+      background: rgba(250, 250, 247, 0.95); backdrop-filter: blur(8px);
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      font-size: 0.8rem; color: #444;
+    }
+    .reader-fs-topbar.active { display: flex; }
+    .reader-fs-topbar input[type=checkbox] { accent-color: var(--epub); }
+    .reader-fs-topbar input[type=number] {
+      background: #fff; border: 1px solid #ddd; border-radius: 4px;
+      padding: 2px 6px; width: 70px; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .reader-fs-topbar .fs-title { flex: 1; font-weight: 600; color: #222; }
+    .reader-fs-topbar .fs-close {
+      background: none; border: 1px solid #ccc; border-radius: 6px;
+      padding: 4px 10px; cursor: pointer; color: #444;
+    }
+    .reader-fs-topbar .fs-close:hover { background: rgba(0,0,0,0.04); }
+
+    /* Reader appearance controls (font-size / theme). Affects both modes. */
+    .reader-fs-topbar select {
+      background: #fff; border: 1px solid #ddd; border-radius: 4px;
+      padding: 2px 6px; font-size: 0.75rem;
     }
     .reader-content .sync-word {
       transition: color 0.15s;
@@ -207,9 +296,15 @@
     .player-scrubber .scrub-track { position: absolute; top: 50%; left: 0; right: 0; height: 6px; transform: translateY(-50%); background: var(--border); border-radius: 3px; }
     .player-scrubber .scrub-fill { position: absolute; top: 50%; left: 0; height: 6px; transform: translateY(-50%); background: var(--accent); border-radius: 3px; pointer-events: none; }
     .player-scrubber .scrub-thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
-    .player-scrubber .chapter-tick { position: absolute; top: 50%; width: 2px; height: 14px; background: var(--text-muted); opacity: 0.5; transform: translate(-50%, -50%); pointer-events: none; border-radius: 1px; }
-    .player-scrubber canvas.waveform { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-    .player-scrubber .chapter-tick:hover { opacity: 1; }
+    /* Chapter ticks sit above the waveform (z-index 2), with an invisible wider
+       hit target for hover/tooltip. The visible stripe is 2px; the hit target
+       is 10px wide so the native title tooltip is easy to trigger. */
+    .player-scrubber .chapter-tick { position: absolute; top: 50%; width: 10px; height: 18px; transform: translate(-50%, -50%); border-radius: 1px; z-index: 2; cursor: pointer; background: transparent; }
+    .player-scrubber .chapter-tick::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--text); opacity: 0.55; transform: translateX(-50%); border-radius: 1px; }
+    .player-scrubber .chapter-tick:hover::after { opacity: 1; background: var(--accent); }
+    /* Waveform is on z-1 and mildly translucent so ticks read through it. */
+    .player-scrubber canvas.waveform { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.45; z-index: 1; }
+    .player-scrubber.waveform-hidden canvas.waveform { display: none; }
     .player-time { font-size: 0.7rem; font-variant-numeric: tabular-nums; color: var(--text-muted); white-space: nowrap; min-width: 36px; }
     .player-vol { display: flex; align-items: center; gap: 4px; }
     .player-vol input[type=range] { width: 70px; accent-color: var(--accent); cursor: pointer; }
@@ -386,20 +481,42 @@
   </div>
 
   <div class="jobs-bar" id="jobs-bar"></div>
+  <div id="custom-tooltip"></div>
+  <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
   <div class="works-list" id="works-list"></div>
 
-  <div class="fullscreen-np" id="fullscreen-np">
-    <div class="fnp-header">
-      <div>
-        <div class="fnp-title" id="fnp-title"></div>
-        <div class="fnp-subtitle" id="fnp-subtitle"></div>
-      </div>
-      <button class="fnp-close" onclick="closeFullscreenNP()" title="Close">✕</button>
-    </div>
-    <div class="fnp-body" id="fnp-body">
-      <div class="placeholder">Select a chapter to read</div>
-    </div>
+  <!-- Full-screen reader topbar. Applied when any reader-content goes
+       fullscreen. Controls mirror the inline sync-panel so the user has the
+       same knobs in either view. The reader element itself is the same DOM
+       node either way — only its class toggles — so karaoke state persists. -->
+  <div class="reader-fs-topbar" id="reader-fs-topbar">
+    <button class="fs-close" onclick="closeFullscreenReader()" data-tooltip="Close (Esc)">✕ Close</button>
+    <div class="fs-title" id="fs-title"></div>
+    <label style="display:flex;align-items:center;gap:6px;" id="fs-sync-wrap">
+      <input type="checkbox" id="fs-sync-toggle" checked onchange="toggleSync(fullscreenWorkId, this.checked)">
+      Sync
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;">
+      Lead
+      <input type="number" id="fs-sync-lead" value="0" step="50" onchange="setSyncLead(this.value); document.getElementById('sync-lead-' + fullscreenWorkId).value = this.value;">
+      ms
+    </label>
+    <select id="fs-font-size" onchange="setReaderFontSize(this.value)" data-tooltip="Font size">
+      <option value="16px">Small</option>
+      <option value="18px" selected>Medium</option>
+      <option value="20px">Large</option>
+      <option value="22px">X-Large</option>
+    </select>
+    <select id="fs-measure" onchange="setReaderMeasure(this.value)" data-tooltip="Line width">
+      <option value="28rem">Narrow</option>
+      <option value="33rem" selected>Normal</option>
+      <option value="40rem">Wide</option>
+    </select>
   </div>
+  <!-- Legacy fullscreen-np left for the NowPlaying bar's ⛶ button to still
+       have a target until that button's wiring is migrated. Hidden when
+       reader-fs is active. -->
+  <div class="fullscreen-np" id="fullscreen-np" style="display:none;"></div>
   <div class="drop-overlay" id="drop-overlay">
     <div class="drop-box">
       <h2>Drop files to import</h2>
@@ -434,6 +551,7 @@
         <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute/Unmute">&#128266;</button>
         <input type="range" id="vol-slider" min="0" max="100" value="100" oninput="setVolume(this.value)" title="Volume">
       </div>
+      <button class="player-btn" id="waveform-toggle" onclick="toggleWaveform()" title="Show/hide waveform" style="font-size:0.95rem;">&#9835;</button>
       <select id="speed-select" onchange="setSpeed(this.value)" title="Playback speed"
         style="background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
         <option value="0.5">0.5x</option>
@@ -467,9 +585,57 @@
         document.getElementById('status-text').textContent =
           `${allWorks.length} works | ${totalFiles} files`;
         render();
+        hydrateSyncLeadInputs();
+        loadDuplicates();
       } catch (e) {
         document.getElementById('status-text').textContent = 'connection error';
       }
+    }
+
+    // Poll /api/works/duplicates and show a banner listing any groups of works
+    // the server thinks are the same book. Each group gets a one-click
+    // "merge all into first" button — the first entry is already the most
+    // complete candidate (scored by audio+text file count on the server).
+    async function loadDuplicates() {
+      const el = document.getElementById('duplicates-banner');
+      try {
+        const res = await fetch('/api/works/duplicates');
+        if (!res.ok) { el.style.display = 'none'; return; }
+        const groups = await res.json();
+        if (!groups || groups.length === 0) { el.style.display = 'none'; return; }
+        el.style.display = 'block';
+        const rows = groups.map(g => {
+          const [target, ...rest] = g.works;
+          const extras = rest.map(w => `"${escapeHtml(w.title)}" (#${w.id})`).join(', ');
+          return `<div style="margin:4px 0;">
+            <strong>${escapeHtml(target.title)}</strong>
+            — ${g.works.length} copies. Merge ${extras} into #${target.id}?
+            <button onclick="mergeDuplicateGroup(${target.id}, [${rest.map(w => w.id).join(',')}])"
+              style="margin-left:8px; background:#f0a500; border:none; color:#000; border-radius:4px; padding:3px 10px; cursor:pointer; font-size:0.8rem;">
+              Merge all
+            </button>
+          </div>`;
+        }).join('');
+        el.innerHTML = `<div style="font-weight:600; margin-bottom:6px; color:#f0a500;">⚠ ${groups.length} possible duplicate${groups.length > 1 ? 's' : ''}</div>${rows}`;
+      } catch {
+        el.style.display = 'none';
+      }
+    }
+
+    async function mergeDuplicateGroup(targetId, sourceIds) {
+      if (!confirm(`Merge ${sourceIds.length} work(s) into #${targetId}? This deletes the duplicates.`)) return;
+      for (const sid of sourceIds) {
+        const res = await fetch(`/api/works/${targetId}/merge`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ source_id: sid }),
+        });
+        if (!res.ok) {
+          alert(`Merge of #${sid} failed: ${(await res.json()).error || 'unknown'}`);
+          break;
+        }
+      }
+      loadWorks();
     }
 
     function formatSize(bytes) {
@@ -595,11 +761,6 @@
       return `
         <div class="split-pane">
           <div class="pane-header audio">&#9835; Audiobook &middot; <span id="audio-count-${work.id}">${files.length}</span> chapters</div>
-          ${hasText ? `<div class="sync-toggle">
-            <input type="checkbox" id="sync-${work.id}" checked onchange="toggleSync(${work.id}, this.checked)">
-            <label for="sync-${work.id}">Sync ebook while listening</label>
-            <button onclick="resyncWork(${work.id})" style="margin-left:8px; background:none; border:1px solid var(--text-muted); color:var(--text-muted); border-radius:4px; padding:2px 8px; cursor:pointer; font-size:0.7rem;" title="Re-run Whisper alignment to generate word-level sync data">Re-sync</button>
-          </div>` : ''}
           <div class="chapter-list">${rowsHtml}</div>
         </div>`;
     }
@@ -673,6 +834,30 @@
         </select>` : '';
 
       if (book.chapter_count > 0) {
+        // Sync panel sits *directly above* the reader text so it reads as
+        // "these controls affect what's below" — the reader is the
+        // now-playing-for-text surface, so its controls belong adjacent to
+        // the text, not up near the chapter list. Expand/fullscreen button
+        // lives here too so it's at the right edge of the same strip.
+        const syncPanel = work.has_audio ? `
+          <div class="sync-panel">
+            <label class="sync-panel-item">
+              <input type="checkbox" id="sync-${work.id}" checked onchange="toggleSync(${work.id}, this.checked)">
+              <span>Sync audio ↔ text</span>
+            </label>
+            <label class="sync-panel-item" data-tooltip="Nudge the highlight earlier (positive) or later (negative). Whisper timestamps are usually accurate so 0 is a good default.">
+              <span style="color:var(--text-muted);">Lead:</span>
+              <input type="number" id="sync-lead-${work.id}" value="0" step="50"
+                     onchange="setSyncLead(this.value)"
+                     style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:0.75rem;text-align:right;">
+              <span style="color:var(--text-muted); font-size:0.7rem;">ms</span>
+            </label>
+            <button onclick="resyncWork(${work.id})" class="sync-resync-btn" data-tooltip="Re-run Whisper alignment">Re-sync</button>
+            <button onclick="openFullscreenReader(${work.id})" class="sync-resync-btn" data-tooltip="Full-screen reading with sync">&#x26F6; Full screen</button>
+          </div>` : `
+          <div class="sync-panel" style="justify-content:flex-end;">
+            <button onclick="openFullscreenReader(${work.id})" class="sync-resync-btn" data-tooltip="Full-screen reading">&#x26F6; Full screen</button>
+          </div>`;
         return `
           <div class="split-pane">
             <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters${editionPicker}</div>
@@ -681,6 +866,7 @@
                 Loading chapters...
               </div>
             </div>
+            ${syncPanel}
             <div class="reader-content" id="${readerId}">
               <div class="placeholder">Select a chapter to read</div>
             </div>
@@ -890,29 +1076,38 @@
       const work = allWorks.find(w => w.id === workId);
       currentAudioFiles = work ? (work.audio_files || []) : [];
 
+      // Order matters here:
+      //   1. Load the linked text chapter into the reader FIRST.
+      //   2. Then overlay karaoke spans.
+      // Otherwise renderChapterContent would run after renderSyncedText and
+      // wipe out the sync-word spans — the symptom was 438 Days showing plain
+      // chapter text without any highlighting after it started playing.
+      if (syncEnabled[workId] !== false && work && work.chapter_links) {
+        const link = work.chapter_links.find(l => l.audio_index == audioIndex);
+        if (link) {
+          await loadChapterList(link.text_book_id, workId);
+          await loadChapter(link.text_book_id, link.text_index, workId, { skipAudioSeek: true });
+        }
+      }
+
       // Sync: load word-level timestamps for karaoke, or fall back to chapter-level.
       // Detected chapters inside a single-file book all share sync data stored at
-      // chapter_idx=0 (the whole-file word stream). Pass 0 in that case so the
-      // karaoke lookup finds the correct row.
+      // chapter_idx=0 (the whole-file word stream). Pass 0 in that case + a
+      // chapter time-range so the karaoke layer only renders this chapter's words.
       const detectedChapters = audioChapterCache[bookId];
       const syncChapterIdx = (detectedChapters && detectedChapters.length > 0) ? 0 : audioIndex;
-      if (syncEnabled[workId] !== false && work) {
-        console.log('Sync: trying to load sync data', { workId, bookId, syncChapterIdx, audioIndex });
-        const hasSyncData = await loadSyncData(workId, bookId, syncChapterIdx);
-        console.log('Sync: hasSyncData =', hasSyncData);
-
-        // Whether or not sync data is available, follow the chapter link back
-        // to the text side so the reader pane shows the matching chapter.
-        // Skip the recursive playAudio that loadChapter would otherwise trigger —
-        // we're already playing, we just want the reader updated.
-        if (work.chapter_links) {
-          const link = work.chapter_links.find(l => l.audio_index == audioIndex);
-          if (link) {
-            // Make sure the chapter list is loaded so loadChapter can find metadata.
-            await loadChapterList(link.text_book_id, workId);
-            loadTextChapterNoSeek(link.text_book_id, link.text_index, workId);
-          }
+      let chapterRange = null;
+      if (detectedChapters && detectedChapters.length > 0) {
+        const ch = detectedChapters.find(c => c.index === audioIndex);
+        if (ch && ch.end_sec > ch.start_sec) {
+          // Widen the window very slightly so boundary words don't get clipped.
+          chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
         }
+      }
+      if (syncEnabled[workId] !== false && work) {
+        console.log('Sync: trying to load sync data', { workId, bookId, syncChapterIdx, audioIndex, chapterRange });
+        const hasSyncData = await loadSyncData(workId, bookId, syncChapterIdx, chapterRange);
+        console.log('Sync: hasSyncData =', hasSyncData);
       }
 
       // Start saving position periodically
@@ -1016,9 +1211,29 @@
       if (!enabled) stopKaraoke();
     }
 
+    // User-tunable lead time in seconds (stored as ms in UI + localStorage).
+    // Karaoke highlight shifts by this amount: positive = earlier, negative = later.
+    // Whisper timestamps are accurate enough that 0 is a sensible default.
+    let syncLeadSecs = parseFloat(localStorage.getItem('syncLeadMs') || '0') / 1000;
+    function setSyncLead(valueMs) {
+      const ms = parseInt(valueMs, 10) || 0;
+      syncLeadSecs = ms / 1000;
+      localStorage.setItem('syncLeadMs', String(ms));
+    }
+    // On page load, hydrate any sync-lead inputs we rendered with the saved value.
+    function hydrateSyncLeadInputs() {
+      const ms = Math.round(syncLeadSecs * 1000);
+      document.querySelectorAll('input[id^="sync-lead-"]').forEach(el => {
+        el.value = String(ms);
+      });
+    }
+
     // Load sync data for a chapter and start karaoke highlighting.
-    // Tries the specific audioBookId first, then searches all audio files for this work.
-    async function loadSyncData(workId, audioBookId, audioIndex) {
+    // `chapterRange` is optional { start, end } in seconds — when the sync
+    // blob covers the whole file (single-file audiobook, chapter_idx=0), we
+    // filter to just the words whose timestamps fall inside this chapter so
+    // the reader shows one chapter's worth of text instead of the whole book.
+    async function loadSyncData(workId, audioBookId, audioIndex, chapterRange) {
       // Try direct lookup first
       const urls = [
         `/api/works/${workId}/sync/${audioBookId}/${audioIndex}`,
@@ -1039,8 +1254,24 @@
           const res = await fetch(url);
           const data = await res.json();
           if (data && data.length > 0) {
-            activeSyncData = data;
-            renderSyncedText(data);
+            // Filter to chapter range when working off a whole-file blob.
+            let scoped = data;
+            if (chapterRange && chapterRange.end > chapterRange.start) {
+              scoped = data.filter(t =>
+                t.e > chapterRange.start && t.s < chapterRange.end);
+              if (scoped.length === 0) scoped = data; // safety fallback
+            }
+            activeSyncData = scoped;
+            // Decide karaoke safety based on the text source. When the reader
+            // is displaying a transcript (format/origin identifies it as the
+            // Whisper output itself), DOM words equal sync words 1:1 — karaoke
+            // is safe even with <p>/<h2> formatting. When it's a linked ebook
+            // without a composed alignment, we can't guarantee word-index
+            // equivalence, so highlighting is suppressed. Observed with
+            // 438 Days: transcript split into chapters was being treated as
+            // "rich HTML, alignment missing" and highlighting stayed off.
+            const textIsTranscript = isTextPaneShowingTranscript(workId);
+            renderSyncedText(scoped, textIsTranscript);
             startKaraoke();
             return true;
           }
@@ -1051,6 +1282,20 @@
       return false;
     }
 
+    // Returns true if the text the reader is currently rendering came from a
+    // transcript (Whisper output) rather than an external ebook. Transcript
+    // words align 1:1 with sync_data timestamps, so karaoke highlighting is
+    // safe regardless of whether the DOM has paragraph markup.
+    function isTextPaneShowingTranscript(workId) {
+      const work = allWorks.find(w => w.id == workId);
+      if (!work || !work.text_files) return false;
+      // Any text file tagged as a transcript — the split-by-chapter path
+      // still produces transcript-derived chapters, so the per-chapter reader
+      // is trustworthy for karaoke.
+      return work.text_files.some(tf =>
+        tf.format === 'transcript' || tf.origin === 'whisper_transcript');
+    }
+
     // Render text with individually addressable word spans.
     //
     // Two modes:
@@ -1059,7 +1304,7 @@
     //      preserving all structural markup (headings, paragraphs, emphasis).
     //   2. Reader is empty or plaintext-only (transcript-only works): build
     //      a flat span-per-word layout from the timestamps themselves.
-    function renderSyncedText(timestamps) {
+    function renderSyncedText(timestamps, textIsTranscript) {
       const readerId = 'reader-' + currentWorkId;
       const reader = document.getElementById(readerId);
       if (!reader) {
@@ -1074,18 +1319,14 @@
       const hasRichContent = reader.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, em, strong');
 
       if (hasRichContent) {
-        // Rich HTML mode: word indices in the DOM are EBOOK words, but
-        // sync_data is TRANSCRIPT words. Without a forced alignment (#63)
-        // we can't map between them reliably. So: wrap words for future
-        // alignment use, but don't activate highlighting unless this work
-        // has an alignment stored.
+        // Rich HTML in the reader. Two subcases:
+        //   a) Text came from a transcript → DOM words == sync words (1:1),
+        //      so we can wrap-in-place AND enable highlighting safely.
+        //   b) Text came from an ebook without a composed alignment → indices
+        //      don't match, so wrap for future use but leave highlighting off.
         wrapWordsInPlace(reader);
-        karaokeHighlightSafe = false;
-        // TODO(#63 composition): when alignment is present, populate a
-        // map from transcript-idx → ebook-widx so the karaoke tick can
-        // highlight the correct ebook span. For now, highlighting is
-        // disabled in rich-HTML mode to avoid showing wrong words.
-        console.log('Sync: rich HTML mode — words wrapped, karaoke disabled (alignment not yet composed)');
+        karaokeHighlightSafe = !!textIsTranscript;
+        console.log(`Sync: rich HTML mode — words wrapped, karaoke=${karaokeHighlightSafe ? 'on (transcript)' : 'off (ebook, no alignment)'}`);
       } else {
         karaokeHighlightSafe = true;
         console.log('Sync: rendering flat transcript spans (mode: flat)');
@@ -1162,11 +1403,11 @@
           lastLogTime = time;
         }
 
-        // Lead the audio slightly — eyes track ahead of the spoken word and
-        // Whisper timestamps lag a bit. Matches the mobile app's tuning.
-        const SYNC_LEAD_SECS = 0.35;
+        // Lead defaults to 0 (Whisper timestamps are usually accurate). User
+        // can tune per-session via the "Lead (ms)" input above the reader;
+        // value is stored in syncLeadSecs and persisted in localStorage.
         const WINDOW_BEHIND = 1, WINDOW_AHEAD = 4;
-        const t = time + SYNC_LEAD_SECS;
+        const t = time + syncLeadSecs;
         let activeIdx = -1;
         for (let i = 0; i < activeSyncData.length; i++) {
           if (t >= activeSyncData[i].s) {
@@ -1372,6 +1613,22 @@
       });
     }
 
+    // Waveform show/hide — persisted across reloads. TTS-generated audio
+    // reads as a solid bar (near-constant amplitude), so the waveform often
+    // just adds visual noise; hide it in that case.
+    function applyWaveformVisibility() {
+      const hidden = localStorage.getItem('waveformHidden') === '1';
+      const bar = document.getElementById('player-scrubber');
+      if (bar) bar.classList.toggle('waveform-hidden', hidden);
+      const btn = document.getElementById('waveform-toggle');
+      if (btn) btn.style.opacity = hidden ? '0.45' : '1';
+    }
+    function toggleWaveform() {
+      const hidden = localStorage.getItem('waveformHidden') === '1';
+      localStorage.setItem('waveformHidden', hidden ? '0' : '1');
+      applyWaveformVisibility();
+    }
+
     // Waveform rendering: fetch peaks once per book, draw as vertical
     // bars on the scrubber canvas. Runs after loadedmetadata.
     const waveformCache = {};
@@ -1380,6 +1637,8 @@
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Skip the network fetch entirely when the user has hidden waveforms.
+      if (localStorage.getItem('waveformHidden') === '1') return;
       let peaks = waveformCache[bookId];
       if (!peaks) {
         try {
@@ -1416,16 +1675,26 @@
       // Get detected chapters from audioChapterCache for the current book.
       const chapters = currentPlayingId ? audioChapterCache[currentPlayingId] : null;
       if (!chapters || chapters.length < 2) return;
-      for (const ch of chapters) {
-        if (!ch.start_sec || ch.start_sec <= 0) continue;
+      chapters.forEach((ch, idx) => {
+        if (!ch.start_sec || ch.start_sec <= 0) return;
         const pct = (ch.start_sec / p.duration) * 100;
-        if (pct > 99) continue;
+        if (pct > 99) return;
         const tick = document.createElement('div');
         tick.className = 'chapter-tick';
         tick.style.left = pct + '%';
-        tick.title = ch.title;
+        // Tooltip: "Ch 14 · Chapter name · 38:12" — chapter number + title +
+        // time so the scrubber reads as an actual TOC at a glance.
+        const label = ch.title || `Chapter ${idx + 1}`;
+        // data-tooltip triggers our fast custom tooltip (not the native 1s delayed one).
+        tick.dataset.tooltip = `Ch ${idx + 1} · ${label} · ${fmtPlayerTime(ch.start_sec)}`;
+        tick.addEventListener('click', (e) => {
+          // Clicking a tick jumps to that chapter directly — easier than
+          // trying to hit the exact scrubber pixel.
+          e.stopPropagation();
+          if (p && p.duration) p.currentTime = ch.start_sec;
+        });
         bar.appendChild(tick);
-      }
+      });
     }
 
     function fmtPlayerTime(secs) {
@@ -1592,27 +1861,84 @@
       } catch {}
     }
 
-    // --- Full-screen NowPlaying overlay ---
-    function openFullscreenNP() {
-      const overlay = document.getElementById('fullscreen-np');
-      overlay.classList.add('active');
-      document.getElementById('fnp-title').textContent =
-        document.getElementById('np-title')?.textContent || '';
-      document.getElementById('fnp-subtitle').textContent =
-        document.getElementById('np-work')?.textContent || '';
-      // Copy reader content into the fullscreen body.
-      const reader = document.getElementById('reader-' + currentWorkId);
-      const body = document.getElementById('fnp-body');
-      if (reader && reader.innerHTML) {
-        body.innerHTML = reader.innerHTML;
+    // --- Full-screen reader ---
+    //
+    // Design note: the reader element stays in its original DOM position and
+    // just gets a `.fullscreen` class. Same node = karaoke spans keep their
+    // identity, scroll position is preserved (via a snapshot), event
+    // listeners don't need rebinding, and the karaoke tick loop keeps
+    // ticking uninterrupted. The NowPlaying bar is position:fixed at the
+    // bottom already, so it naturally appears over the fullscreen reader.
+    let fullscreenWorkId = null;
+    let prevScrollTop = 0;
+
+    function openFullscreenReader(workId) {
+      const reader = document.getElementById('reader-' + workId);
+      if (!reader) return;
+      fullscreenWorkId = workId;
+      prevScrollTop = reader.scrollTop;
+      reader.classList.add('fullscreen');
+      document.getElementById('reader-fs-topbar').classList.add('active');
+      document.body.style.overflow = 'hidden';
+
+      // Populate topbar state from the inline sync-panel.
+      const work = allWorks.find(w => w.id == workId);
+      document.getElementById('fs-title').textContent = work?.title || '';
+      const inlineSync = document.getElementById('sync-' + workId);
+      const fsSync = document.getElementById('fs-sync-toggle');
+      fsSync.checked = inlineSync ? inlineSync.checked : true;
+      // Hide sync controls when there's no audio for this work.
+      document.getElementById('fs-sync-wrap').style.display =
+        work?.has_audio ? 'flex' : 'none';
+      document.getElementById('fs-sync-lead').value = Math.round(syncLeadSecs * 1000);
+      // Seed appearance selects from saved prefs.
+      document.getElementById('fs-font-size').value =
+        localStorage.getItem('readerFontSize') || '18px';
+      document.getElementById('fs-measure').value =
+        localStorage.getItem('readerMeasure') || '33rem';
+    }
+
+    function closeFullscreenReader() {
+      if (fullscreenWorkId === null) return;
+      const reader = document.getElementById('reader-' + fullscreenWorkId);
+      if (reader) {
+        reader.classList.remove('fullscreen');
+        reader.scrollTop = prevScrollTop;
       }
+      document.getElementById('reader-fs-topbar').classList.remove('active');
+      document.body.style.overflow = '';
+      fullscreenWorkId = null;
     }
-    function closeFullscreenNP() {
-      document.getElementById('fullscreen-np').classList.remove('active');
+
+    // Keep old entry-point alive — the NowPlaying bar still has a ⛶ button
+    // wired to openFullscreenNP, and external callers may too. Forward it to
+    // the current playing work's reader.
+    function openFullscreenNP() {
+      if (currentWorkId) openFullscreenReader(currentWorkId);
     }
+    function closeFullscreenNP() { closeFullscreenReader(); }
+
+    // Reader appearance — font-size + measure (line width). Writes to CSS
+    // custom properties on :root so both inline and fullscreen pick them up.
+    function setReaderFontSize(v) {
+      document.documentElement.style.setProperty('--reader-font-size', v);
+      localStorage.setItem('readerFontSize', v);
+    }
+    function setReaderMeasure(v) {
+      document.documentElement.style.setProperty('--reader-measure', v);
+      localStorage.setItem('readerMeasure', v);
+    }
+    // Apply saved prefs on boot.
+    (function hydrateReaderPrefs() {
+      const fs = localStorage.getItem('readerFontSize');
+      const m = localStorage.getItem('readerMeasure');
+      if (fs) document.documentElement.style.setProperty('--reader-font-size', fs);
+      if (m) document.documentElement.style.setProperty('--reader-measure', m);
+    })();
+
     // Escape to close.
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeFullscreenNP();
+      if (e.key === 'Escape' && fullscreenWorkId !== null) closeFullscreenReader();
     });
 
     // --- Chapter boundary override: right-click scrubber to mark ---
@@ -1777,6 +2103,47 @@
     });
 
     loadWorks();
+    applyWaveformVisibility();
+
+    // Custom tooltip — delegated event listeners on the document for any
+    // element with [data-tooltip]. Fires ~110ms after hover (CSS transition
+    // delay), much faster than the browser's native title tooltip.
+    (function installCustomTooltips() {
+      const tt = document.getElementById('custom-tooltip');
+      if (!tt) return;
+      let currentTarget = null;
+      function position(e, target) {
+        const rect = target.getBoundingClientRect();
+        const ttRect = tt.getBoundingClientRect();
+        // Prefer above the element; fall back to below if clipped at top.
+        let top = rect.top - ttRect.height - 6;
+        if (top < 4) top = rect.bottom + 6;
+        let left = rect.left + rect.width / 2 - ttRect.width / 2;
+        left = Math.max(4, Math.min(window.innerWidth - ttRect.width - 4, left));
+        tt.style.left = left + 'px';
+        tt.style.top = top + 'px';
+      }
+      document.addEventListener('mouseover', (e) => {
+        const t = e.target.closest('[data-tooltip]');
+        if (!t || t === currentTarget) return;
+        currentTarget = t;
+        tt.textContent = t.dataset.tooltip;
+        // Position once to get dimensions, then reposition after text applies.
+        tt.classList.add('visible');
+        requestAnimationFrame(() => position(e, t));
+      });
+      document.addEventListener('mouseout', (e) => {
+        const t = e.target.closest('[data-tooltip]');
+        if (t && t === currentTarget) {
+          currentTarget = null;
+          tt.classList.remove('visible');
+        }
+      });
+      // Follow cursor so the tooltip tracks ticks as user slides along the scrubber.
+      document.addEventListener('mousemove', (e) => {
+        if (currentTarget) position(e, currentTarget);
+      });
+    })();
     // Clear any terminal-state notifications from previous sessions so a fresh
     // page load feels fresh. Running/queued jobs are preserved server-side.
     fetch('/api/jobs/inactive', { method: 'DELETE' }).finally(loadJobs);

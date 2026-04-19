@@ -85,12 +85,20 @@ func synthesize(client *tts.Client, text, voice, output, sourceFile string) {
 	start := time.Now()
 	var allAudio []byte
 	for i, chunk := range chunks {
+		chunkStart := time.Now()
 		log.Printf("  chunk %d/%d (%d words)...", i+1, len(chunks), len(strings.Fields(chunk)))
 		audio, err := client.Synthesize(chunk, voice)
 		if err != nil {
-			log.Fatalf("TTS chunk %d failed: %v", i, err)
+			log.Fatalf("TTS chunk %d failed after %s: %v", i, time.Since(chunkStart).Truncate(time.Second), err)
 		}
 		allAudio = append(allAudio, audio...)
+		// Per-chunk ETA — useful on 100+ chunk books where the run is measured
+		// in hours. Reports elapsed + projected remaining based on running avg.
+		avg := time.Since(start) / time.Duration(i+1)
+		remaining := avg * time.Duration(len(chunks)-i-1)
+		log.Printf("  chunk %d done in %s (avg %s/chunk, ~%s remaining)",
+			i+1, time.Since(chunkStart).Truncate(time.Second),
+			avg.Truncate(time.Second), remaining.Truncate(time.Second))
 	}
 
 	if err := os.WriteFile(output, allAudio, 0644); err != nil {

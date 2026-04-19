@@ -58,10 +58,12 @@ func MatchAndCreateWorks(store *db.Store) error {
 	// Group books by their parent directory (audio chapters share a dir)
 	// and by normalized metadata for matching across formats.
 	type candidate struct {
-		title     string // best title found
-		author    string // best author found
-		audioIDs  []int64
-		textIDs   []int64
+		dir         string // parent directory (used to reuse existing works on rescan)
+		title       string // best title found
+		author      string // best author found
+		hasAlbumTag bool   // true if any file had an ID3/M4A Album tag
+		audioIDs    []int64
+		textIDs     []int64
 	}
 
 	// First pass: group audio files by directory, text files individually
@@ -76,15 +78,20 @@ func MatchAndCreateWorks(store *db.Store) error {
 
 			c, ok := dirGroups[dir]
 			if !ok {
-				c = &candidate{}
+				c = &candidate{dir: dir}
 				dirGroups[dir] = c
 			}
 			c.audioIDs = append(c.audioIDs, b.ID)
 
-			// Use the best metadata we find (prefer album tag for audiobooks)
-			if b.Album != "" && (c.title == "" || len(b.Album) > len(c.title)) {
-				c.title = b.Album
-			} else if b.Title != "" && c.title == "" {
+			// Use the best metadata we find (prefer album tag for audiobooks).
+			// b.Title from untagged files is just the filename ("01", "02", …);
+			// only accept it if it doesn't look like a track number.
+			if b.Album != "" {
+				c.hasAlbumTag = true
+				if c.title == "" || len(b.Album) > len(c.title) {
+					c.title = b.Album
+				}
+			} else if b.Title != "" && c.title == "" && !looksLikeTrackNumber(b.Title) {
 				c.title = b.Title
 			}
 			if b.Author != "" {
@@ -150,24 +157,60 @@ func MatchAndCreateWorks(store *db.Store) error {
 			}
 		}
 
-		// Create the work
+		// Create the work — or reuse an existing one that already owns audio
+		// from this directory. Without this check, a rescan that surfaces some
+		// files as unassigned (e.g. partial failure, metadata refresh) creates
+		// a fresh duplicate work per call, splitting one audiobook into N
+		// siblings. Observed with Norm Macdonald "Based on a True Story"
+		// (8 mp3s → 7 duplicate works) before this guard existed.
 		workTitle := c.title
+		if c.dir != "" && !c.hasAlbumTag {
+			// No Album tag on any file in this directory — the title came
+			// from a filename ("why we sleep part1", "01", etc.) which is
+			// almost always worse than the directory name.
+			//
+			// Use the full directory name as the work title. Splitting into
+			// "author" vs "title" across a dash is unreliable because some
+			// libraries use "Author – Title" while others use "Title - Author"
+			// (e.g. "Why We Sleep - Matthew Walker"). The metadata editor
+			// lets users fix the split later; a good full name is more
+			// useful than a badly-split guess.
+			parts := strings.Split(c.dir, "/")
+			dirName := parts[len(parts)-1]
+			if dirName != "" {
+				workTitle = dirName
+			}
+		}
 		if workTitle == "" {
 			workTitle = "Unknown Title"
 		}
 
-		workID, err := store.CreateWork(workTitle, c.author)
-		if err != nil {
-			return err
+		var workID int64
+		if c.dir != "" {
+			existingID, err := store.FindWorkByAudioDir(c.dir)
+			if err != nil {
+				return err
+			}
+			workID = existingID
+		}
+
+		if workID == 0 {
+			id, err := store.CreateWork(workTitle, c.author)
+			if err != nil {
+				return err
+			}
+			workID = id
+			log.Printf("created work: %q by %q (%d audio, %d text files)",
+				workTitle, c.author, len(c.audioIDs), len(c.textIDs))
+		} else {
+			log.Printf("adding %d audio + %d text files to existing work %d (dir %q)",
+				len(c.audioIDs), len(c.textIDs), workID, c.dir)
 		}
 
 		allIDs := append(c.audioIDs, c.textIDs...)
 		if err := store.AssignBooksToWork(workID, allIDs); err != nil {
 			return err
 		}
-
-		log.Printf("created work: %q by %q (%d audio, %d text files)",
-			workTitle, c.author, len(c.audioIDs), len(c.textIDs))
 	}
 
 	// Create works for unmatched text files. If a work with the same
@@ -214,6 +257,50 @@ func MatchAndCreateWorks(store *db.Store) error {
 	}
 
 	return nil
+}
+
+// looksLikeTrackNumber returns true if the string is just digits (possibly
+// zero-padded) — e.g. "01", "02", "12". Such "titles" come from untagged mp3
+// files and should not be propagated as the work title.
+func looksLikeTrackNumber(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 4 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// titleFromDirName derives a readable title from a filesystem directory name.
+// Splits on en-dash / em-dash / hyphen and takes the last segment as the title
+// (e.g. "Anthony Burgess – A Clockwork Orange" → "A Clockwork Orange"),
+// because audiobook folders are typically named "Author – Title".
+func titleFromDirName(dir string) string {
+	parts := strings.Split(dir, "/")
+	name := parts[len(parts)-1]
+	for _, sep := range []string{" – ", " — ", " - "} {
+		if idx := strings.Index(name, sep); idx >= 0 {
+			return strings.TrimSpace(name[idx+len(sep):])
+		}
+	}
+	return strings.TrimSpace(name)
+}
+
+// authorFromDirName extracts an author from a directory named "Author – Title"
+// or "Author - Title". Returns "" if no separator is found.
+func authorFromDirName(dir string) string {
+	parts := strings.Split(dir, "/")
+	name := parts[len(parts)-1]
+	for _, sep := range []string{" – ", " — ", " - "} {
+		if idx := strings.Index(name, sep); idx >= 0 {
+			return strings.TrimSpace(name[:idx])
+		}
+	}
+	return ""
 }
 
 // overlapScore counts shared words between two normalized strings.

@@ -168,7 +168,10 @@ func migrate(db *sql.DB) error {
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
-		CREATE INDEX IF NOT EXISTS idx_works_series ON works(series);
+		-- idx_works_series is created after the ALTER TABLE migrations below,
+		-- because pre-existing DBs created before the series column was added
+		-- won't have the column at this point — CREATE TABLE IF NOT EXISTS is
+		-- a no-op for them, so the ALTER below is what actually installs it.
 
 		CREATE TABLE IF NOT EXISTS books (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,6 +376,13 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
 		}
+	}
+
+	// Indexes on post-migration columns. Kept here (not in the CREATE TABLE
+	// block) so pre-existing DBs that missed the original CREATE get the
+	// column added first, then the index built against it.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_works_series ON works(series)`); err != nil {
+		return fmt.Errorf("create idx_works_series: %w", err)
 	}
 
 	// Backfill origin for books created before the origin column existed.
@@ -630,6 +640,27 @@ func (s *Store) AssignBooksToWork(workID int64, bookIDs []int64) error {
 		}
 	}
 	return nil
+}
+
+// FindWorkByAudioDir returns the work_id of an existing work that already owns
+// audio books whose path starts with dirPrefix+"/". Returns 0 if no such work.
+// Used by the matcher to avoid creating duplicate works when a rescan of an
+// already-known directory surfaces some files as unassigned (e.g. after a
+// partial failure or metadata re-read).
+func (s *Store) FindWorkByAudioDir(dirPrefix string) (int64, error) {
+	var workID int64
+	err := s.db.QueryRow(`
+		SELECT work_id FROM books
+		WHERE media_type = 'audio' AND work_id != 0 AND path LIKE ? || '/%'
+		LIMIT 1
+	`, dirPrefix).Scan(&workID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return workID, nil
 }
 
 func (s *Store) ListBooks() ([]Book, error) {

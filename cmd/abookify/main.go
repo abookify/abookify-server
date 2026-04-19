@@ -53,6 +53,10 @@ func main() {
 		log.Printf("warning: matching failed: %v", err)
 	}
 
+	// Import .stt.json sidecars produced by stt-cli (if any exist next to
+	// audio files). Idempotent — skips works that already have sync_data.
+	library.ImportSidecars(store, *libraryPath)
+
 	// Propagate series metadata from EPUBs up to their parent works.
 	// Runs once per boot — idempotent (skips works that already have series set).
 	worksList, _ := store.ListWorks()
