@@ -933,11 +933,21 @@
 
       try {
         const res = await fetch(`/api/books/${bookId}/chapters`);
-        const chapters = await res.json();
+        const body = await res.json();
+        // Server returns a JSON array on success and a {error} object on
+        // failure — don't let an error response crash renderChapterList's
+        // .map() call. Observed the TypeError on Freud when hitting the
+        // reader before the DB settled after sidecar re-import.
+        const chapters = Array.isArray(body) ? body : [];
+        if (!Array.isArray(body)) {
+          console.warn('chapter list API returned non-array for book ' + bookId, body);
+        }
         chapterCache[bookId] = { chapters, loadedContent: {} };
         renderChapterList(bookId, workId);
       } catch (e) {
         console.error('Failed to load chapters:', e);
+        chapterCache[bookId] = { chapters: [], loadedContent: {} };
+        renderChapterList(bookId, workId);
       }
     }
 
@@ -1038,6 +1048,16 @@
     let currentAudioIndex = 0;
     let currentAudioFiles = [];
     let positionSaveInterval = null;
+    // For multi-file audiobooks where the sync timeline is absolute across the
+    // whole concatenated book (e.g. sidecar-imported works), this is the
+    // cumulative duration of files played before the current one. The karaoke
+    // loop adds it to player.currentTime to get the global book position.
+    // Stays 0 for single-file audiobooks or per-file sync (normal case).
+    let currentAudioOffset = 0;
+    // The book_id that owns the sync_data for this timeline. For single-file
+    // or per-file sync, same as currentPlayingId. For multi-file whole-book
+    // sync, always the first audio book of the work.
+    let currentSyncBookId = null;
 
     async function playAudio(bookId, audioIndex, workId, title, workTitle, startSec) {
       document.querySelectorAll('.chapter-row.playing').forEach(el => el.classList.remove('playing'));
@@ -1076,6 +1096,29 @@
       const work = allWorks.find(w => w.id === workId);
       currentAudioFiles = work ? (work.audio_files || []) : [];
 
+      // For multi-file audiobooks with whole-book sync (sidecar-imported),
+      // the sync timeline is absolute across ALL files concatenated. The
+      // sync_data lives on the FIRST audio book only. Each subsequent file
+      // needs its start offset added to player.currentTime before looking
+      // up words.
+      currentAudioOffset = 0;
+      currentSyncBookId = bookId;
+      if (currentAudioFiles.length > 1) {
+        // Is there sync data on the first book (the multi-file pattern)?
+        // Probe asynchronously — for now assume the first-book convention.
+        const firstBookId = currentAudioFiles[0].id;
+        if (firstBookId !== bookId) {
+          // Sum durations of files 0..audioIndex-1 to compute offset.
+          let offset = 0;
+          for (let i = 0; i < audioIndex && i < currentAudioFiles.length; i++) {
+            offset += currentAudioFiles[i].duration_secs || 0;
+          }
+          currentAudioOffset = offset;
+          currentSyncBookId = firstBookId;
+          console.log(`Multi-file audio: file index=${audioIndex} offset=${offset.toFixed(0)}s, sync via book ${firstBookId}`);
+        }
+      }
+
       // Order matters here:
       //   1. Load the linked text chapter into the reader FIRST.
       //   2. Then overlay karaoke spans.
@@ -1094,6 +1137,10 @@
       // Detected chapters inside a single-file book all share sync data stored at
       // chapter_idx=0 (the whole-file word stream). Pass 0 in that case + a
       // chapter time-range so the karaoke layer only renders this chapter's words.
+      //
+      // Multi-file audiobooks: look up sync on currentSyncBookId (= first file
+      // of the work) rather than the currently-playing file, since sidecar
+      // import only attaches sync_data to the first book.
       const detectedChapters = audioChapterCache[bookId];
       const syncChapterIdx = (detectedChapters && detectedChapters.length > 0) ? 0 : audioIndex;
       let chapterRange = null;
@@ -1103,10 +1150,20 @@
           // Widen the window very slightly so boundary words don't get clipped.
           chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
         }
+      } else if (currentAudioFiles.length > 1) {
+        // For multi-file books without detected chapters, scope the sync
+        // data to *this file's* time window within the absolute book timeline.
+        const fileDur = currentAudioFiles[audioIndex]?.duration_secs || 0;
+        if (fileDur > 0) {
+          chapterRange = {
+            start: Math.max(0, currentAudioOffset - 0.5),
+            end: currentAudioOffset + fileDur + 0.5,
+          };
+        }
       }
       if (syncEnabled[workId] !== false && work) {
-        console.log('Sync: trying to load sync data', { workId, bookId, syncChapterIdx, audioIndex, chapterRange });
-        const hasSyncData = await loadSyncData(workId, bookId, syncChapterIdx, chapterRange);
+        console.log('Sync: trying to load sync data', { workId, syncBookId: currentSyncBookId, syncChapterIdx, audioIndex, chapterRange, offset: currentAudioOffset });
+        const hasSyncData = await loadSyncData(workId, currentSyncBookId, syncChapterIdx, chapterRange);
         console.log('Sync: hasSyncData =', hasSyncData);
       }
 
@@ -1318,6 +1375,21 @@
       // or inline tags (i.e. rich content from content_html).
       const hasRichContent = reader.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, em, strong');
 
+      // Per-word <span> rendering does not scale indefinitely. A full-length
+      // non-fiction audiobook can produce 60k–160k sync words; writing that
+      // many span elements to innerHTML locks the main thread for seconds on
+      // a laptop and can silently fail on mobile. Above this cap we still
+      // show the text (in plain-text form) but skip karaoke wrapping.
+      const MAX_KARAOKE_WORDS = 8000;
+      const isTooBigForSpans = timestamps.length > MAX_KARAOKE_WORDS;
+
+      if (isTooBigForSpans) {
+        // Leave the reader's plain-text render intact and disable highlighting.
+        karaokeHighlightSafe = false;
+        console.warn(`Sync: ${timestamps.length} words > ${MAX_KARAOKE_WORDS} cap — karaoke disabled for this chapter. Fix by re-running with chapter detection so each chapter is smaller.`);
+        return;
+      }
+
       if (hasRichContent) {
         // Rich HTML in the reader. Two subcases:
         //   a) Text came from a transcript → DOM words == sync words (1:1),
@@ -1395,7 +1467,11 @@
         }
 
         const player = document.getElementById('audio-player');
-        const time = player.currentTime;
+        // Effective time in the book's absolute timeline. For single-file
+        // audiobooks this equals player.currentTime. For multi-file books
+        // where sync_data was imported once across all files, add the
+        // cumulative offset of files played before the current one.
+        const time = player.currentTime + currentAudioOffset;
 
         // Debug log every 2 seconds
         if (Math.floor(time) !== Math.floor(lastLogTime) && Math.floor(time) % 2 === 0) {
