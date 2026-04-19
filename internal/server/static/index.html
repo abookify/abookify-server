@@ -739,29 +739,23 @@
           <button class="generate-btn" onclick="generateAudio(${work.id})" id="gen-audio-${work.id}">Generate with TTS</button>
         </div></div>`;
       }
-      const hasText = work.has_text && work.text_files && work.text_files.length > 0;
-      // Single-file audiobooks may have detected chapters (narrator says "Chapter N").
-      // If so, we render per-chapter rows pointing into the same file with seek offsets.
-      // Fallback: one row per audio file (existing behavior for multi-file books).
-      const isSingleFile = files.length === 1;
+      // Always start with a "loading chapters" placeholder — the first audio
+      // book may have detected chapters describing the whole-book timeline
+      // (single-file detection, or sidecar-imported whole-book chapters for
+      // multi-file audiobooks). If so, we show those chapters instead of the
+      // raw mp3 file list, because physical file boundaries are storage, not
+      // content. Clicking a chapter seeks to the right file + offset via
+      // seekToAbsoluteBookTime. Fall back to file list if no chapters found.
       const audioListId = 'audio-chapters-' + work.id;
-      const rowsHtml = isSingleFile
-        ? `<div id="${audioListId}"><div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">Loading chapters&hellip;</div></div>`
-        : files.map((f, i) => `
-            <div class="chapter-row" id="audio-ch-${f.id}" onclick="playAudio(${f.id}, ${i}, ${work.id}, '${escapeJs(f.title || f.filename)}', '${escapeJs(work.title)}')">
-              <button class="play-btn">&#9654;</button>
-              <span class="chapter-name">${escapeHtml(f.title || f.filename)}</span>
-              <span class="chapter-size">${f.duration_secs ? formatTime(f.duration_secs) : formatSize(f.size_bytes)}</span>
-            </div>
-          `).join('');
-      if (isSingleFile) {
-        // Defer chapter fetch; renderAudioChapterList fills in the placeholder.
-        queueMicrotask(() => loadAudioChapterList(files[0], work));
-      }
+      queueMicrotask(() => loadAudioChapterList(files[0], work));
       return `
         <div class="split-pane">
           <div class="pane-header audio">&#9835; Audiobook &middot; <span id="audio-count-${work.id}">${files.length}</span> chapters</div>
-          <div class="chapter-list">${rowsHtml}</div>
+          <div class="chapter-list">
+            <div id="${audioListId}">
+              <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">Loading chapters&hellip;</div>
+            </div>
+          </div>
         </div>`;
     }
 
@@ -775,34 +769,54 @@
       if (!chapters) {
         try {
           const res = await fetch(`/api/books/${file.id}/chapters`);
-          chapters = await res.json() || [];
+          const body = await res.json();
+          chapters = Array.isArray(body) ? body : [];
         } catch (e) {
           chapters = [];
         }
         audioChapterCache[file.id] = chapters;
       }
-      const label = escapeJs(file.title || file.filename);
+      const files = work.audio_files || [];
       const workTitle = escapeJs(work.title);
-      // No detected chapters → render as single row for the whole file.
+
+      // No detected chapters: fall back to the raw file list (still useful
+      // for multi-file audiobooks without sidecar chapter detection, or for
+      // single files where detection produced nothing).
       if (!chapters.length) {
-        mount.innerHTML = `
-          <div class="chapter-row" id="audio-ch-${file.id}" onclick="playAudio(${file.id}, 0, ${work.id}, '${label}', '${workTitle}')">
-            <button class="play-btn">&#9654;</button>
-            <span class="chapter-name">${escapeHtml(file.title || file.filename)}</span>
-            <span class="chapter-size">${file.duration_secs ? formatTime(file.duration_secs) : formatSize(file.size_bytes)}</span>
-          </div>`;
+        if (files.length === 1) {
+          const f = files[0];
+          mount.innerHTML = `
+            <div class="chapter-row" id="audio-ch-${f.id}" onclick="playAudio(${f.id}, 0, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
+              <button class="play-btn">&#9654;</button>
+              <span class="chapter-name">${escapeHtml(f.title || f.filename)}</span>
+              <span class="chapter-size">${f.duration_secs ? formatTime(f.duration_secs) : formatSize(f.size_bytes)}</span>
+            </div>`;
+        } else {
+          mount.innerHTML = files.map((f, i) => `
+            <div class="chapter-row" id="audio-ch-${f.id}" onclick="playAudio(${f.id}, ${i}, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
+              <button class="play-btn">&#9654;</button>
+              <span class="chapter-name">${escapeHtml(f.title || f.filename)}</span>
+              <span class="chapter-size">${f.duration_secs ? formatTime(f.duration_secs) : formatSize(f.size_bytes)}</span>
+            </div>
+          `).join('');
+        }
         return;
       }
+
+      // Have detected chapters — render them as the authoritative navigation.
+      // Click → seekToAbsoluteBookTime, which picks the right file for us.
+      // These chapter rows hide physical file boundaries, which the user
+      // shouldn't need to care about ("why we sleep part 1/2/3" is storage,
+      // not content).
       mount.innerHTML = chapters.map((ch, i) => {
         const dur = (ch.end_sec || 0) - (ch.start_sec || 0);
         return `
-          <div class="chapter-row" id="audio-ch-${file.id}-${ch.index}" onclick="playAudio(${file.id}, ${ch.index}, ${work.id}, '${escapeJs(ch.title)}', '${workTitle}', ${ch.start_sec || 0})">
+          <div class="chapter-row" id="audio-ch-${work.id}-${ch.index}" onclick="seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, ${JSON.stringify(ch.title)})">
             <button class="play-btn">&#9654;</button>
             <span class="chapter-name">${escapeHtml(ch.title)}</span>
             <span class="chapter-size">${formatTime(dur)}</span>
           </div>`;
       }).join('');
-      // Update the "N chapters" label in the pane header.
       const counter = document.getElementById('audio-count-' + work.id);
       if (counter) counter.textContent = chapters.length;
     }
@@ -1004,17 +1018,19 @@
         if (row) row.classList.add('active');
       }
 
-      // If this text chapter was derived from a detected audio chapter
-      // (start_sec > 0), follow the link back to the audio side so clicking
-      // either pane keeps the other in sync. Skipped when called from playAudio.
+      // If this text chapter was derived from the audio timeline
+      // (start_sec > 0), seek audio to the matching book-absolute time.
+      // For multi-file audiobooks this means picking the right file AND a
+      // local offset inside it — the old chapter_links path assumed 1:1
+      // text-chapter ↔ mp3-file which doesn't hold when sidecar chapter
+      // detection (via pauses) produces more chapters than there are files.
       if (!opts.skipAudioSeek) {
         const meta = chapterCache[bookId]?.chapters?.find(c => c.index === index);
         if (meta && meta.start_sec > 0) {
           const work = allWorks.find(w => w.id === workId);
-          const link = work?.chapter_links?.find(l => l.text_book_id === bookId && l.text_index === index);
-          if (link) {
+          if (work) {
             const title = meta.title || `Chapter ${index + 1}`;
-            playAudio(link.audio_book_id, link.audio_index, workId, title, work.title, meta.start_sec);
+            seekToAbsoluteBookTime(work, meta.start_sec, title);
           }
         }
       }
@@ -1042,6 +1058,62 @@
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';
       }
+    }
+
+    // Given a work + absolute book time (seconds from concatenated start
+    // of all audio files), figure out which audio file contains that moment
+    // and seek to the matching local offset. This is the authoritative way
+    // to jump to a content chapter for multi-file audiobooks with whole-book
+    // sync — the old "match text index to audio index" heuristic breaks
+    // whenever detected chapter count != file count.
+    //
+    // Also navigates the reader pane to the text chapter whose [start,end)
+    // time range contains absSecs, so clicking a chapter from the audio side
+    // also updates the text side (and vice versa).
+    async function seekToAbsoluteBookTime(work, absSecs, title) {
+      const files = work.audio_files || [];
+      if (files.length === 0) return;
+
+      // Find the right file + local offset.
+      let fileIdx = 0, localSec = 0;
+      let cumulative = 0;
+      for (let i = 0; i < files.length; i++) {
+        const dur = files[i].duration_secs || 0;
+        if (cumulative + dur >= absSecs || i === files.length - 1) {
+          fileIdx = i;
+          localSec = Math.max(0, absSecs - cumulative);
+          break;
+        }
+        cumulative += dur;
+      }
+
+      // Sync the reader pane: find the text chapter whose time range covers
+      // absSecs and load it. Skip the recursive audio seek since we're
+      // about to call playAudio ourselves.
+      const textFile = (work.text_files || [])[0];
+      if (textFile) {
+        const cached = chapterCache[textFile.id]?.chapters;
+        if (cached && cached.length) {
+          const match = cached.find(c =>
+            (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
+          if (match) {
+            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true });
+          }
+        } else {
+          // Chapter list hasn't been fetched yet — load it then retry.
+          await loadChapterList(textFile.id, work.id);
+          const chs = chapterCache[textFile.id]?.chapters;
+          const match = chs?.find(c =>
+            (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
+          if (match) {
+            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true });
+          }
+        }
+      }
+
+      playAudio(files[fileIdx].id, fileIdx, work.id,
+        title || files[fileIdx].title || files[fileIdx].filename,
+        work.title, localSec);
     }
 
     let currentWorkId = null;
@@ -1119,40 +1191,48 @@
         }
       }
 
-      // Order matters here:
-      //   1. Load the linked text chapter into the reader FIRST.
-      //   2. Then overlay karaoke spans.
-      // Otherwise renderChapterContent would run after renderSyncedText and
-      // wipe out the sync-word spans — the symptom was 438 Days showing plain
-      // chapter text without any highlighting after it started playing.
-      if (syncEnabled[workId] !== false && work && work.chapter_links) {
-        const link = work.chapter_links.find(l => l.audio_index == audioIndex);
-        if (link) {
-          await loadChapterList(link.text_book_id, workId);
-          await loadChapter(link.text_book_id, link.text_index, workId, { skipAudioSeek: true });
+      // Load the matching text chapter into the reader FIRST (before sync
+      // overlays spans — otherwise renderChapterContent runs after
+      // renderSyncedText and wipes the spans). Find the text chapter whose
+      // absolute time range contains the current playback position. This
+      // supersedes the old chapter_links lookup which was broken for
+      // multi-file audiobooks (linker assumed 1:1 text_chapter↔mp3_file).
+      if (syncEnabled[workId] !== false && work) {
+        const textFile = (work.text_files || [])[0];
+        if (textFile) {
+          await loadChapterList(textFile.id, workId);
+          const chs = chapterCache[textFile.id]?.chapters || [];
+          const absTimeForLookup = (typeof startSec === 'number' && startSec > 0)
+            ? startSec + currentAudioOffset
+            : currentAudioOffset;
+          const match = chs.find(c =>
+            (c.start_sec || 0) <= absTimeForLookup && (c.end_sec || 1e12) > absTimeForLookup);
+          if (match) {
+            await loadChapter(textFile.id, match.index, workId, { skipAudioSeek: true });
+          }
         }
       }
 
-      // Sync: load word-level timestamps for karaoke, or fall back to chapter-level.
-      // Detected chapters inside a single-file book all share sync data stored at
-      // chapter_idx=0 (the whole-file word stream). Pass 0 in that case + a
-      // chapter time-range so the karaoke layer only renders this chapter's words.
+      // Scope the sync data to the detected chapter whose range covers the
+      // current playback position (in absolute book time). This makes the
+      // reader pane show the right chapter's text regardless of which
+      // physical file the user happens to be playing. For works without
+      // detected chapters, fall back to the current file's time window so
+      // we don't pull in the whole book's worth of sync words.
       //
-      // Multi-file audiobooks: look up sync on currentSyncBookId (= first file
-      // of the work) rather than the currently-playing file, since sidecar
-      // import only attaches sync_data to the first book.
-      const detectedChapters = audioChapterCache[bookId];
-      const syncChapterIdx = (detectedChapters && detectedChapters.length > 0) ? 0 : audioIndex;
+      // Detected chapters are stored on the first audio book (currentSyncBookId).
+      const absTime = (typeof startSec === 'number' && startSec > 0)
+        ? startSec + currentAudioOffset
+        : currentAudioOffset;
+      const detectedChapters = audioChapterCache[currentSyncBookId];
       let chapterRange = null;
       if (detectedChapters && detectedChapters.length > 0) {
-        const ch = detectedChapters.find(c => c.index === audioIndex);
-        if (ch && ch.end_sec > ch.start_sec) {
-          // Widen the window very slightly so boundary words don't get clipped.
+        const ch = detectedChapters.find(c =>
+          (c.start_sec || 0) <= absTime && (c.end_sec || 1e12) > absTime);
+        if (ch) {
           chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
         }
       } else if (currentAudioFiles.length > 1) {
-        // For multi-file books without detected chapters, scope the sync
-        // data to *this file's* time window within the absolute book timeline.
         const fileDur = currentAudioFiles[audioIndex]?.duration_secs || 0;
         if (fileDur > 0) {
           chapterRange = {
@@ -1162,8 +1242,8 @@
         }
       }
       if (syncEnabled[workId] !== false && work) {
-        console.log('Sync: trying to load sync data', { workId, syncBookId: currentSyncBookId, syncChapterIdx, audioIndex, chapterRange, offset: currentAudioOffset });
-        const hasSyncData = await loadSyncData(workId, currentSyncBookId, syncChapterIdx, chapterRange);
+        console.log('Sync: loading', { workId, syncBookId: currentSyncBookId, absTime, chapterRange, offset: currentAudioOffset });
+        const hasSyncData = await loadSyncData(workId, currentSyncBookId, 0, chapterRange);
         console.log('Sync: hasSyncData =', hasSyncData);
       }
 
@@ -1840,26 +1920,33 @@
       if (!bar || !p.duration) return;
       // Remove old ticks.
       bar.querySelectorAll('.chapter-tick').forEach(el => el.remove());
-      // Get detected chapters from audioChapterCache for the current book.
-      const chapters = currentPlayingId ? audioChapterCache[currentPlayingId] : null;
+      // Detected chapters are stored in absolute-book-time. They live on
+      // currentSyncBookId (= first audio book for multi-file works). The
+      // scrubber is local to the currently-playing file, so we have to
+      // translate each chapter's absolute start into a file-local time and
+      // skip the chapters that fall outside this file's window.
+      const chapters = currentSyncBookId ? audioChapterCache[currentSyncBookId] : null;
       if (!chapters || chapters.length < 2) return;
+      const fileStart = currentAudioOffset;
+      const fileEnd = currentAudioOffset + p.duration;
+      const work = allWorks.find(w => w.id === currentWorkId);
       chapters.forEach((ch, idx) => {
-        if (!ch.start_sec || ch.start_sec <= 0) return;
-        const pct = (ch.start_sec / p.duration) * 100;
-        if (pct > 99) return;
+        const absStart = ch.start_sec || 0;
+        if (absStart < fileStart || absStart > fileEnd) return;
+        const localStart = absStart - fileStart;
+        const pct = (localStart / p.duration) * 100;
+        if (pct < 0.5 || pct > 99) return;
         const tick = document.createElement('div');
         tick.className = 'chapter-tick';
         tick.style.left = pct + '%';
-        // Tooltip: "Ch 14 · Chapter name · 38:12" — chapter number + title +
-        // time so the scrubber reads as an actual TOC at a glance.
         const label = ch.title || `Chapter ${idx + 1}`;
-        // data-tooltip triggers our fast custom tooltip (not the native 1s delayed one).
-        tick.dataset.tooltip = `Ch ${idx + 1} · ${label} · ${fmtPlayerTime(ch.start_sec)}`;
+        tick.dataset.tooltip = `Ch ${idx + 1} · ${label} · ${fmtPlayerTime(absStart)}`;
         tick.addEventListener('click', (e) => {
-          // Clicking a tick jumps to that chapter directly — easier than
-          // trying to hit the exact scrubber pixel.
           e.stopPropagation();
-          if (p && p.duration) p.currentTime = ch.start_sec;
+          // Use seekToAbsoluteBookTime so clicks work correctly for multi-
+          // file books (may cross file boundaries).
+          if (work) seekToAbsoluteBookTime(work, absStart, label);
+          else if (p && p.duration) p.currentTime = localStart;
         });
         bar.appendChild(tick);
       });
