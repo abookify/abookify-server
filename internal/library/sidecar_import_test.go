@@ -185,6 +185,109 @@ func TestInferChapterTitle(t *testing.T) {
 	}
 }
 
+// v2 silence-based chapter detection: chapter-kind silences become the
+// chapter boundaries. First chapter is always at word 0.
+func TestDetectChaptersFromSilences_V2(t *testing.T) {
+	// 10 words, two chapter-grade silences between words 3-4 and 7-8.
+	words := []sttWord{
+		{Start: 0.0, End: 0.3, Word: "one"},
+		{Start: 0.3, End: 0.6, Word: " two"},
+		{Start: 0.6, End: 0.9, Word: " three"},
+		{Start: 0.9, End: 1.2, Word: " four"},
+		// chapter silence 1.2-5.0
+		{Start: 5.0, End: 5.3, Word: " five"},
+		{Start: 5.3, End: 5.6, Word: " six"},
+		{Start: 5.6, End: 5.9, Word: " seven"},
+		{Start: 5.9, End: 6.2, Word: " eight"},
+		// chapter silence 6.2-10.0
+		{Start: 10.0, End: 10.3, Word: " nine"},
+		{Start: 10.3, End: 10.6, Word: " ten"},
+	}
+	sc := &sttSidecar{
+		Version:  2,
+		Duration: 11.0,
+		Words:    words,
+		Silences: []sttSilence{
+			{Start: 1.2, End: 5.0, Duration: 3.8, Kind: "chapter"},
+			{Start: 6.2, End: 10.0, Duration: 3.8, Kind: "chapter"},
+		},
+	}
+	chs := detectChaptersFromSilences(sc)
+	if len(chs) != 3 {
+		t.Fatalf("want 3 chapters (word 0 + 2 silence boundaries), got %d", len(chs))
+	}
+	if chs[0].WordIdx != 0 {
+		t.Errorf("chapter 1 WordIdx: got %d want 0", chs[0].WordIdx)
+	}
+	if chs[1].WordIdx != 4 {
+		t.Errorf("chapter 2 WordIdx: got %d want 4 (first word after silence 1)", chs[1].WordIdx)
+	}
+	if chs[2].WordIdx != 8 {
+		t.Errorf("chapter 3 WordIdx: got %d want 8 (first word after silence 2)", chs[2].WordIdx)
+	}
+}
+
+// v2 paragraph detection returns chapter-local word-index ranges bounded
+// by paragraph-grade silence events.
+func TestDetectParagraphsFromSilences_V2(t *testing.T) {
+	words := []sttWord{
+		{Start: 0.0, End: 0.3, Word: "one"},
+		{Start: 0.3, End: 0.6, Word: " two"},
+		// paragraph silence 0.6-1.4 (0.8s)
+		{Start: 1.4, End: 1.7, Word: " three"},
+		{Start: 1.7, End: 2.0, Word: " four"},
+		// paragraph silence 2.0-3.0 (1.0s)
+		{Start: 3.0, End: 3.3, Word: " five"},
+	}
+	sc := &sttSidecar{
+		Version: 2,
+		Words:   words,
+		Silences: []sttSilence{
+			{Start: 0.6, End: 1.4, Duration: 0.8, Kind: "paragraph"},
+			{Start: 2.0, End: 3.0, Duration: 1.0, Kind: "paragraph"},
+		},
+	}
+	paras := detectParagraphsFromSilences(sc, 0, 5)
+	if len(paras) != 3 {
+		t.Fatalf("want 3 paragraphs, got %d: %+v", len(paras), paras)
+	}
+	want := [][]int{{0, 2}, {2, 4}, {4, 5}}
+	for i, w := range want {
+		if paras[i].start != w[0] || paras[i].end != w[1] {
+			t.Errorf("para %d: got [%d,%d), want [%d,%d)", i, paras[i].start, paras[i].end, w[0], w[1])
+		}
+	}
+}
+
+// v2 content builder uses silence events for paragraph breaks (real
+// acoustic) not word gaps (interpolated by Whisper).
+func TestBuildChapterContentV2_UsesSilences(t *testing.T) {
+	// Words with ZERO gaps (simulating Whisper within-segment interpolation).
+	// v1 would miss the paragraph break; v2 catches it via the silence event.
+	words := []sttWord{
+		{Start: 0.0, End: 0.3, Word: "hello"},
+		{Start: 0.3, End: 0.6, Word: " world"},
+		{Start: 0.6, End: 0.9, Word: " next"}, // Whisper says no gap, but silence event says 0.7s pause
+		{Start: 0.9, End: 1.2, Word: " sentence"},
+	}
+	silences := []sttSilence{
+		{Start: 0.55, End: 0.85, Duration: 0.30, Kind: "sentence"},
+		{Start: 0.55, End: 0.85, Duration: 0.70, Kind: "paragraph"}, // the real one
+	}
+	// v2 path: paragraph break after "world" (word 1, before word 2).
+	got := buildChapterContentByIdxWithSilences(words, silences, 0, 4)
+	want := "hello world\n\nnext sentence"
+	if got != want {
+		t.Errorf("v2 builder: got %q, want %q", got, want)
+	}
+	// v1 path: no silences → word-gap math → no break (all 0s gaps).
+	gotV1 := buildChapterContentByIdxWithSilences(words, nil, 0, 4)
+	wantV1 := "hello world next sentence"
+	if gotV1 != wantV1 {
+		t.Errorf("v1 builder: got %q, want %q", gotV1, wantV1)
+	}
+}
+
 // Content builder should insert \n\n at pause boundaries so the FE can
 // split on double-newline.
 func TestBuildChapterContentByIdx_InsertsParagraphBreaks(t *testing.T) {

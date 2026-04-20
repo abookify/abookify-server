@@ -17,22 +17,39 @@ import (
 	"github.com/pj/abookify/internal/db"
 )
 
-// sttSidecar is the JSON structure written by stt-cli.
+// sttSidecar is the JSON structure written by stt-cli. Handles both v1
+// (no "version" field) and v2 (version=2, with silences + events). v2
+// carries real acoustic silence events from ffmpeg silencedetect as
+// ground truth for chapter/paragraph boundaries.
 type sttSidecar struct {
-	Language string           `json:"language"`
-	Duration float64          `json:"duration"`
-	Text     string           `json:"text"`
-	Words    []sttWord        `json:"words"`
-	Chapters []sttChapter     `json:"chapters"`
-	Sources  []sttSource      `json:"sources"`
+	Version  int            `json:"version"`
+	Language string         `json:"language"`
+	Duration float64        `json:"duration"`
+	Text     string         `json:"text"`
+	Words    []sttWord      `json:"words"`
+	Silences []sttSilence   `json:"silences"` // v2 only
+	Chapters []sttChapter   `json:"chapters"`
+	Sources  []sttSource    `json:"sources"`
 }
 
 // Note the compact field names. stt-cli emits sync data in this shape
 // (s/e/w) to keep the JSON size manageable — 70k+ words adds up fast.
 type sttWord struct {
-	Start float64 `json:"s"`
-	End   float64 `json:"e"`
-	Word  string  `json:"w"`
+	Start       float64 `json:"s"`
+	End         float64 `json:"e"`
+	Word        string  `json:"w"`
+	Probability float64 `json:"conf,omitempty"` // v2 only (Whisper confidence)
+}
+
+// sttSilence is an independently-measured acoustic silence event (v2).
+// Source is "silencedetect" or "vad" or "both".
+type sttSilence struct {
+	Start    float64 `json:"s"`
+	End      float64 `json:"e"`
+	Duration float64 `json:"duration"`
+	Source   string  `json:"source"`
+	RmsDB    float64 `json:"rms_db,omitempty"`
+	Kind     string  `json:"kind"` // "chapter" | "paragraph" | "sentence" | "breath"
 }
 
 type sttChapter struct {
@@ -48,6 +65,9 @@ type sttSource struct {
 	OffsetSecs float64 `json:"offset_secs"`
 	Duration   float64 `json:"duration_secs"`
 }
+
+// isV2 reports whether the sidecar uses the v2 schema (with silence events).
+func (s *sttSidecar) isV2() bool { return s.Version >= 2 && len(s.Silences) > 0 }
 
 // ImportSidecars scans the library root for .stt.json files next to audiobook
 // directories or audio files. For each sidecar found, it imports word
@@ -167,15 +187,22 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 	}
 
 	// Decide which chapter list to use on the audio book. Priority:
-	//   1. Narrator-pattern chapters from sidecar, if reliable (prior check).
-	//   2. Our own DetectChapters against the sidecar's word stream. This
-	//      finds every "chapter N"/"part N" narrator phrase, then keeps only
-	//      the longest monotonic subsequence (1, 2, 3, ...). Drops spurious
-	//      mid-text references (narrator saying "as I discussed in chapter 6").
-	//   3. Pause-based detection — pure acoustic fallback if the book has no
-	//      spoken chapter announcements at all (Freud's Roman-numeral sections).
+	//   1. v2 silence events + narrator pattern: ground-truth pauses from
+	//      ffmpeg silencedetect tell us where real chapter breaks are.
+	//   2. Narrator-pattern chapters from sidecar, if reliable (prior check).
+	//   3. DetectChapters on the word stream — finds every narrator-phrase
+	//      "chapter N"/"part N", keeps the longest monotonic run.
+	//   4. Pause-based word-gap detection — last-resort fallback for v1
+	//      sidecars of books with no spoken chapter announcements.
 	audioChapters := sc.Chapters
-	if !chaptersLookReliable(sc.Chapters, sc.Duration) {
+	if sc.isV2() {
+		silChapters := detectChaptersFromSilences(&sc)
+		if len(silChapters) >= 3 {
+			log.Printf("sidecar-import: v2 silence-based detection found %d chapters", len(silChapters))
+			audioChapters = silChapters
+		}
+	}
+	if len(audioChapters) == 0 || !chaptersLookReliable(audioChapters, sc.Duration) {
 		// Convert sidecar words into the internal SyncTimestamp format so we
 		// can feed them to DetectChapters.
 		syncWords := sttToSyncTimestamps(sc.Words)
@@ -307,6 +334,20 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	chaptersToUse := sc.Chapters
 	reliable := chaptersLookReliable(sc.Chapters, sc.Duration)
 	useChapters := len(sc.Chapters) > 0 && reliable
+
+	// v2 priority: use real acoustic silence events for chapter boundaries.
+	// Runs first because silence-grade pauses are ground truth, not
+	// interpolated. Falls through to v1 heuristics if sidecar is v1 or
+	// silence-based detection produced too few chapters.
+	if !useChapters && sc.isV2() {
+		silChapters := detectChaptersFromSilences(sc)
+		if len(silChapters) >= 3 {
+			chaptersToUse = silChapters
+			useChapters = true
+			log.Printf("sidecar-import: text book using v2 silence-based chapters (%d)", len(silChapters))
+		}
+	}
+
 	if !useChapters {
 		syncWords := sttToSyncTimestamps(sc.Words)
 		detected := DetectChapters(syncWords, sc.Duration)
@@ -394,9 +435,17 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// other's work.
 	allParas := []db.Paragraph{}
 
+	// When v2, pass the silences through to the content builder so
+	// paragraph breaks come from acoustic ground truth rather than word-gap
+	// math.
+	var contentSilences []sttSilence
+	if sc.isV2() {
+		contentSilences = sc.Silences
+	}
+
 	for idx, r := range ranges {
 		wStart, wEnd := wordIdxRanges[idx].start, wordIdxRanges[idx].end
-		content := buildChapterContentByIdx(sc.Words, wStart, wEnd)
+		content := buildChapterContentByIdxWithSilences(sc.Words, contentSilences, wStart, wEnd)
 		wordCount := 0
 		if content != "" {
 			wordCount = len(strings.Fields(content))
@@ -413,13 +462,20 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 			Confidence: 0.9,
 		})
 
-		// Build paragraph rows from pause detection. These let the FE render
-		// the chapter as real paragraphs and only wrap sync-spans for the
+		// Build paragraph rows. v2 uses real silence events (ground truth);
+		// v1 falls back to word-gap math. These let the FE render the
+		// chapter as real paragraphs and only wrap sync-spans for the
 		// active one (bounded DOM cost regardless of chapter size).
-		pRanges := detectParagraphsFromPauses(sc.Words, wStart, wEnd)
+		var pRanges []idxRange
+		if sc.isV2() {
+			pRanges = detectParagraphsFromSilences(sc, wStart, wEnd)
+		}
+		if len(pRanges) == 0 {
+			pRanges = detectParagraphsFromPauses(sc.Words, wStart, wEnd)
+		}
 		for pi, pr := range pRanges {
 			// pr.start/end are chapter-local word indices.
-			text := buildChapterContentByIdx(sc.Words, wStart+pr.start, wStart+pr.end)
+			text := buildChapterContentByIdxWithSilences(sc.Words, contentSilences, wStart+pr.start, wStart+pr.end)
 			if text == "" {
 				continue
 			}
@@ -441,6 +497,106 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	}
 
 	return nil
+}
+
+// detectChaptersFromSilences (v2 path) uses real acoustic silence events
+// as the primary signal for chapter boundaries. A silence with kind="chapter"
+// is a candidate; we then look at the next few words to extract a title
+// and check for a narrator announcement ("Chapter N"). This is strictly
+// better than v1 pause-based detection because:
+//
+//   - Silences are measured independently of Whisper's interpolated word
+//     timestamps, so we see real pauses that Whisper missed.
+//   - Silence duration is ground truth — no more guessing whether a gap
+//     is a segment boundary or interpolated zero.
+//   - Every silence carries a source tag (silencedetect/vad/both) so we
+//     could eventually weight by detector agreement.
+func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
+	if !sc.isV2() || len(sc.Silences) == 0 {
+		return nil
+	}
+
+	// Find all "chapter"-grade silences. The first chapter starts at word 0
+	// regardless (books rarely open with 3s of dead air — we want the
+	// opening content, not silence).
+	var chapters []sttChapter
+	chapters = append(chapters, sttChapter{
+		Title:   inferChapterTitle(sc.Words, 0, 1),
+		Start:   0,
+		WordIdx: 0,
+	})
+
+	for _, sil := range sc.Silences {
+		if sil.Kind != "chapter" {
+			continue
+		}
+		// First word after this silence is where the chapter starts.
+		wordIdx := wordAtOrAfter(sc.Words, sil.End)
+		if wordIdx < 0 || wordIdx >= len(sc.Words) {
+			continue
+		}
+		// Dedup: don't double-register chapters sharing the same word index
+		// (can happen when multiple chapter-silences are adjacent without
+		// speech between them, e.g. file-boundary joins).
+		if len(chapters) > 0 && chapters[len(chapters)-1].WordIdx == wordIdx {
+			continue
+		}
+		n := len(chapters) + 1
+		chapters = append(chapters, sttChapter{
+			Title:   inferChapterTitle(sc.Words, wordIdx, n),
+			Start:   sc.Words[wordIdx].Start,
+			WordIdx: wordIdx,
+		})
+	}
+	return chapters
+}
+
+// detectParagraphsFromSilences (v2 path) reads paragraph-grade silence
+// events directly and returns idxRange entries for each text chunk between
+// consecutive paragraph silences. Much cleaner than v1's word-gap math,
+// and uses acoustic ground truth rather than Whisper interpolation.
+func detectParagraphsFromSilences(sc *sttSidecar, chapStart, chapEnd int) []idxRange {
+	if !sc.isV2() || chapEnd <= chapStart {
+		return nil
+	}
+	// Collect paragraph-grade silence word-indices that fall within this
+	// chapter's word range. A silence boundary between word i and i+1
+	// means a paragraph ends at i+1.
+	boundaries := []int{chapStart}
+	for _, sil := range sc.Silences {
+		if sil.Kind != "paragraph" && sil.Kind != "chapter" {
+			continue
+		}
+		wi := wordAtOrAfter(sc.Words, sil.End)
+		if wi > chapStart && wi < chapEnd {
+			if len(boundaries) == 0 || wi > boundaries[len(boundaries)-1] {
+				boundaries = append(boundaries, wi)
+			}
+		}
+	}
+	boundaries = append(boundaries, chapEnd)
+
+	var out []idxRange
+	for i := 0; i+1 < len(boundaries); i++ {
+		// Chapter-local indices (caller expects 0-based relative to chapStart).
+		out = append(out, idxRange{
+			start: boundaries[i] - chapStart,
+			end:   boundaries[i+1] - chapStart,
+		})
+	}
+	return out
+}
+
+// wordAtOrAfter returns the index of the first word whose start time is
+// >= target. Returns len(words) if no such word exists. Linear scan is fine
+// here — called per silence during import, not on a hot path.
+func wordAtOrAfter(words []sttWord, target float64) int {
+	for i := range words {
+		if words[i].Start >= target {
+			return i
+		}
+	}
+	return len(words)
 }
 
 // Pause thresholds for post-processing the word timestamp stream. Tuned
@@ -798,6 +954,15 @@ func buildWordIdxRanges(sc *sttSidecar, ranges []sttChapter) []idxRange {
 // real paragraphs and wrap sync-spans on-demand per paragraph (bounded DOM
 // cost regardless of chapter size).
 func buildChapterContentByIdx(words []sttWord, start, end int) string {
+	return buildChapterContentByIdxWithSilences(words, nil, start, end)
+}
+
+// buildChapterContentByIdxWithSilences is the v2-aware content builder.
+// When `silences` is non-nil, paragraph breaks come from real acoustic
+// silence events (kind="paragraph" or larger) rather than word-gap math.
+// Word gaps are unreliable for v1 sidecars (Whisper interpolates
+// within-segment timestamps), so when we have silences we prefer them.
+func buildChapterContentByIdxWithSilences(words []sttWord, silences []sttSilence, start, end int) string {
 	if start < 0 {
 		start = 0
 	}
@@ -807,16 +972,55 @@ func buildChapterContentByIdx(words []sttWord, start, end int) string {
 	if start >= end {
 		return ""
 	}
-	var b strings.Builder
-	for i := start; i < end; i++ {
-		b.WriteString(words[i].Word)
-		// Insert a paragraph break on a significant pause (but not after the
-		// last word of the chunk — that would add a trailing blank line).
-		if i+1 < end {
-			gap := words[i+1].Start - words[i].End
-			if gap >= PARAGRAPH_PAUSE_SECS {
-				b.WriteString("\n\n")
+
+	// If we have silences, compute a set of word-indices (within the chapter)
+	// AFTER which a paragraph break should appear.
+	var paraBreakAfter map[int]bool
+	if len(silences) > 0 {
+		paraBreakAfter = make(map[int]bool)
+		for _, sil := range silences {
+			if sil.Kind != "paragraph" && sil.Kind != "chapter" {
+				continue
 			}
+			// The silence happens between word i and word i+1. Find the
+			// last word whose Start < silence.Start.
+			for j := start; j < end-1; j++ {
+				if words[j+1].Start >= sil.Start {
+					if words[j].Start < sil.Start {
+						paraBreakAfter[j] = true
+					}
+					break
+				}
+			}
+		}
+	}
+
+	var b strings.Builder
+	startingParagraph := true
+	for i := start; i < end; i++ {
+		word := words[i].Word
+		// If we just broke to a new paragraph, strip the leading space that
+		// Whisper attaches to each word ("hello", " world" format) so the
+		// paragraph starts cleanly.
+		if startingParagraph {
+			word = strings.TrimLeft(word, " ")
+			startingParagraph = false
+		}
+		b.WriteString(word)
+		if i+1 >= end {
+			continue
+		}
+		insertBreak := false
+		if paraBreakAfter != nil {
+			insertBreak = paraBreakAfter[i]
+		} else {
+			// v1 fallback: word-gap math.
+			gap := words[i+1].Start - words[i].End
+			insertBreak = gap >= PARAGRAPH_PAUSE_SECS
+		}
+		if insertBreak {
+			b.WriteString("\n\n")
+			startingParagraph = true
 		}
 	}
 	return strings.TrimSpace(b.String())
