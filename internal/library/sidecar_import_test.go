@@ -113,7 +113,9 @@ func TestInferChapterTitle(t *testing.T) {
 		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
 		{"preface", mk("Preface"), "Preface"},
 		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
-		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner , for help , for…"},
+		// Snippet fallback uses the display tokens (preserves original spacing)
+		// so punctuation attaches naturally without spaces before commas.
+		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner, for help, for…"},
 	}
 	// PHM-style: Whisper gives 0s gap between "1" and "What's" (interpolated
 	// within a single segment) AND no period on "1". Without either signal

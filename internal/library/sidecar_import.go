@@ -812,16 +812,76 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 	// Case 3: snippet fallback. The pause-based tokenization above already
 	// capped the snippet at the first significant pause, so this typically
 	// gives a clean opening phrase rather than a runon.
-	snippet := rawTokens
-	if len(snippet) > 8 {
-		snippet = snippet[:8]
+	//
+	// Special case: v2 silence boundaries often land JUST BEFORE the narrator
+	// says the chapter number (e.g. "Two", "Three" or "2", "3"), so the
+	// first token is a bare number like "2." or "Two." followed by the real
+	// subtitle. Strip that leading number so the title reads "Chapter 4:
+	// Subtitle" rather than "Ch 4 · 4 Subtitle".
+	skipLeadingNumberTokens := 0
+	for i := 0; i < len(rawTokens) && i < 2; i++ {
+		t := strings.TrimRight(strings.ToLower(rawTokens[i]), ".,!?:;")
+		if isNumberWord(t) || isAllDigits(t) {
+			skipLeadingNumberTokens = i + 1
+		} else {
+			break
+		}
 	}
+
+	// Collect display tokens (preserving original spacing) past any leading
+	// number words, and cap at 8 real tokens.
+	effective := displayTokens[skipLeadingNumberTokens:]
+	if len(effective) > 8 {
+		effective = effective[:8]
+	}
+	text := strings.TrimSpace(strings.Join(effective, ""))
+	text = strings.TrimRight(text, ".,;: ")
+	if text == "" {
+		return fmt.Sprintf("Chapter %d", chapNum)
+	}
+	// If we stripped a leading number token, format as "Chapter N: Subtitle"
+	// — much cleaner than "Ch N · Subtitle".
+	if skipLeadingNumberTokens > 0 {
+		full := fmt.Sprintf("Chapter %d: %s", chapNum, text)
+		if len(full) > 80 {
+			full = full[:80] + "…"
+		}
+		return full
+	}
+	// Otherwise stick with the "Ch N · snippet" format to signal it's a
+	// snippet of content, not a real title.
 	suffix := "…"
-	if len(rawTokens) <= 8 && cutAt < end {
-		// Full natural phrase fit without a pause; no ellipsis needed.
+	if cutAt < end {
 		suffix = ""
 	}
-	return fmt.Sprintf("Ch %d · %s%s", chapNum, strings.Join(snippet, " "), suffix)
+	return fmt.Sprintf("Ch %d · %s%s", chapNum, text, suffix)
+}
+
+// isNumberWord returns true for "one", "two", ..., "twenty" plus "first",
+// "second", "third" style ordinals. Used to recognize chapter-number words
+// the narrator may say at the start of a pause-detected chapter boundary.
+func isNumberWord(s string) bool {
+	switch s {
+	case "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+		"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+		"eighteen", "nineteen", "twenty", "twentyone", "thirty",
+		"first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+		"eighth", "ninth", "tenth":
+		return true
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // detectParagraphsFromPauses walks the words in [start, end) and flags
