@@ -168,18 +168,45 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 
 	// Decide which chapter list to use on the audio book. Priority:
 	//   1. Narrator-pattern chapters from sidecar, if reliable (prior check).
-	//   2. Pause-based detection (word gaps >= CHAPTER_PAUSE_SECS) when the
-	//      sidecar's chapter list is missing or unreliable.
-	// Pause-based is a last resort — it depends purely on audio gaps, so for
-	// a tightly-edited audiobook it can still over- or under-segment.
+	//   2. Our own DetectChapters against the sidecar's word stream. This
+	//      finds every "chapter N"/"part N" narrator phrase, then keeps only
+	//      the longest monotonic subsequence (1, 2, 3, ...). Drops spurious
+	//      mid-text references (narrator saying "as I discussed in chapter 6").
+	//   3. Pause-based detection — pure acoustic fallback if the book has no
+	//      spoken chapter announcements at all (Freud's Roman-numeral sections).
 	audioChapters := sc.Chapters
 	if !chaptersLookReliable(sc.Chapters, sc.Duration) {
-		paused := detectChaptersFromPauses(sc.Words)
-		if len(paused) > 1 {
-			log.Printf("sidecar-import: pause-based detection found %d chapter boundaries (narrator-pattern was unreliable)", len(paused))
-			audioChapters = paused
+		// Convert sidecar words into the internal SyncTimestamp format so we
+		// can feed them to DetectChapters.
+		syncWords := sttToSyncTimestamps(sc.Words)
+		detected := DetectChapters(syncWords, sc.Duration)
+		if len(detected) >= 3 {
+			log.Printf("sidecar-import: DetectChapters found %d narrator-pattern %s chapters", len(detected), detected[0].Kind)
+			audioChapters = make([]sttChapter, len(detected))
+			for i, d := range detected {
+				// Enrich the title: DetectChapters returns "Chapter N".
+				// Re-run inferChapterTitle starting at the "chapter" word so
+				// we pick up the subtitle that follows.
+				title := inferChapterTitle(sc.Words, d.WordIdx, d.Number)
+				if title == "" {
+					title = d.Title
+				}
+				audioChapters[i] = sttChapter{
+					Title:   title,
+					Start:   d.StartSec,
+					End:     d.EndSec,
+					WordIdx: d.WordIdx,
+				}
+			}
 		} else {
-			audioChapters = nil
+			// Last resort: pause detection only.
+			paused := detectChaptersFromPauses(sc.Words)
+			if len(paused) > 1 {
+				log.Printf("sidecar-import: pause-based detection found %d chapter boundaries (narrator-pattern gave %d)", len(paused), len(detected))
+				audioChapters = paused
+			} else {
+				audioChapters = nil
+			}
 		}
 	}
 	if len(audioChapters) > 0 {
@@ -273,19 +300,39 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// Build chapter content by slicing the words array by timestamp range.
 	// If no chapter boundaries, write a single "Full Transcript" chapter.
 	ranges := []sttChapter{}
-	// Prefer narrator-pattern detection if reliable. Otherwise use pause
-	// detection from word gaps (no ffmpeg — just read the existing timestamps).
+	// Chapter source priority (same as audio book):
+	//   1. Reliable sidecar narrator-pattern chapters.
+	//   2. DetectChapters — our validated narrator-pattern run.
+	//   3. Pause-based detection, plausible count.
 	chaptersToUse := sc.Chapters
 	reliable := chaptersLookReliable(sc.Chapters, sc.Duration)
 	useChapters := len(sc.Chapters) > 0 && reliable
 	if !useChapters {
-		paused := detectChaptersFromPauses(sc.Words)
-		// Only adopt pause-based chapters if they produce plausible counts.
-		if len(paused) >= 3 && len(paused) <= 80 {
-			chaptersToUse = paused
+		syncWords := sttToSyncTimestamps(sc.Words)
+		detected := DetectChapters(syncWords, sc.Duration)
+		if len(detected) >= 3 {
+			chaptersToUse = make([]sttChapter, len(detected))
+			for i, d := range detected {
+				title := inferChapterTitle(sc.Words, d.WordIdx, d.Number)
+				if title == "" {
+					title = d.Title
+				}
+				chaptersToUse[i] = sttChapter{
+					Title:   title,
+					Start:   d.StartSec,
+					End:     d.EndSec,
+					WordIdx: d.WordIdx,
+				}
+			}
 			useChapters = true
-			log.Printf("sidecar-import: using pause-based chapters (%d found) on text book",
-				len(paused))
+			log.Printf("sidecar-import: text book using DetectChapters narrator-pattern (%d %ss)", len(detected), detected[0].Kind)
+		} else {
+			paused := detectChaptersFromPauses(sc.Words)
+			if len(paused) >= 3 && len(paused) <= 80 {
+				chaptersToUse = paused
+				useChapters = true
+				log.Printf("sidecar-import: text book using pause-based chapters (%d)", len(paused))
+			}
 		}
 	}
 	if useChapters {
@@ -606,6 +653,17 @@ func chaptersLookReliable(chapters []sttChapter, duration float64) bool {
 	}
 
 	return true
+}
+
+// sttToSyncTimestamps converts sidecar word records into the internal
+// SyncTimestamp type used by DetectChapters. Field names match, just a
+// struct copy.
+func sttToSyncTimestamps(ws []sttWord) []db.SyncTimestamp {
+	out := make([]db.SyncTimestamp, len(ws))
+	for i, w := range ws {
+		out[i] = db.SyncTimestamp{Start: w.Start, End: w.End, Word: w.Word}
+	}
+	return out
 }
 
 type idxRange struct{ start, end int }
