@@ -76,6 +76,7 @@ func TestDetectParagraphsFromPauses_NoGaps(t *testing.T) {
 
 func TestInferChapterTitle(t *testing.T) {
 	// mk builds word slices with zero gaps between them (default case).
+	// For tests that need an announcement pause, override gaps manually.
 	mk := func(ss ...string) []sttWord {
 		out := make([]sttWord, len(ss))
 		t := 0.0
@@ -85,41 +86,95 @@ func TestInferChapterTitle(t *testing.T) {
 		}
 		return out
 	}
+	// mkWithGap builds a word slice with a specific gap inserted after index `afterIdx`.
+	mkWithGap := func(afterIdx int, gapSec float64, ss ...string) []sttWord {
+		out := make([]sttWord, len(ss))
+		t := 0.0
+		for i, s := range ss {
+			out[i] = sttWord{Start: t, End: t + 0.3, Word: s}
+			t += 0.3
+			if i == afterIdx {
+				t += gapSec // inject the announcement gap
+			}
+		}
+		return out
+	}
 	cases := []struct {
 		name string
 		in   []sttWord
 		want string
 	}{
-		{"chapter cuts at period", mk("Chapter ", "1", ".", " The", " Discovery", ".", " Next"), "Chapter 1"},
-		{"chapter numbered only", mk("Chapter ", "two"), "Chapter two"},
-		{"part with colon subtitle kept", mk("Part ", "One", ":", " This", " Thing"), "Part One: This Thing"},
+		// All mk() cases have 0s gaps between words → no announcement pause
+		// → narrator flowed to body → return just "Chapter N". These tests
+		// reflect the new pause-based contract.
+		{"zero-gap flow = no subtitle (ch 1)", mk("Chapter", " 1.", " The", " Discovery."), "Chapter 1"},
+		{"zero-gap flow = no subtitle (ch two)", mk("Chapter ", "two", " What's"), "Chapter two"},
+		{"zero-gap flow = no subtitle (part one)", mk("Part ", "One:", " This", " Thing"), "Part One"},
 		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
 		{"preface", mk("Preface"), "Preface"},
 		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
 		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner , for help , for…"},
 	}
-	// Pause-based cut: Whisper often skips the period between the chapter
-	// title and the first body sentence, so we rely on the narrator's breath.
-	// Here "Chapter Two Caffeine Jet Lag Melatonin" is said with tight word
-	// gaps, then a 1.0s pause before the body starts.
-	t.Run("pause cuts title from body", func(t *testing.T) {
+	// PHM-style: Whisper gives 0s gap between "1" and "What's" (interpolated
+	// within a single segment) AND no period on "1". Without either signal
+	// we assume no subtitle — narrator flowed into body.
+	t.Run("phm style tight flow no subtitle", func(t *testing.T) {
 		ws := []sttWord{
-			{Start: 0.0, End: 0.5, Word: "Chapter"},
-			{Start: 0.5, End: 0.9, Word: " Two"},
-			{Start: 1.0, End: 1.4, Word: " Caffeine"},  // tight gap — title continues
-			{Start: 1.4, End: 1.6, Word: " Jet"},
-			{Start: 1.6, End: 1.8, Word: " Lag"},
-			{Start: 1.8, End: 2.3, Word: " Melatonin"}, // end of title
-			{Start: 3.3, End: 3.7, Word: " Losing"},    // 1.0s pause — body starts
-			{Start: 3.7, End: 3.9, Word: " and"},
-			{Start: 3.9, End: 4.2, Word: " Gaining"},
+			{Start: 0.0, End: 0.36, Word: " Chapter"},
+			{Start: 0.36, End: 0.62, Word: " 1"},       // no period
+			{Start: 0.62, End: 1.90, Word: " What's"},  // zero-gap (per Whisper)
 		}
-		got := inferChapterTitle(ws, 0, 2)
-		want := "Chapter Two Caffeine Jet Lag Melatonin"
+		got := inferChapterTitle(ws, 0, 1)
+		want := "Chapter 1"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+
+	// WWS-style alt: "Chapter 2 [0.96s cross-segment gap] Caffeine, Jet Lag,
+	// and Melatonin…" — no period on "2" but the 0.96s gap is real (Whisper
+	// segmented there). Should trigger subtitle extraction.
+	t.Run("wws ch2 no period but real cross-segment gap", func(t *testing.T) {
+		ws := mkWithGap(1, 0.7, "Chapter", " 2", " Caffeine,", " Jet", " Lag,", " and", " Melatonin")
+		got := inferChapterTitle(ws, 0, 2)
+		want := "Chapter 2 Caffeine, Jet Lag, and Melatonin"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// WWS-style: "Chapter 4. Ape Beds, Dinosaurs, and Napping with Half a
+	// Brain. They ..." — announcement period after "4", subtitle follows,
+	// cut at next period-terminated token (Brain.).
+	t.Run("wws style subtitle after announcement period", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 7757.2, End: 7757.9, Word: " Chapter"},
+			{Start: 7757.9, End: 7758.3, Word: " 4."},       // period — subtitle follows
+			{Start: 7758.9, End: 7759.6, Word: " Ape"},       // 0.6s gap
+			{Start: 7759.6, End: 7760.1, Word: " Beds,"},
+			{Start: 7760.2, End: 7760.9, Word: " Dinosaurs,"},
+			{Start: 7761.2, End: 7761.6, Word: " and"},
+			{Start: 7761.6, End: 7762.0, Word: " Napping"},
+			{Start: 7762.0, End: 7762.2, Word: " with"},
+			{Start: 7762.2, End: 7762.5, Word: " Half"},
+			{Start: 7762.5, End: 7762.6, Word: " a"},
+			{Start: 7762.6, End: 7763.0, Word: " Brain."},  // period → cut here
+			{Start: 7763.5, End: 7764.0, Word: " They"},
+		}
+		got := inferChapterTitle(ws, 0, 4)
+		want := "Chapter 4 Ape Beds, Dinosaurs, and Napping with Half a Brain"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Retired: the legacy "cut at first big pause anywhere" rule used to
+	// accept tight-read titles that then paused before body. That rule gave
+	// lots of false positives where mid-body pauses got treated as title
+	// endings. The new rule requires a pause >= 0.5s immediately AFTER the
+	// chapter number — an announcement pause is the reliable signal of a
+	// subtitle. See the "wws ch2 no period but real cross-segment gap" test
+	// for the positive case.
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := inferChapterTitle(c.in, 0, 1)

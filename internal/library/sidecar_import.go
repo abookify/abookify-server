@@ -485,6 +485,85 @@ func detectChaptersFromPauses(words []sttWord) []sttChapter {
 	return chapters
 }
 
+// extractChapterTitle handles the "Chapter/Part/Book N [subtitle]" case.
+// Real narrator patterns and how we disambiguate them:
+//
+//   A. "Chapter 4. [0.6s] Ape Beds, Dinosaurs, and Napping with Half a
+//      Brain. [pause] They do not…"
+//      → period on number, pause after, subtitle follows. Cut at next
+//        period-terminated word.
+//
+//   B. "Chapter 2 [0.96s] Caffeine, Jet Lag and Melatonin Losing and
+//      Gaining Control of Your Sleep Rhythm [pause] …"
+//      → no period on number but clear pause after, subtitle follows.
+//        Cut at next period OR at a pause >= 1.0s.
+//
+//   C. "Chapter 1 [0s] What's two plus two? [1.76s] Something about…"
+//      → no pause after number, narrator flowed into body. No subtitle.
+//
+// So the real signal is: does the narrator PAUSE after "Chapter N"? That
+// pause is the marker of a subtitle announcement. A period helps but
+// isn't required (Whisper is inconsistent about inserting them).
+func extractChapterTitle(words []sttWord, rawTokens, displayTokens []string, startWord int) string {
+	if len(rawTokens) < 2 {
+		return strings.Join(rawTokens, " ")
+	}
+
+	// Base: "Chapter N" with cleaned number (strip trailing ".,!?:;").
+	numberTok := rawTokens[1]
+	cleanNum := strings.TrimRight(numberTok, ".!?,;:")
+	base := strings.TrimSpace(rawTokens[0]) + " " + cleanNum
+	base = strings.ToUpper(base[:1]) + base[1:]
+
+	// Decide whether a subtitle follows. Use the real acoustic gap between
+	// the chapter-number word and the next word.
+	const ANNOUNCEMENT_PAUSE_MIN = 0.5
+	const TITLE_END_PAUSE = 1.0
+
+	// words[startWord+1] is the number; words[startWord+2] is the next word.
+	gapAfterNumber := 0.0
+	if startWord+2 < len(words) {
+		gapAfterNumber = words[startWord+2].Start - words[startWord+1].End
+	}
+	if gapAfterNumber < ANNOUNCEMENT_PAUSE_MIN {
+		// Narrator flowed into body; no subtitle.
+		return base
+	}
+
+	// Subtitle follows. Collect tokens 2..N until a sentence-ending period
+	// attached to a token, a pause >= TITLE_END_PAUSE between words, or we
+	// run out of peek tokens.
+	var subTokens []string
+	for j := 2; j < len(rawTokens); j++ {
+		subTokens = append(subTokens, displayTokens[j])
+		tok := rawTokens[j]
+		if len(tok) > 0 {
+			last := tok[len(tok)-1:]
+			if last == "." || last == "!" || last == "?" {
+				break
+			}
+		}
+		wi := startWord + j
+		if wi+1 < len(words) {
+			gap := words[wi+1].Start - words[wi].End
+			if gap >= TITLE_END_PAUSE {
+				break
+			}
+		}
+	}
+
+	subtitle := strings.TrimSpace(strings.Join(subTokens, ""))
+	subtitle = strings.TrimRight(subtitle, ".!?,;: ")
+	if subtitle == "" {
+		return base
+	}
+	full := base + " " + subtitle
+	if len(full) > 80 {
+		full = full[:80] + "…"
+	}
+	return full
+}
+
 // Section-type prefix words we recognise at the start of a chapter. Keep
 // this list conservative — a recognized prefix becomes the chapter title,
 // so false positives produce mislabels.
@@ -549,18 +628,20 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 	lower := strings.ToLower(strings.Join(rawTokens, " "))
 
 	// Case 1: "chapter/part/book N…" with optional subtitle.
-	// Cut at period/exclaim/question (sentence end) OR at the pause already
-	// captured by our token window. Keep colon (subtitles like
-	// "Part One: This Thing Called Sleep" are exactly what we want).
+	//
+	// Two-token rule: "Chapter 4. Ape Beds, Dinosaurs..." needs us to
+	// *skip* the period attached to "4." (it's the announcement period,
+	// not the subtitle-end period). Then we look for the REAL title end:
+	// either a sentence-ending period followed by capital letter, OR a
+	// significant pause.
+	//
+	// If there's no period after the number at all ("Chapter 1 What's..."),
+	// the narrator went straight into body — no subtitle exists, so we
+	// just return "Chapter N".
 	for _, prefix := range []string{"chapter", "part", "book"} {
 		if strings.HasPrefix(lower, prefix+" ") {
-			text := strings.TrimSpace(strings.Join(displayTokens, ""))
-			if idx := strings.IndexAny(text, ".!?"); idx > 0 && idx < 80 {
-				text = text[:idx]
-			} else if len(text) > 80 {
-				text = text[:80] + "…"
-			}
-			return strings.TrimSpace(text)
+			title := extractChapterTitle(words, rawTokens, displayTokens, start)
+			return strings.TrimSpace(title)
 		}
 	}
 
