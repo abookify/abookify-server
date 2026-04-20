@@ -110,22 +110,56 @@ func main() {
 	var words []wordTS
 	for _, seg := range combined.Segments {
 		for _, w := range seg.Words {
-			words = append(words, wordTS{Word: w.Word, Start: w.Start, End: w.End, Idx: len(words)})
+			words = append(words, wordTS{
+				Word: w.Word, Start: w.Start, End: w.End,
+				Probability: w.Probability, Idx: len(words),
+			})
 		}
 	}
 
+	// Run silencedetect on each source file to get real acoustic pauses.
+	log.Printf("Running silence detection on %d file(s)...", len(files))
+	var allSilences []silenceEvent
+	{
+		var cumOffset float64
+		for fi, path := range files {
+			sil, err := detectSilences(path, -30, 0.15, cumOffset)
+			if err != nil {
+				log.Printf("  warning: silencedetect failed for %s: %v (continuing without)", filepath.Base(path), err)
+			} else {
+				log.Printf("  %s: %d silences detected", filepath.Base(path), len(sil))
+				allSilences = append(allSilences, sil...)
+			}
+			cumOffset += durations[fi]
+		}
+	}
+	classifySilences(allSilences)
+
+	// Build v2 event stream: words + silences interleaved by time.
+	events := mergeEvents(words, allSilences)
+
+	// Convenience: flat silence list for consumers that only need pauses.
+	silenceList := make([]silenceEvent, len(allSilences))
+	copy(silenceList, allSilences)
+
 	out := struct {
-		Language string        `json:"language"`
-		Duration float64       `json:"duration"`
-		Text     string        `json:"text"`
-		Words    []wordTS      `json:"words"`
-		Chapters []chapterMark `json:"chapters,omitempty"`
-		Sources  []sourceInfo  `json:"sources,omitempty"`
+		Version  int              `json:"version"`
+		Language string           `json:"language"`
+		Duration float64          `json:"duration"`
+		Text     string           `json:"text"`
+		Events   []v2Event        `json:"events"`
+		Words    []wordTS         `json:"words"`         // backward compat
+		Silences []silenceEvent   `json:"silences"`
+		Chapters []chapterMark    `json:"chapters,omitempty"`
+		Sources  []sourceInfo     `json:"sources,omitempty"`
 	}{
+		Version:  2,
 		Language: combined.Language,
 		Duration: combined.Duration,
 		Text:     combined.Text,
+		Events:   events,
 		Words:    words,
+		Silences: silenceList,
 	}
 
 	// If we processed a directory, record each source file's offset and duration
@@ -146,6 +180,23 @@ func main() {
 		out.Chapters = detectChapterBoundaries(words)
 		log.Printf("Detected %d chapters", len(out.Chapters))
 	}
+
+	// Summary
+	chapterCount, paraCount, sentCount, breathCount := 0, 0, 0, 0
+	for _, s := range allSilences {
+		switch s.Kind {
+		case "chapter":
+			chapterCount++
+		case "paragraph":
+			paraCount++
+		case "sentence":
+			sentCount++
+		case "breath":
+			breathCount++
+		}
+	}
+	log.Printf("Silence events: %d total (%d chapter, %d paragraph, %d sentence, %d breath)",
+		len(allSilences), chapterCount, paraCount, sentCount, breathCount)
 
 	data, _ := json.MarshalIndent(out, "", "  ")
 
@@ -263,10 +314,11 @@ func probeDuration(path string) float64 {
 }
 
 type wordTS struct {
-	Word  string  `json:"w"`
-	Start float64 `json:"s"`
-	End   float64 `json:"e"`
-	Idx   int     `json:"-"`
+	Word        string  `json:"w"`
+	Start       float64 `json:"s"`
+	End         float64 `json:"e"`
+	Probability float64 `json:"conf,omitempty"` // Whisper per-word confidence
+	Idx         int     `json:"-"`
 }
 
 type chapterMark struct {
