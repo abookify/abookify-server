@@ -58,6 +58,7 @@ type sttChapter struct {
 	End       float64 `json:"end_sec"`
 	WordIdx   int     `json:"word_idx"`   // stt-cli emits this for precise chapter slicing
 	WordCount int     `json:"word_count"`
+	Src       string  `json:"src,omitempty"` // "part" | "chapter" (empty = chapter by default)
 }
 
 type sttSource struct {
@@ -197,9 +198,12 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 	audioChapters := sc.Chapters
 	if sc.isV2() {
 		silChapters := detectChaptersFromSilences(&sc)
+		parts := detectPartsFromSilences(&sc)
 		if len(silChapters) >= 3 {
-			log.Printf("sidecar-import: v2 silence-based detection found %d chapters", len(silChapters))
-			audioChapters = silChapters
+			merged := mergePartsAndChapters(parts, silChapters)
+			log.Printf("sidecar-import: v2 silence-based detection found %d entries (%d chapters, %d parts)",
+				len(merged), len(silChapters), len(parts))
+			audioChapters = merged
 		}
 	}
 	if len(audioChapters) == 0 || !chaptersLookReliable(audioChapters, sc.Duration) {
@@ -253,11 +257,16 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 			if title == "" {
 				title = fmt.Sprintf("Chapter %d", i+1)
 			}
+			// Tag parts so the UI can render them as section headers.
+			src := "transcript"
+			if ch.Src == "part" {
+				src = "part"
+			}
 			store.InsertChapter(db.Chapter{
 				BookID:     audioBookID,
 				Index:      i,
 				Title:      title,
-				Src:        "transcript",
+				Src:        src,
 				StartSec:   ch.Start,
 				EndSec:     end,
 				Confidence: 0.9,
@@ -341,10 +350,12 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// silence-based detection produced too few chapters.
 	if !useChapters && sc.isV2() {
 		silChapters := detectChaptersFromSilences(sc)
+		parts := detectPartsFromSilences(sc)
 		if len(silChapters) >= 3 {
-			chaptersToUse = silChapters
+			chaptersToUse = mergePartsAndChapters(parts, silChapters)
 			useChapters = true
-			log.Printf("sidecar-import: text book using v2 silence-based chapters (%d)", len(silChapters))
+			log.Printf("sidecar-import: text book using v2 silence-based chapters (%d entries, %d parts)",
+				len(chaptersToUse), len(parts))
 		}
 	}
 
@@ -412,6 +423,7 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 				End:       end,
 				WordIdx:   ch.WordIdx,
 				WordCount: ch.WordCount,
+				Src:       ch.Src, // propagate "part" tag through the pipeline
 			})
 		}
 	} else {
@@ -450,11 +462,17 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 		if content != "" {
 			wordCount = len(strings.Fields(content))
 		}
+		// Tag parts explicitly; chapters keep the "transcript" tag so
+		// consumers know their content was derived from STT.
+		src := "transcript"
+		if r.Src == "part" {
+			src = "part"
+		}
 		store.InsertChapter(db.Chapter{
 			BookID:     textBookID,
 			Index:      idx,
 			Title:      r.Title,
-			Src:        "transcript",
+			Src:        src,
 			Content:    content,
 			WordCount:  wordCount,
 			StartSec:   r.Start,
@@ -497,6 +515,112 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	}
 
 	return nil
+}
+
+// mergePartsAndChapters interleaves the two entity types by time and
+// tags each with Src="part" or Src="chapter" so downstream code (and the
+// UI) can render parts as section headers above their child chapters.
+// Dedups near-identical timestamps — if a part and a chapter both start
+// within 5 seconds of each other, the part wins (because a real "Part N:
+// Chapter 1" announcement is typically read together, and the chapter
+// under that part reads as a nested entry right after).
+func mergePartsAndChapters(parts, chapters []sttChapter) []sttChapter {
+	if len(parts) == 0 {
+		return chapters
+	}
+	for i := range parts {
+		parts[i].Src = "part"
+	}
+	for i := range chapters {
+		if chapters[i].Src == "" {
+			chapters[i].Src = "chapter"
+		}
+	}
+	out := make([]sttChapter, 0, len(parts)+len(chapters))
+	out = append(out, parts...)
+	out = append(out, chapters...)
+	// Sort by start time.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].Start < out[j-1].Start; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	// Dedup chapters that sit right at or after a part (within 5s) —
+	// the "Part 2. Chapter 6" pattern produces a chapter and a part at
+	// essentially the same moment, and we prefer the part as the header.
+	const dedupWindow = 5.0
+	filtered := out[:0]
+	for i, e := range out {
+		if e.Src == "chapter" && i > 0 &&
+			out[i-1].Src == "part" &&
+			e.Start-out[i-1].Start < dedupWindow {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
+}
+
+// detectPartsFromSilences finds "Part N" narrator announcements that fall
+// immediately after a chapter-grade silence event. This distinguishes real
+// Part boundaries ("Part Two. Why Should You Sleep?" after a 4-second break)
+// from spurious mid-text references ("in part 2 we'll discuss…") and from
+// a narrator reading the TOC aloud (multiple "part N"s packed together).
+//
+// Returns entries tagged with Src="part" so the UI can render them as
+// section headers above their child chapters.
+func detectPartsFromSilences(sc *sttSidecar) []sttChapter {
+	if !sc.isV2() || len(sc.Silences) == 0 {
+		return nil
+	}
+
+	// Collect chapter-grade silence end times for time-based proximity match.
+	// Index-based matching is fragile because Whisper's word-start timestamp
+	// can fall slightly inside silencedetect's silence window at the edges.
+	var chapterSilenceEnds []float64
+	for _, sil := range sc.Silences {
+		if sil.Kind == "chapter" {
+			chapterSilenceEnds = append(chapterSilenceEnds, sil.End)
+		}
+	}
+	nearChapterSilence := func(wordStart float64) bool {
+		const tolerance = 1.5 // seconds either side of the silence edge
+		for _, se := range chapterSilenceEnds {
+			if wordStart >= se-tolerance && wordStart <= se+tolerance {
+				return true
+			}
+		}
+		return false
+	}
+
+	syncWords := sttToSyncTimestamps(sc.Words)
+	norm := make([]string, len(syncWords))
+	for j := range syncWords {
+		norm[j] = normalizeWord(syncWords[j].Word)
+	}
+
+	// Scan for "part N" candidates near silence-confirmed positions.
+	var parts []sttChapter
+	seenNumbers := make(map[int]bool)
+	for i := 0; i < len(syncWords)-1; i++ {
+		if norm[i] != "part" {
+			continue
+		}
+		if !nearChapterSilence(syncWords[i].Start) {
+			continue
+		}
+		num := parseNumberAt(norm, i+1)
+		if num <= 0 || seenNumbers[num] {
+			continue
+		}
+		seenNumbers[num] = true
+		parts = append(parts, sttChapter{
+			Title:   inferChapterTitle(sc.Words, i, num),
+			Start:   syncWords[i].Start,
+			WordIdx: i,
+		})
+	}
+	return parts
 }
 
 // detectChaptersFromSilences (v2 path) uses real acoustic silence events

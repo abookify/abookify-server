@@ -125,6 +125,15 @@
     .chapter-row:hover { background: var(--surface-hover); }
     .chapter-row.active { background: rgba(78,204,163,0.08); color: var(--text); }
     .chapter-row.playing { background: rgba(233,69,96,0.1); color: var(--text); }
+    /* Part rows render as section headers above their child chapters — bold,
+       slightly taller, distinct background. No regen button. */
+    .chapter-row.chapter-row-part {
+      font-weight: 700; font-size: 0.85rem;
+      color: var(--text); text-transform: uppercase; letter-spacing: 0.5px;
+      background: rgba(78,204,163,0.04);
+      padding-top: 0.7rem; padding-bottom: 0.6rem;
+      border-top: 1px solid rgba(78,204,163,0.2);
+    }
 
     .chapter-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chapter-size { flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 0.75rem; }
@@ -811,20 +820,43 @@
         return;
       }
 
-      // Have detected chapters — render them as the authoritative navigation.
+      // Unified chapter list — when a work's text book has time-synced
+      // chapters (start_sec > 0), those are the same content as the audio
+      // chapters. Showing both is redundant. Collapse the audio pane's
+      // list to a compact summary and let the ebook pane be the single
+      // authoritative TOC. Clicks in the ebook pane already seek audio.
+      const textFile = (work.text_files || [])[0];
+      // Ensure text chapters are loaded so we can decide on sync state.
+      if (textFile && !chapterCache[textFile.id]?.chapters) {
+        await loadChapterList(textFile.id, work.id);
+      }
+      const textChapters = textFile ? (chapterCache[textFile.id]?.chapters || []) : [];
+      const textTimeSynced = textChapters.length > 0 &&
+        textChapters.some(c => (c.start_sec || 0) > 0);
+      if (textTimeSynced) {
+        const counter = document.getElementById('audio-count-' + work.id);
+        if (counter) counter.textContent = chapters.length;
+        mount.innerHTML = `
+          <div class="chapter-row" style="cursor:default; font-style:italic; color:var(--text-muted); padding:0.7rem 1.25rem;">
+            ${chapters.length} synchronized chapter${chapters.length === 1 ? '' : 's'} — navigate from the ebook pane →
+          </div>`;
+        return;
+      }
+
+      // Otherwise render detected chapters as the authoritative navigation.
       // Click → seekToAbsoluteBookTime, which picks the right file for us.
-      // These chapter rows hide physical file boundaries, which the user
-      // shouldn't need to care about ("why we sleep part 1/2/3" is storage,
-      // not content).
       // Use single quotes for the attribute and escape the title for JS-in-
       // attribute context. JSON.stringify here embeds a double-quoted string
       // INSIDE a double-quoted attribute and breaks the HTML parser.
       mount.innerHTML = chapters.map((ch, i) => {
         const dur = (ch.end_sec || 0) - (ch.start_sec || 0);
         const titleForJs = escapeJs(ch.title || `Chapter ${i + 1}`);
+        const isPart = ch.src === 'part';
+        const rowClass = isPart ? 'chapter-row chapter-row-part' : 'chapter-row';
+        const playBtn = isPart ? '' : '<button class="play-btn">&#9654;</button>';
         return `
-          <div class="chapter-row" id="audio-ch-${work.id}-${ch.index}" onclick='seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, "${titleForJs}")'>
-            <button class="play-btn">&#9654;</button>
+          <div class="${rowClass}" id="audio-ch-${work.id}-${ch.index}" onclick='seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, "${titleForJs}")'>
+            ${playBtn}
             <span class="chapter-name">${escapeHtml(ch.title)}</span>
             <span class="chapter-size">${formatTime(dur)}</span>
           </div>`;
@@ -985,14 +1017,21 @@
       const hasAudio = work && work.has_audio;
       const chapters = chapterCache[bookId].chapters;
 
-      el.innerHTML = chapters.map((ch, i) => `
-        <div class="chapter-row" id="text-ch-${bookId}-${ch.index}"
+      el.innerHTML = chapters.map((ch, i) => {
+        // Parts render as section headers above their child chapters
+        // (bolder, no regen button, smaller "part" label).
+        const isPart = ch.src === 'part';
+        const rowClass = isPart ? 'chapter-row chapter-row-part' : 'chapter-row';
+        const regenBtn = isPart ? '' :
+          `<button class="regen-btn" onclick="event.stopPropagation(); regenChapter(${workId}, ${ch.index}, ${bookId}, '${escapeJs(ch.title)}', this)" title="Regenerate audio for this chapter">regen</button>`;
+        return `
+        <div class="${rowClass}" id="text-ch-${bookId}-${ch.index}"
              onclick="loadChapter(${bookId}, ${ch.index}, ${workId})">
           <span class="chapter-name">${escapeHtml(ch.title)}</span>
           <span class="chapter-words">${formatWords(ch.word_count)}</span>
-          <button class="regen-btn" onclick="event.stopPropagation(); regenChapter(${workId}, ${ch.index}, ${bookId}, '${escapeJs(ch.title)}', this)" title="Regenerate audio for this chapter">regen</button>
-        </div>
-      `).join('');
+          ${regenBtn}
+        </div>`;
+      }).join('');
     }
 
     // Used by playAudio to update the reader pane without triggering a
