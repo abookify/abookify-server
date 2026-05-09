@@ -724,7 +724,11 @@
         hydrateSyncLeadInputs();
         loadDuplicates();
       } catch (e) {
-        document.getElementById('status-text').textContent = 'connection error';
+        // Surface the actual error in the status text so cross-host
+        // failures (CORS, JSON parse, JS error in render) are
+        // diagnosable from the UI without needing devtools.
+        document.getElementById('status-text').textContent = 'connection error: ' + (e && e.message ? e.message : String(e));
+        console.error('loadWorks failed:', e);
       }
     }
 

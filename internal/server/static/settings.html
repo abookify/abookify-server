@@ -271,11 +271,12 @@
     }
 
     async function checkServices() {
-      // TTS
+      // Health check goes through our own /api/health — the server proxies
+      // out to TTS/STT on its own network. Going direct to a service port
+      // breaks when this page is loaded from anything other than localhost
+      // (the phone's "localhost" isn't the server's).
       try {
-        const res = await fetch('/api/health');
-        // Check TTS via proxy
-        const ttsRes = await fetch('http://localhost:5100/health').catch(() => null);
+        await fetch('/api/health');
       } catch {}
 
       // Just check via our own health + jobs for now

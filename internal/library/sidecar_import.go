@@ -958,7 +958,7 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 	for _, prefix := range []string{"chapter", "part", "book"} {
 		if strings.HasPrefix(lower, prefix+" ") {
 			title := extractChapterTitle(words, rawTokens, displayTokens, start)
-			return strings.TrimSpace(title)
+			return NormalizeChapterTitle(strings.TrimSpace(title))
 		}
 	}
 
@@ -999,7 +999,7 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 			if len(full) > 80 {
 				full = full[:80] + "…"
 			}
-			return full
+			return NormalizeChapterTitle(full)
 		}
 	}
 	return fmt.Sprintf("Chapter %d", chapNum)

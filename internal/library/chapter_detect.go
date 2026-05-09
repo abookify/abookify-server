@@ -8,6 +8,7 @@ package library
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -292,6 +293,135 @@ func titleFor(kind string, num int) string {
 	// Capitalize first letter of kind.
 	k := strings.ToUpper(kind[:1]) + kind[1:]
 	return k + " " + strconv.Itoa(num)
+}
+
+// NormalizeChapterTitle unifies the surface form of chapter titles produced
+// by different detection paths so the user-facing TOC isn't a mix of:
+//
+//   "Chapter One", "Chapter 2", "Ch 3", "Ch. 4: Subtitle", "Chapter Forty-two: ..."
+//
+// All of those collapse to:
+//
+//   "Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4: Subtitle", "Chapter 42: ..."
+//
+// Rules:
+//   - Prefix unified to "Chapter" / "Part" — accepts "Ch", "Ch.", "Chap",
+//     "Chapter", and case variants.
+//   - Number portion converted to digits — "One" → "1", "Twenty-Three" → "23".
+//     Recognized: number words 1-99 (including hyphenated compounds).
+//   - Subtitle (if any, after ":" or " - ") preserved unchanged.
+//   - Returns the input untouched if no recognized prefix is found, so
+//     non-Chapter titles ("Prologue", "Foreword", etc.) pass through.
+func NormalizeChapterTitle(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return t
+	}
+
+	// Split off the subtitle, if any. Try ": " first, then " - " as a
+	// secondary separator some narrators use.
+	prefix, subtitle := t, ""
+	for _, sep := range []string{": ", " - ", " — "} {
+		if i := strings.Index(t, sep); i > 0 {
+			prefix = t[:i]
+			subtitle = strings.TrimSpace(t[i+len(sep):])
+			break
+		}
+	}
+
+	// Tokenize the prefix to identify [kind] [number...].
+	tokens := strings.Fields(prefix)
+	if len(tokens) < 2 {
+		return title
+	}
+
+	kindRaw := strings.ToLower(strings.TrimRight(tokens[0], ".,!?:;"))
+	var kind string
+	switch kindRaw {
+	case "ch", "chap", "chapter":
+		kind = "Chapter"
+	case "part":
+		kind = "Part"
+	case "book":
+		kind = "Book"
+	default:
+		// Not a recognized chapter prefix — leave the title alone.
+		return title
+	}
+
+	// Parse the number portion, which may be one digit token, one number
+	// word, or two tokens for compound number words ("twenty three" or
+	// "twenty-three"). Only consume tokens that participate in the number.
+	num, consumed := parseTitleNumber(tokens[1:])
+	if num <= 0 {
+		// Couldn't recognize a number — keep original to avoid false
+		// normalization.
+		return title
+	}
+
+	out := fmt.Sprintf("%s %d", kind, num)
+
+	// If the prefix had extra words after the number (e.g. "Chapter 4 The"
+	// where "The" leaked in from the body), append them to the subtitle
+	// rather than dropping them — preserves whatever signal was there.
+	leftover := strings.Join(tokens[1+consumed:], " ")
+	leftover = strings.TrimRight(leftover, ".,!?:; ")
+
+	pieces := []string{}
+	if leftover != "" {
+		pieces = append(pieces, leftover)
+	}
+	if subtitle != "" {
+		pieces = append(pieces, subtitle)
+	}
+	if len(pieces) > 0 {
+		joined := strings.Join(pieces, " ")
+		// Re-trim: subtitle may already have ended with a period etc.
+		joined = strings.TrimRight(joined, ".,!?:; ")
+		if joined != "" {
+			out = out + ": " + joined
+		}
+	}
+	return out
+}
+
+// parseTitleNumber pulls a chapter number from the leading tokens. Returns
+// the number and how many tokens it consumed. Handles digits, single
+// number words, and compound number words ("twenty-three", "thirty four").
+func parseTitleNumber(tokens []string) (int, int) {
+	if len(tokens) == 0 {
+		return 0, 0
+	}
+	first := strings.ToLower(strings.TrimRight(tokens[0], ".,!?:;"))
+
+	// Digit form.
+	if n, err := strconv.Atoi(first); err == nil && n > 0 && n < 1000 {
+		return n, 1
+	}
+
+	// Hyphenated compound: "twenty-three"
+	if strings.Contains(first, "-") {
+		parts := strings.SplitN(first, "-", 2)
+		if a, ok := numberWords[parts[0]]; ok && isTens(parts[0]) {
+			if b, ok := numberWords[parts[1]]; ok && b < 10 {
+				return a + b, 1
+			}
+		}
+	}
+
+	// Single word: "one", "twelve", "thirty"
+	if n, ok := numberWords[first]; ok {
+		// Two-token compound: "twenty three"
+		if isTens(first) && len(tokens) > 1 {
+			second := strings.ToLower(strings.TrimRight(tokens[1], ".,!?:;"))
+			if m, ok2 := numberWords[second]; ok2 && m < 10 {
+				return n + m, 2
+			}
+		}
+		return n, 1
+	}
+
+	return 0, 0
 }
 
 // DetectChaptersFromStoredSync loads existing sync data for a work's single

@@ -143,6 +143,54 @@ func TestDetectChapters_BridgesGapWithSilence(t *testing.T) {
 	}
 }
 
+func TestNormalizeChapterTitle(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Word-number → digit, prefix unification.
+		{"Chapter One", "Chapter 1"},
+		{"Chapter Two", "Chapter 2"},
+		{"Chapter Twelve", "Chapter 12"},
+		{"Chapter Twenty Three", "Chapter 23"},
+		{"Chapter twenty-three", "Chapter 23"},
+		{"chapter forty two", "Chapter 42"},
+
+		// Already-canonical input stays put.
+		{"Chapter 5", "Chapter 5"},
+		{"Chapter 31", "Chapter 31"},
+
+		// Short prefix variants.
+		{"Ch 3", "Chapter 3"},
+		{"Ch. 4", "Chapter 4"},
+		{"Chap 7", "Chapter 7"},
+
+		// Subtitles preserved through the round-trip.
+		{"Chapter One: The Beginning", "Chapter 1: The Beginning"},
+		{"Ch 4: Some Subtitle", "Chapter 4: Some Subtitle"},
+		{"Chapter Twenty: A Long Title", "Chapter 20: A Long Title"},
+
+		// Part / Book prefixes also get normalized.
+		{"Part Two", "Part 2"},
+		{"Book One: Foundations", "Book 1: Foundations"},
+
+		// Non-recognized titles pass through unchanged.
+		{"Prologue", "Prologue"},
+		{"Foreword", "Foreword"},
+		{"Acknowledgments", "Acknowledgments"},
+		{"", ""},
+
+		// Garbage suffix that snuck into the prefix gets pushed into the
+		// subtitle rather than swallowed.
+		{"Chapter 4 The", "Chapter 4: The"},
+	}
+	for _, tc := range cases {
+		got := NormalizeChapterTitle(tc.in)
+		if got != tc.want {
+			t.Errorf("NormalizeChapterTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // Orphan dialogue reference inside a sentence (no silence) must NOT bridge a gap.
 // "Chapter seventeen" appears mid-paragraph with no pause before it.
 func TestDetectChapters_OrphanWithoutSilenceCannotBridge(t *testing.T) {

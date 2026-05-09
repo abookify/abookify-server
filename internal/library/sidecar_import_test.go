@@ -108,8 +108,11 @@ func TestInferChapterTitle(t *testing.T) {
 		// → narrator flowed to body → return just "Chapter N". These tests
 		// reflect the new pause-based contract.
 		{"zero-gap flow = no subtitle (ch 1)", mk("Chapter", " 1.", " The", " Discovery."), "Chapter 1"},
-		{"zero-gap flow = no subtitle (ch two)", mk("Chapter ", "two", " What's"), "Chapter two"},
-		{"zero-gap flow = no subtitle (part one)", mk("Part ", "One:", " This", " Thing"), "Part One"},
+		// Title-normalization pass converts spelled-out numbers to digits
+		// so the TOC isn't a mix of "Chapter Two" + "Chapter 3" depending
+		// on Whisper's transcription style.
+		{"zero-gap flow = no subtitle (ch two)", mk("Chapter ", "two", " What's"), "Chapter 2"},
+		{"zero-gap flow = no subtitle (part one)", mk("Part ", "One:", " This", " Thing"), "Part 1"},
 		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
 		{"preface", mk("Preface"), "Preface"},
 		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
