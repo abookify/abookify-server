@@ -1,6 +1,12 @@
 # Compiled binaries
 /abookify
 /bin/
+/stt-cli
+/tts-cli
+
+# Syncthing temp / metadata files
+.syncthing.*
+.stversions/
 
 # Local runtime data (SQLite database + WAL files)
 /data/
