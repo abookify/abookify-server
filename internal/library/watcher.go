@@ -49,12 +49,19 @@ func NewWatcher(store *db.Store, root string, onChange func()) (*Watcher, error)
 		pending:  make(map[string]bool),
 	}
 
-	// Watch root and all subdirectories
+	// Watch root and all subdirectories EXCEPT the ingest queue's working
+	// directories. Files there are managed by IngestQueue; the library
+	// watcher only sees them after they land in audiobooks/ or ebooks/.
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
+			rel, _ := filepath.Rel(root, path)
+			top := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+			if top == "incoming" || top == "processing" || top == "failed" {
+				return filepath.SkipDir
+			}
 			return fsw.Add(path)
 		}
 		return nil

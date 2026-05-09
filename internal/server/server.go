@@ -28,6 +28,7 @@ type Server struct {
 	Events     *EventBus
 	Generator  *library.Generator
 	RAG        *llm.RAG
+	Ingest     *library.IngestQueue
 	LibraryDir   string
 	GeneratedDir string
 }
@@ -76,6 +77,9 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
+	mux.HandleFunc("GET /api/queue/status", s.handleQueueStatus)
+	mux.HandleFunc("DELETE /api/queue/failed/{name}", s.handleQueueRemoveFailed)
+	mux.HandleFunc("POST /api/books/{id}/embed", s.handleEmbedBook)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)

@@ -245,6 +245,22 @@ func main() {
 		defer watcher.Close()
 	}
 
+	// Start ingest queue: file-based drop-zone at <library>/incoming/.
+	// Users put audiobooks/ebooks there; the queue copies them into the
+	// canonical audiobooks/ or ebooks/ subdirectories, where the library
+	// watcher above picks them up for normal scan/import.
+	ingest, err := library.NewIngestQueue(*libraryPath)
+	if err != nil {
+		log.Printf("warning: ingest queue failed to start: %v", err)
+	} else {
+		ingest.SetOnChange(func() {
+			srv.Events.Broadcast(server.Event{Type: "queue_updated"})
+		})
+		srv.Ingest = ingest
+		ingest.Start()
+		defer ingest.Close()
+	}
+
 	log.Printf("listening on :%s", *port)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
