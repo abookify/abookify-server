@@ -177,10 +177,11 @@ func main() {
 		}
 	}
 
-	// Chunk text for RAG
+	// Chunk text for RAG. Includes transcript books (whisper output split
+	// into chapters) so audiobook-only works are searchable too.
 	allBooks2, _ := store.ListBooks()
 	for _, b := range allBooks2 {
-		if b.Format == "epub" {
+		if b.Format == "epub" || b.Format == "transcript" {
 			library.ChunkBook(store, b.ID)
 		}
 	}

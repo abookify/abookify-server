@@ -1,8 +1,12 @@
-// Embedding via OpenAI's text-embedding-3-small (BYOK). Used for RAG
-// vector search in Q&A — requires the same OpenAI API key used for chat.
+// Embedding for RAG vector search in Q&A. Supports two providers:
+//   - OpenAI: text-embedding-3-small (1536 dim), batched, requires API key.
+//   - Ollama: nomic-embed-text (768 dim), single-prompt, local-friendly.
 //
 // Embeddings are stored as raw float32 byte slices in the chunks table
-// BLOB column. Cosine similarity is computed in pure Go.
+// BLOB column. Cosine similarity is computed in pure Go. Vector dimensions
+// are not assumed by the storage layer — `CosineSimilarity` requires equal
+// lengths, so as long as a single library is embedded with one provider
+// the math works out.
 package llm
 
 import (
@@ -16,8 +20,8 @@ import (
 )
 
 const (
-	EmbedModel     = "text-embedding-3-small"
-	EmbedDimension = 1536 // text-embedding-3-small output dimension
+	OpenAIEmbedModel = "text-embedding-3-small"
+	OllamaEmbedModel = "nomic-embed-text"
 )
 
 // EmbedRequest is a batch of texts to embed.
@@ -29,22 +33,28 @@ type EmbedRequest struct {
 type EmbedResponse struct {
 	Embeddings [][]float32
 	Model      string
-	Usage      int // total tokens consumed
+	Usage      int // total tokens consumed (0 for Ollama)
 }
 
-// Embed calls OpenAI's embeddings endpoint. Only works when provider is
-// OpenAI (needs the API key). Returns an error for other providers.
+// Embed dispatches to the configured provider's embedding endpoint.
 func (c *Client) Embed(req EmbedRequest) (*EmbedResponse, error) {
-	if c.provider != ProviderOpenAI {
-		return nil, fmt.Errorf("embeddings require OpenAI provider (have %s)", c.provider)
-	}
 	if len(req.Texts) == 0 {
 		return &EmbedResponse{}, nil
 	}
+	switch c.provider {
+	case ProviderOpenAI:
+		return c.embedOpenAI(req)
+	case ProviderOllama:
+		return c.embedOllama(req)
+	default:
+		return nil, fmt.Errorf("embeddings not supported for provider %s", c.provider)
+	}
+}
 
+func (c *Client) embedOpenAI(req EmbedRequest) (*EmbedResponse, error) {
 	body := map[string]any{
 		"input": req.Texts,
-		"model": EmbedModel,
+		"model": OpenAIEmbedModel,
 	}
 	jsonBody, _ := json.Marshal(body)
 	httpReq, _ := http.NewRequest("POST", c.baseURL+"/v1/embeddings", bytes.NewReader(jsonBody))
@@ -87,6 +97,43 @@ func (c *Client) Embed(req EmbedRequest) (*EmbedResponse, error) {
 		Embeddings: embeddings,
 		Model:      result.Model,
 		Usage:      result.Usage.TotalTokens,
+	}, nil
+}
+
+// embedOllama calls Ollama's /api/embeddings, one text per request.
+// Older Ollama versions don't support batching — we loop. Each call is
+// fast (~50–200ms on a GPU-backed embedding model).
+func (c *Client) embedOllama(req EmbedRequest) (*EmbedResponse, error) {
+	embeddings := make([][]float32, len(req.Texts))
+	for i, text := range req.Texts {
+		body := map[string]any{
+			"model":  OllamaEmbedModel,
+			"prompt": text,
+		}
+		jsonBody, _ := json.Marshal(body)
+		httpReq, _ := http.NewRequest("POST", c.baseURL+"/api/embeddings", bytes.NewReader(jsonBody))
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("ollama embed request %d: %w", i, err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("ollama embed %d error %d: %s", i, resp.StatusCode, string(respBody))
+		}
+		var result struct {
+			Embedding []float32 `json:"embedding"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("parse ollama embed response %d: %w", i, err)
+		}
+		embeddings[i] = result.Embedding
+	}
+	return &EmbedResponse{
+		Embeddings: embeddings,
+		Model:      OllamaEmbedModel,
 	}, nil
 }
 

@@ -2,6 +2,8 @@ package llm
 
 import (
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 
 	"github.com/pj/abookify/internal/db"
@@ -46,23 +48,135 @@ type Answer struct {
 	Chunks    int        `json:"chunks_used"`
 }
 
-// Ask queries a book with a question using RAG.
-func (r *RAG) Ask(bookID int64, question string, bookTitle string) (*Answer, error) {
-	// 1. Retrieve relevant chunks via keyword search
-	// TODO: Replace with vector similarity when embeddings are available
-	chunks, err := r.store.SearchChunks(bookID, extractKeywords(question))
+// EmbedBook backfills embeddings for every chunk in a book that doesn't
+// already have one. Returns count of newly-embedded chunks. Idempotent.
+func (r *RAG) EmbedBook(bookID int64) (int, error) {
+	chunks, err := r.store.ListChunks(bookID)
 	if err != nil {
-		return nil, fmt.Errorf("search chunks: %w", err)
+		return 0, fmt.Errorf("list chunks: %w", err)
+	}
+	var todo []db.Chunk
+	for _, c := range chunks {
+		if len(c.Embedding) == 0 {
+			todo = append(todo, c)
+		}
+	}
+	if len(todo) == 0 {
+		return 0, nil
 	}
 
-	if len(chunks) == 0 {
-		// Try with individual words
-		for _, word := range strings.Fields(question) {
-			if len(word) > 3 {
-				more, _ := r.store.SearchChunks(bookID, word)
-				chunks = append(chunks, more...)
-				if len(chunks) >= 10 {
-					break
+	log.Printf("rag: embedding %d chunks for book %d (provider: %s)", len(todo), bookID, r.client.provider)
+
+	// Batch the texts. OpenAI handles big batches natively; Ollama loops
+	// internally one prompt at a time. We send 32 at a time so a Ctrl+C
+	// doesn't lose more than ~1% of a 3000-chunk run.
+	const batch = 32
+	embedded := 0
+	for i := 0; i < len(todo); i += batch {
+		j := i + batch
+		if j > len(todo) {
+			j = len(todo)
+		}
+		texts := make([]string, 0, j-i)
+		for _, c := range todo[i:j] {
+			texts = append(texts, c.Content)
+		}
+		resp, err := r.client.Embed(EmbedRequest{Texts: texts})
+		if err != nil {
+			return embedded, fmt.Errorf("embed batch %d-%d: %w", i, j, err)
+		}
+		for k, vec := range resp.Embeddings {
+			if len(vec) == 0 {
+				continue
+			}
+			if err := r.store.UpdateChunkEmbedding(todo[i+k].ID, EncodeEmbedding(vec)); err != nil {
+				return embedded, fmt.Errorf("save embedding %d: %w", todo[i+k].ID, err)
+			}
+			embedded++
+		}
+		log.Printf("rag: embedded %d/%d chunks (book %d)", embedded, len(todo), bookID)
+	}
+	return embedded, nil
+}
+
+// vectorRetrieve returns the top-K chunks for a question by cosine
+// similarity over the stored embeddings. Returns nil if vector search
+// isn't possible (no embeddings, no embed support, etc.) so the caller
+// can fall back to keyword search.
+func (r *RAG) vectorRetrieve(bookID int64, question string, topK int) []db.Chunk {
+	all, err := r.store.ListChunks(bookID)
+	if err != nil || len(all) == 0 {
+		return nil
+	}
+	// Quick check: only proceed if at least one chunk has an embedding.
+	any := false
+	for _, c := range all {
+		if len(c.Embedding) > 0 {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return nil
+	}
+
+	qResp, err := r.client.Embed(EmbedRequest{Texts: []string{question}})
+	if err != nil || len(qResp.Embeddings) == 0 || len(qResp.Embeddings[0]) == 0 {
+		return nil
+	}
+	qVec := qResp.Embeddings[0]
+
+	type scored struct {
+		c   db.Chunk
+		sim float64
+	}
+	var ranked []scored
+	for _, c := range all {
+		if len(c.Embedding) == 0 {
+			continue
+		}
+		vec := DecodeEmbedding(c.Embedding)
+		if len(vec) != len(qVec) {
+			// Different embed model used at backfill time vs now — skip.
+			continue
+		}
+		ranked = append(ranked, scored{c: c, sim: CosineSimilarity(qVec, vec)})
+	}
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].sim > ranked[j].sim })
+	if len(ranked) > topK {
+		ranked = ranked[:topK]
+	}
+	out := make([]db.Chunk, len(ranked))
+	for i, s := range ranked {
+		out[i] = s.c
+	}
+	return out
+}
+
+// Ask queries a book with a question using RAG. Tries vector retrieval
+// first (when embeddings exist); falls back to keyword search.
+func (r *RAG) Ask(bookID int64, question string, bookTitle string) (*Answer, error) {
+	// 1. Retrieve relevant chunks. Prefer vector similarity if embeddings
+	// are available; fall back to keyword search otherwise.
+	chunks := r.vectorRetrieve(bookID, question, 8)
+	if chunks != nil {
+		log.Printf("qa: vector retrieved %d chunks for book %d (query: %q)", len(chunks), bookID, truncate(question, 60))
+	} else {
+		log.Printf("qa: no embeddings for book %d, using keyword fallback", bookID)
+		var err error
+		chunks, err = r.store.SearchChunks(bookID, extractKeywords(question))
+		if err != nil {
+			return nil, fmt.Errorf("search chunks: %w", err)
+		}
+		if len(chunks) == 0 {
+			// Try with individual words
+			for _, word := range strings.Fields(question) {
+				if len(word) > 3 {
+					more, _ := r.store.SearchChunks(bookID, word)
+					chunks = append(chunks, more...)
+					if len(chunks) >= 10 {
+						break
+					}
 				}
 			}
 		}
@@ -152,6 +266,14 @@ Keep answers concise but thorough — 2-4 paragraphs.`, bookTitle)
 		Model:     resp.Model,
 		Chunks:    len(unique),
 	}, nil
+}
+
+// truncate cuts a string to n characters with an ellipsis. Logging helper.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // extractKeywords pulls significant words from a question for search.
