@@ -4,6 +4,44 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>abookify</title>
+
+  <!--
+    Tailwind via Play CDN. Used for responsive utility classes (sm:/md:/lg:
+    breakpoints) on top of the existing custom CSS. Preflight reset is
+    DISABLED via corePlugins.preflight=false so our long-existing styles
+    aren't rewritten — Tailwind here adds, it doesn't replace. Switch to a
+    real build step when we outgrow the CDN's bundle cost.
+  -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+  <script>
+    tailwind.config = {
+      corePlugins: { preflight: false },
+      theme: {
+        extend: {
+          screens: {
+            'xs': '480px',
+          },
+          colors: {
+            // Mirror the CSS-variable palette so Tailwind utilities like
+            // bg-surface or text-muted match what already exists. Keep
+            // these in sync with the :root vars below — eventually move
+            // to a shared design-tokens file.
+            bg:           '#1a1a2e',
+            surface:      '#16213e',
+            'surface-2':  '#1a2744',
+            border:       '#2a3a5c',
+            text:         '#e0e0e0',
+            'text-muted': '#8892a8',
+            accent:       '#e94560',
+            mp3:          '#f0a500',
+            epub:         '#4ecca3',
+            generate:     '#7c4dff',
+          },
+        },
+      },
+    };
+  </script>
+
   <style>
     :root {
       --bg: #1a1a2e;
@@ -550,9 +588,48 @@
     .reader-content::-webkit-scrollbar-thumb { background: #c0b8a8; border-radius: 5px; }
     .reader-content::-webkit-scrollbar-thumb:hover { background: #a89e8e; }
 
+    /* ----- Mobile / small-screen layout ----- */
+    /* Below 700px the side-by-side split (audio | text) collapses to a
+       single column and the panes stack vertically. */
     @media (max-width: 700px) {
       .split-view { grid-template-columns: 1fr; }
       .split-pane + .split-pane { border-left: none; border-top: 1px solid var(--border); }
+
+      /* Unified mode (audio+text time-synced) uses an internal grid
+         with a 240px chapter sidebar — too wide on phones, where it
+         crushes the reader. Stack the regions vertically instead so
+         the reader gets the full screen width and the chapter list
+         + sync controls scroll above it. */
+      .split-view.unified > .split-pane:not(.audio-pane) {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto auto 1fr;
+        grid-template-areas:
+          "header"
+          "list"
+          "sync"
+          "reader";
+      }
+      .split-view.unified > .split-pane:not(.audio-pane) > .chapter-list {
+        max-height: 35vh !important;     /* don't let TOC eat the whole screen */
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .split-view.unified > .split-pane:not(.audio-pane) > .reader-content {
+        max-height: calc(100vh - 280px); /* leave room for header/list/sync/player */
+      }
+
+      /* Work-card header: collapse the sub-row of media-pill buttons
+         (audio/text counts, .abook download, ↻ reprocess) into a
+         flex-wrap so they re-flow under the title rather than pushing
+         the title off-screen. */
+      .work-header { flex-wrap: wrap; gap: 0.5rem 0.75rem; }
+      .work-badges { flex-shrink: 1; flex-basis: 100%; }
+
+      /* Player bar: tighten paddings + hide the secondary controls
+         that aren't critical on small screens (speed dropdown, sleep
+         menu still accessible from full-screen NowPlaying view). */
+      .now-playing { padding: 0.5rem 0.75rem; gap: 0.5rem; }
+      .now-playing .np-info { font-size: 0.8rem; }
     }
   </style>
 </head>
