@@ -685,6 +685,20 @@
     </div>
   </div>
 
+  <!--
+    Shared logic with the mobile app — pure ES modules, no DOM. We bridge
+    them onto the window so the rest of this page's classic <script> can
+    use them without converting the whole inline blob to module scope
+    (which would break the onclick="..." event handlers that resolve
+    against window.* lookups).
+  -->
+  <script type="module">
+    import * as karaoke from '/shared/karaoke.js';
+    import * as fmt from '/shared/format.js';
+    window.shared = { ...karaoke, ...fmt };
+    // Signal to anyone waiting on the bridge that it's ready.
+    window.dispatchEvent(new Event('shared-ready'));
+  </script>
   <script>
     let allWorks = [];
     let activeFilter = 'all';
@@ -1145,17 +1159,10 @@
       }
     }
 
-    // Compact human-friendly chapter duration: "12m", "1h 4m", "47s".
-    // Designed for scan-readability — exact seconds aren't useful in a TOC.
+    // Delegated to engineering/server/internal/server/static/shared/format.js
+    // so web + mobile show identical TOC durations.
     function formatChapterDuration(secs) {
-      if (!secs || secs <= 0) return '';
-      const s = Math.round(secs);
-      if (s < 60) return s + 's';
-      const m = Math.round(s / 60);
-      if (m < 60) return m + 'm';
-      const h = Math.floor(m / 60);
-      const rem = m - h * 60;
-      return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+      return window.shared ? window.shared.formatChapterDuration(secs) : '';
     }
 
     function renderChapterList(bookId, workId) {
@@ -1590,10 +1597,11 @@
       } catch {}
     }
 
+    // M:SS format — delegates to shared/format.js. Returns "0:00" for
+    // nan/zero (some legacy callers depended on the empty-string from
+    // the prior local impl, but switching them to "0:00" is harmless).
     function formatTime(secs) {
-      const m = Math.floor(secs / 60);
-      const s = Math.floor(secs % 60);
-      return `${m}:${s.toString().padStart(2,'0')}`;
+      return window.shared ? window.shared.formatPlayerTime(secs) : '0:00';
     }
 
     // Sync state per work
@@ -1900,16 +1908,14 @@
         // Lead defaults to 0 (Whisper timestamps are usually accurate). User
         // can tune per-session via the "Lead (ms)" input above the reader;
         // value is stored in syncLeadSecs and persisted in localStorage.
-        const WINDOW_BEHIND = 1, WINDOW_AHEAD = 4;
+        // The actual lookup + window math live in shared/karaoke.js so
+        // the mobile app produces identical highlight state.
         const t = time + syncLeadSecs;
-        let activeIdx = -1;
-        for (let i = 0; i < activeSyncData.length; i++) {
-          if (t >= activeSyncData[i].s) {
-            activeIdx = i;
-          } else {
-            break;
-          }
-        }
+        const activeIdx = window.shared
+          ? window.shared.findActiveWord(activeSyncData, t)
+          : -1;
+        const WINDOW_BEHIND = window.shared ? window.shared.WINDOW_BEHIND : 1;
+        const WINDOW_AHEAD  = window.shared ? window.shared.WINDOW_AHEAD  : 4;
 
         // Only update DOM if the active word changed and highlighting is safe.
         if (activeIdx !== lastActiveIdx && karaokeHighlightSafe) {
@@ -2229,13 +2235,10 @@
       });
     }
 
+    // Player-bar time — delegates to shared/format.js (formatPlayerTime
+     // returns "0:00" for nan/zero, which is what the player wants).
     function fmtPlayerTime(secs) {
-      if (!secs || isNaN(secs)) return '0:00';
-      const h = Math.floor(secs / 3600);
-      const m = Math.floor((secs % 3600) / 60);
-      const s = Math.floor(secs % 60);
-      if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-      return m + ':' + String(s).padStart(2, '0');
+      return window.shared ? window.shared.formatPlayerTime(secs) : '0:00';
     }
 
     function skipTime(secs) {
