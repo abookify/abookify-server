@@ -106,7 +106,12 @@ func (w *Watcher) queuePath(path string) {
 	// Sidecars are .stt.json files — landed here by remote-stt or syncthing.
 	// They aren't books themselves; they describe an existing audio book.
 	// Queue them in the same debounce buffer so processPending can dispatch.
-	if strings.HasSuffix(strings.ToLower(path), ".stt.json") {
+	//
+	// .stt.json.redo files are user-dropped reprocess requests. Treated
+	// the same here; processPending recognizes the suffix and runs
+	// re-import instead of regular import.
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".stt.json") || strings.HasSuffix(lower, ".stt.json.redo") {
 		w.mu.Lock()
 		w.pending[path] = true
 		if w.timer != nil {
@@ -156,10 +161,22 @@ func (w *Watcher) processPending() {
 
 	changed := false
 	for _, path := range paths {
+		lower := strings.ToLower(path)
+
+		// Redo files: user/script-dropped reprocess request. Strip the
+		// .redo suffix to find the actual sidecar, force-clear cached
+		// data, re-import, then delete the marker file.
+		if strings.HasSuffix(lower, ".stt.json.redo") {
+			if w.reimportFromRedo(path) {
+				changed = true
+			}
+			continue
+		}
+
 		// Sidecar landed: import it for the matching audio book. Idempotent —
 		// sidecar_import skips works that already have sync_data, so a
 		// repeated rsync write doesn't redo the work.
-		if strings.HasSuffix(strings.ToLower(path), ".stt.json") {
+		if strings.HasSuffix(lower, ".stt.json") {
 			if w.importSidecar(path) {
 				changed = true
 			}
@@ -317,5 +334,93 @@ func (w *Watcher) importSidecar(sidecarPath string) bool {
 	}
 
 	log.Printf("watcher: sidecar %s has no matching audio work yet (audio not imported?)", filepath.Base(sidecarPath))
+	return false
+}
+
+// reimportFromRedo handles a .stt.json.redo file dropped next to an
+// existing sidecar. It's the user/script-driven "rerun post-processing"
+// hook: we forget the cached chapter rows + sync_data, run the import
+// pipeline fresh against the existing words+silences, then delete the
+// .redo marker so it doesn't fire again. Returns true on a successful
+// re-import.
+//
+// Note: this does not re-transcribe — words and silences in the sidecar
+// are reused as-is. Only the cheap derivation passes (chapter detection,
+// transcript split, paragraphs) run again, which is the whole point.
+//
+// The redo file's contents are currently ignored — its presence is the
+// signal. A future selective-rerun implementation could parse a
+// {"redo": ["chapters"]} JSON body to skip unrelated passes, but with
+// post-processing in the seconds-to-minutes range it's not yet worth
+// the per-pass plumbing.
+func (w *Watcher) reimportFromRedo(redoPath string) bool {
+	// fsnotify fires a Remove event when we delete the redo file at the
+	// end of a successful run. That event re-queues this path through
+	// the same code path, which would re-trigger the import. Bail if
+	// the file is no longer present — the work has already been done.
+	if _, err := os.Stat(redoPath); err != nil {
+		return false
+	}
+	sidecarPath := strings.TrimSuffix(redoPath, ".redo")
+
+	works, err := w.store.ListWorks()
+	if err != nil {
+		log.Printf("watcher: list works for redo %s: %v", filepath.Base(redoPath), err)
+		return false
+	}
+	absSidecar, err := filepath.Abs(sidecarPath)
+	if err != nil {
+		absSidecar = sidecarPath
+	}
+
+	for _, wk := range works {
+		if !wk.HasAudio || len(wk.AudioFiles) == 0 {
+			continue
+		}
+		af := wk.AudioFiles[0]
+		candidate := findSidecar(af.Path, w.root)
+		if candidate == "" {
+			continue
+		}
+		absCandidate, _ := filepath.Abs(candidate)
+		if absCandidate != absSidecar {
+			continue
+		}
+
+		log.Printf("watcher: REDO request for work %d (%s)", wk.ID, wk.Title)
+		// importOneSidecar overwrites sync_data and chapter rows itself,
+		// so we don't need to clear those. Chunks however are gated on
+		// "skip if already present" in ChunkBook — when chapter
+		// boundaries change, stale chunks stick around. Clear them so
+		// they get rebuilt against the fresh chapter splits.
+		if err := importOneSidecar(w.store, wk.ID, af.ID, sidecarPath); err != nil {
+			log.Printf("watcher: redo import for %s failed: %v", wk.Title, err)
+			return false
+		}
+		// Clear chunks for both the audio (transcript) book and any text
+		// book in this work so RAG search reflects the new chapters.
+		if fresh, ferr := w.store.GetWork(wk.ID); ferr == nil && fresh != nil {
+			for _, b := range fresh.AudioFiles {
+				w.store.DeleteChunksByBook(b.ID)
+			}
+			for _, b := range fresh.TextFiles {
+				w.store.DeleteChunksByBook(b.ID)
+				if b.Format == "epub" || b.Format == "transcript" {
+					ChunkBook(w.store, b.ID)
+				}
+			}
+			if err := LinkChapters(w.store, fresh); err != nil {
+				log.Printf("watcher: link-chapters after redo: %v", err)
+			}
+		}
+		// Marker file did its job — remove so a stale watch event doesn't
+		// trigger a second redo on next debounce tick.
+		if err := os.Remove(redoPath); err != nil {
+			log.Printf("watcher: failed to remove redo marker %s: %v", filepath.Base(redoPath), err)
+		}
+		return true
+	}
+
+	log.Printf("watcher: redo %s has no matching work — leaving marker for future scan", filepath.Base(redoPath))
 	return false
 }

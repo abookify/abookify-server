@@ -1032,6 +1032,14 @@ func (s *Store) ChunkCount(bookID int64) (int, error) {
 	return count, err
 }
 
+// DeleteChunksByBook removes every chunk row for a book — used when a
+// reprocess pass invalidates chapter boundaries and the chunks need to
+// be rebuilt against new chapter splits.
+func (s *Store) DeleteChunksByBook(bookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM chunks WHERE book_id = ?`, bookID)
+	return err
+}
+
 func (s *Store) SearchChunks(bookID int64, query string) ([]Chunk, error) {
 	// Simple keyword search for now; will be replaced with vector similarity
 	rows, err := s.db.Query(`
