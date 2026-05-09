@@ -131,7 +131,13 @@
     .split-view.unified > .split-pane:not(.audio-pane) > .sync-panel { grid-area: sync; }
     .split-view.unified > .split-pane:not(.audio-pane) > .reader-content {
       grid-area: reader;
-      max-height: none;
+      /* Keep the reader scrollable inside the viewport instead of letting
+         a long chapter (Bonfire ch.3 is ~10k px) push the page height. The
+         offset reserves space for page header + pane-header + sync-panel +
+         player bar. min-height:0 lets the grid 1fr row actually shrink. */
+      max-height: calc(100vh - 220px);
+      overflow-y: auto;
+      min-height: 0;
     }
 
     .pane-header {
