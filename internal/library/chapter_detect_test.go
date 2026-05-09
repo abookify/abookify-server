@@ -126,3 +126,35 @@ func TestDetectChapters_NoChapterLanguage(t *testing.T) {
 		t.Errorf("no chapter language should yield 0 chapters, got %d", len(got))
 	}
 }
+
+// Bridges a missing-announcement gap (Whisper missed "Chapter 14" + "Chapter 15")
+// because both bracketing announcements have a real silence before them.
+func TestDetectChapters_BridgesGapWithSilence(t *testing.T) {
+	w := synth("|| Chapter one begins || Chapter two continues || Chapter three " +
+		"|| Chapter six much later || Chapter seven the end")
+	got := DetectChapters(w, 1000)
+	if len(got) != 5 {
+		t.Fatalf("want 5 chapters (1,2,3,6,7) — gap should be bridged, got %d: %+v", len(got), got)
+	}
+	for i, want := range []int{1, 2, 3, 6, 7} {
+		if got[i].Number != want {
+			t.Errorf("chapter %d: number=%d want %d", i, got[i].Number, want)
+		}
+	}
+}
+
+// Orphan dialogue reference inside a sentence (no silence) must NOT bridge a gap.
+// "Chapter seventeen" appears mid-paragraph with no pause before it.
+func TestDetectChapters_OrphanWithoutSilenceCannotBridge(t *testing.T) {
+	w := synth("|| Chapter one begins || Chapter two continues || Chapter three was great " +
+		"she said chapter seventeen was her favorite of them all")
+	got := DetectChapters(w, 1000)
+	if len(got) != 3 {
+		t.Fatalf("want 3 (orphan w/o silence cannot extend to 17), got %d: %+v", len(got), got)
+	}
+	for i, want := range []int{1, 2, 3} {
+		if got[i].Number != want {
+			t.Errorf("chapter %d: number=%d want %d", i, got[i].Number, want)
+		}
+	}
+}

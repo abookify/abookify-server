@@ -28,6 +28,7 @@ type DetectedChapter struct {
 	EndSec     float64 // start of the next chapter (or file duration)
 	WordIdx    int     // index into the word stream where the title begins
 	Confidence float64 // 0.0–1.0
+	HasSilence bool    // candidate is preceded by a silence gap (genuine announcement signal)
 }
 
 // detectionOpts tunes the algorithm. Exposed for tests; callers use defaults.
@@ -45,7 +46,12 @@ func defaultDetectionOpts() detectionOpts {
 		SilenceBoost:      0.2,
 		SequenceBoost:     0.3,
 		BaseConfidence:    0.5,
-		SequenceTolerance: 0, // strict — chapter N must be followed by N+1
+		// Allow up to 2 missing chapter announcements in a row — Whisper
+		// occasionally drops a chapter cue, and we'd rather bridge a small
+		// gap than split a 30-chapter book into two short runs. Gap-bridging
+		// candidates must have a silence boost (validateSequence enforces),
+		// which prevents orphan dialogue references from filling gaps.
+		SequenceTolerance: 2,
 	}
 }
 
@@ -124,18 +130,25 @@ func findCandidates(words []db.SyncTimestamp, norm []string, keyword string, opt
 			continue
 		}
 		conf := opts.BaseConfidence
+		hasSilence := false
 		// Silence boost: was there a significant pause right before this word?
 		if i > 0 {
 			gap := words[i].Start - words[i-1].End
 			if gap >= opts.SilenceGapSecs {
 				conf += opts.SilenceBoost
+				hasSilence = true
 			}
+		} else {
+			// First word in the stream — treat as preceded by silence
+			// (book intro openings always start fresh).
+			hasSilence = true
 		}
 		out = append(out, DetectedChapter{
 			Number:     num,
 			StartSec:   words[i].Start,
 			WordIdx:    i,
 			Confidence: conf,
+			HasSilence: hasSilence,
 		})
 	}
 	return out
@@ -166,6 +179,15 @@ func validateSequence(cands []DetectedChapter, opts detectionOpts) []DetectedCha
 			}
 			diff := cands[i].Number - cands[j].Number
 			if diff < 1 || diff > 1+opts.SequenceTolerance {
+				continue
+			}
+			// Gap-bridging extension (diff > 1) requires a real silence
+			// before the candidate. Without this guard, an orphan
+			// dialogue reference like "Chapter seven" mid-sentence could
+			// extend a real run and produce a false boundary. Real
+			// chapter announcements always have a silent pause before
+			// them; mid-text references don't.
+			if diff > 1 && !cands[i].HasSilence {
 				continue
 			}
 			if best[j]+1 > best[i] {

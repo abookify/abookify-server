@@ -113,9 +113,10 @@ func TestInferChapterTitle(t *testing.T) {
 		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
 		{"preface", mk("Preface"), "Preface"},
 		{"acknowledgments", mk("Acknowledgments"), "Acknowledgments"},
-		// Snippet fallback uses the display tokens (preserves original spacing)
-		// so punctuation attaches naturally without spaces before commas.
-		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Ch 1 · To Dacca Keltner, for help, for…"},
+		// Snippet fallback now returns just "Chapter N" — no fabricated
+		// snippet titles. We only promote to "Chapter N: Title" when the
+		// narrator clearly announced a chapter (e.g. "Two." then title).
+		{"snippet fallback", mk("To ", "Dacca ", "Keltner", ",", " for", " help", ",", " for", " inspiring"), "Chapter 1"},
 	}
 	// PHM-style: Whisper gives 0s gap between "1" and "What's" (interpolated
 	// within a single segment) AND no period on "1". Without either signal
@@ -139,7 +140,7 @@ func TestInferChapterTitle(t *testing.T) {
 	t.Run("wws ch2 no period but real cross-segment gap", func(t *testing.T) {
 		ws := mkWithGap(1, 0.7, "Chapter", " 2", " Caffeine,", " Jet", " Lag,", " and", " Melatonin")
 		got := inferChapterTitle(ws, 0, 2)
-		want := "Chapter 2 Caffeine, Jet Lag, and Melatonin"
+		want := "Chapter 2: Caffeine, Jet Lag, and Melatonin"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -164,7 +165,7 @@ func TestInferChapterTitle(t *testing.T) {
 			{Start: 7763.5, End: 7764.0, Word: " They"},
 		}
 		got := inferChapterTitle(ws, 0, 4)
-		want := "Chapter 4 Ape Beds, Dinosaurs, and Napping with Half a Brain"
+		want := "Chapter 4: Ape Beds, Dinosaurs, and Napping with Half a Brain"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}

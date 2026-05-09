@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pj/abookify/internal/db"
@@ -188,15 +189,34 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 	}
 
 	// Decide which chapter list to use on the audio book. Priority:
-	//   1. v2 silence events + narrator pattern: ground-truth pauses from
-	//      ffmpeg silencedetect tell us where real chapter breaks are.
-	//   2. Narrator-pattern chapters from sidecar, if reliable (prior check).
-	//   3. DetectChapters on the word stream — finds every narrator-phrase
-	//      "chapter N"/"part N", keeps the longest monotonic run.
+	//   1. Sidecar's own chapters, if marked reliable.
+	//   2. Narrator-pattern (DetectChapters) — substring-match "Chapter N"
+	//      announcements in the transcript. Authoritative when the narrator
+	//      explicitly announces chapters; uses silence boost only as a
+	//      tiebreaker for orphan candidates.
+	//   3. v2 silence events — ground-truth acoustic pauses. Used when the
+	//      narrator doesn't announce chapters (Tortilla Flat, etc.).
 	//   4. Pause-based word-gap detection — last-resort fallback for v1
 	//      sidecars of books with no spoken chapter announcements.
 	audioChapters := sc.Chapters
-	if sc.isV2() {
+	if len(audioChapters) > 0 && !chaptersLookReliable(audioChapters, sc.Duration) {
+		audioChapters = nil
+	}
+	if len(audioChapters) == 0 {
+		syncWords := sttToSyncTimestamps(sc.Words)
+		detected := DetectChapters(syncWords, sc.Duration)
+		if narratorRunIsStrong(detected, sc.Duration) {
+			log.Printf("sidecar-import: DetectChapters found %d narrator-pattern %s chapters (strong run)", len(detected), detected[0].Kind)
+			// Meta-pass: if numbering has gaps (e.g. narrator-pattern returned
+			// 1-13 + 16-31, missing 14 and 15), insert inferred chapters at
+			// chapter-grade silences in the gap so the user-facing TOC is
+			// continuous. Without this, the UI would jump from "Chapter 13"
+			// to "Chapter 16" with no explanation.
+			detected = fillNumberingGaps(detected, &sc)
+			audioChapters = detectedToSttChapters(sc.Words, detected)
+		}
+	}
+	if len(audioChapters) == 0 && sc.isV2() {
 		silChapters := detectChaptersFromSilences(&sc)
 		parts := detectPartsFromSilences(&sc)
 		if len(silChapters) >= 3 {
@@ -206,38 +226,12 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 			audioChapters = merged
 		}
 	}
-	if len(audioChapters) == 0 || !chaptersLookReliable(audioChapters, sc.Duration) {
-		// Convert sidecar words into the internal SyncTimestamp format so we
-		// can feed them to DetectChapters.
-		syncWords := sttToSyncTimestamps(sc.Words)
-		detected := DetectChapters(syncWords, sc.Duration)
-		if len(detected) >= 3 {
-			log.Printf("sidecar-import: DetectChapters found %d narrator-pattern %s chapters", len(detected), detected[0].Kind)
-			audioChapters = make([]sttChapter, len(detected))
-			for i, d := range detected {
-				// Enrich the title: DetectChapters returns "Chapter N".
-				// Re-run inferChapterTitle starting at the "chapter" word so
-				// we pick up the subtitle that follows.
-				title := inferChapterTitle(sc.Words, d.WordIdx, d.Number)
-				if title == "" {
-					title = d.Title
-				}
-				audioChapters[i] = sttChapter{
-					Title:   title,
-					Start:   d.StartSec,
-					End:     d.EndSec,
-					WordIdx: d.WordIdx,
-				}
-			}
-		} else {
-			// Last resort: pause detection only.
-			paused := detectChaptersFromPauses(sc.Words)
-			if len(paused) > 1 {
-				log.Printf("sidecar-import: pause-based detection found %d chapter boundaries (narrator-pattern gave %d)", len(paused), len(detected))
-				audioChapters = paused
-			} else {
-				audioChapters = nil
-			}
+	if len(audioChapters) == 0 {
+		// Last resort: pause detection only.
+		paused := detectChaptersFromPauses(sc.Words)
+		if len(paused) > 1 {
+			log.Printf("sidecar-import: pause-based detection found %d chapter boundaries", len(paused))
+			audioChapters = paused
 		}
 	}
 	if len(audioChapters) > 0 {
@@ -338,16 +332,31 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	ranges := []sttChapter{}
 	// Chapter source priority (same as audio book):
 	//   1. Reliable sidecar narrator-pattern chapters.
-	//   2. DetectChapters — our validated narrator-pattern run.
-	//   3. Pause-based detection, plausible count.
+	//   2. DetectChapters — narrator-pattern run from the word stream.
+	//      Authoritative when the narrator says "Chapter N".
+	//   3. v2 silence events — ground truth pauses. Used when no narrator
+	//      announcements (Tortilla Flat, etc.).
+	//   4. Pause-based fallback for v1.
 	chaptersToUse := sc.Chapters
 	reliable := chaptersLookReliable(sc.Chapters, sc.Duration)
 	useChapters := len(sc.Chapters) > 0 && reliable
 
-	// v2 priority: use real acoustic silence events for chapter boundaries.
-	// Runs first because silence-grade pauses are ground truth, not
-	// interpolated. Falls through to v1 heuristics if sidecar is v1 or
-	// silence-based detection produced too few chapters.
+	if !useChapters {
+		syncWords := sttToSyncTimestamps(sc.Words)
+		detected := DetectChapters(syncWords, sc.Duration)
+		if narratorRunIsStrong(detected, sc.Duration) {
+			// Same meta-pass as the audio path: fill any gaps in the
+			// numbering with inferred entries so the audio and text TOCs
+			// align 1:1. Without this, the audio book would have Chapters
+			// 1-31 (gaps filled) but the text book would have only the
+			// announced 29 — chapter-link would mismatch.
+			detected = fillNumberingGaps(detected, sc)
+			chaptersToUse = detectedToSttChapters(sc.Words, detected)
+			useChapters = true
+			log.Printf("sidecar-import: text book using DetectChapters narrator-pattern (%d %ss, strong run)", len(detected), detected[0].Kind)
+		}
+	}
+
 	if !useChapters && sc.isV2() {
 		silChapters := detectChaptersFromSilences(sc)
 		parts := detectPartsFromSilences(sc)
@@ -360,31 +369,11 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	}
 
 	if !useChapters {
-		syncWords := sttToSyncTimestamps(sc.Words)
-		detected := DetectChapters(syncWords, sc.Duration)
-		if len(detected) >= 3 {
-			chaptersToUse = make([]sttChapter, len(detected))
-			for i, d := range detected {
-				title := inferChapterTitle(sc.Words, d.WordIdx, d.Number)
-				if title == "" {
-					title = d.Title
-				}
-				chaptersToUse[i] = sttChapter{
-					Title:   title,
-					Start:   d.StartSec,
-					End:     d.EndSec,
-					WordIdx: d.WordIdx,
-				}
-			}
+		paused := detectChaptersFromPauses(sc.Words)
+		if len(paused) >= 3 && len(paused) <= 80 {
+			chaptersToUse = paused
 			useChapters = true
-			log.Printf("sidecar-import: text book using DetectChapters narrator-pattern (%d %ss)", len(detected), detected[0].Kind)
-		} else {
-			paused := detectChaptersFromPauses(sc.Words)
-			if len(paused) >= 3 && len(paused) <= 80 {
-				chaptersToUse = paused
-				useChapters = true
-				log.Printf("sidecar-import: text book using pause-based chapters (%d)", len(paused))
-			}
+			log.Printf("sidecar-import: text book using pause-based chapters (%d)", len(paused))
 		}
 	}
 	if useChapters {
@@ -837,11 +826,59 @@ func extractChapterTitle(words []sttWord, rawTokens, displayTokens []string, sta
 	if subtitle == "" {
 		return base
 	}
-	full := base + " " + subtitle
+	subtitle = normalizeTitleCase(subtitle)
+	full := base + ": " + subtitle
 	if len(full) > 80 {
 		full = full[:80] + "…"
 	}
 	return full
+}
+
+// normalizeTitleCase smooths over case-inconsistencies in titles transcribed
+// from emphatic narration. Whisper preserves whatever it heard, so a narrator
+// pronouncing "CHANGES IN SLEEP ACROSS THE LIFESPAN" with emphasis comes back
+// in all caps. We re-case it as Title Case unless it's clearly already mixed
+// case (which means it's a real proper-noun title we shouldn't touch).
+func normalizeTitleCase(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	// Heuristic: if the string contains BOTH uppercase and lowercase letters
+	// already, leave it alone (it's intentionally mixed — proper nouns,
+	// acronyms, or just normal narration). If it's ALL caps or ALL lowercase,
+	// re-case it as Title Case for consistency in the TOC.
+	hasUpper := false
+	hasLower := false
+	for _, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			hasUpper = true
+		} else if r >= 'a' && r <= 'z' {
+			hasLower = true
+		}
+		if hasUpper && hasLower {
+			return s
+		}
+	}
+	// All same case — re-case as Title Case. Small connecting words stay
+	// lowercase in the middle but the first/last word always capitalizes.
+	smallWords := map[string]bool{
+		"a": true, "an": true, "and": true, "as": true, "at": true,
+		"but": true, "by": true, "for": true, "in": true, "of": true,
+		"on": true, "or": true, "the": true, "to": true, "with": true,
+	}
+	parts := strings.Fields(s)
+	for i, p := range parts {
+		lower := strings.ToLower(p)
+		if i > 0 && i < len(parts)-1 && smallWords[lower] {
+			parts[i] = lower
+			continue
+		}
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(lower[:1]) + lower[1:]
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // Section-type prefix words we recognise at the start of a chapter. Keep
@@ -933,15 +970,13 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 		}
 	}
 
-	// Case 3: snippet fallback. The pause-based tokenization above already
-	// capped the snippet at the first significant pause, so this typically
-	// gives a clean opening phrase rather than a runon.
+	// Case 3: no clean chapter announcement. Don't fabricate a title from a
+	// content snippet — that produces inconsistent TOCs ("Ch 1 · This is
+	// Audible" alongside "Chapter 2: Real Title"). Just return "Chapter N".
 	//
-	// Special case: v2 silence boundaries often land JUST BEFORE the narrator
-	// says the chapter number (e.g. "Two", "Three" or "2", "3"), so the
-	// first token is a bare number like "2." or "Two." followed by the real
-	// subtitle. Strip that leading number so the title reads "Chapter 4:
-	// Subtitle" rather than "Ch 4 · 4 Subtitle".
+	// Exception: if the first 1-2 tokens are a bare chapter number ("Two.",
+	// "5.") the v2 silence-detection path produced this, and a real subtitle
+	// often follows. Promote those to "Chapter N: Subtitle".
 	skipLeadingNumberTokens := 0
 	for i := 0; i < len(rawTokens) && i < 2; i++ {
 		t := strings.TrimRight(strings.ToLower(rawTokens[i]), ".,!?:;")
@@ -951,34 +986,23 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 			break
 		}
 	}
-
-	// Collect display tokens (preserving original spacing) past any leading
-	// number words, and cap at 8 real tokens.
-	effective := displayTokens[skipLeadingNumberTokens:]
-	if len(effective) > 8 {
-		effective = effective[:8]
-	}
-	text := strings.TrimSpace(strings.Join(effective, ""))
-	text = strings.TrimRight(text, ".,;: ")
-	if text == "" {
-		return fmt.Sprintf("Chapter %d", chapNum)
-	}
-	// If we stripped a leading number token, format as "Chapter N: Subtitle"
-	// — much cleaner than "Ch N · Subtitle".
 	if skipLeadingNumberTokens > 0 {
-		full := fmt.Sprintf("Chapter %d: %s", chapNum, text)
-		if len(full) > 80 {
-			full = full[:80] + "…"
+		effective := displayTokens[skipLeadingNumberTokens:]
+		if len(effective) > 8 {
+			effective = effective[:8]
 		}
-		return full
+		text := strings.TrimSpace(strings.Join(effective, ""))
+		text = strings.TrimRight(text, ".,;: ")
+		if text != "" {
+			text = normalizeTitleCase(text)
+			full := fmt.Sprintf("Chapter %d: %s", chapNum, text)
+			if len(full) > 80 {
+				full = full[:80] + "…"
+			}
+			return full
+		}
 	}
-	// Otherwise stick with the "Ch N · snippet" format to signal it's a
-	// snippet of content, not a real title.
-	suffix := "…"
-	if cutAt < end {
-		suffix = ""
-	}
-	return fmt.Sprintf("Ch %d · %s%s", chapNum, text, suffix)
+	return fmt.Sprintf("Chapter %d", chapNum)
 }
 
 // isNumberWord returns true for "one", "two", ..., "twenty" plus "first",
@@ -1074,6 +1098,190 @@ func chaptersLookReliable(chapters []sttChapter, duration float64) bool {
 	}
 
 	return true
+}
+
+// fillNumberingGaps walks the detected run looking for gaps in chapter
+// numbering (e.g. 13 → 16 means 14 and 15 are missing) and inserts inferred
+// chapter entries inside the gap so the user-facing TOC is continuous.
+//
+// Inference strategy:
+//   - For each missing number, locate a chapter-grade silence (kind="chapter")
+//     in the time window between the surrounding detected chapters, biased
+//     toward the expected proportional position.
+//   - If no usable silence exists, fall back to evenly partitioning the
+//     gap by missing-count so we still emit something better than a hole.
+//
+// The inferred chapter title is "Chapter N" (no subtitle) since we don't
+// have a narrator announcement to extract one from.
+func fillNumberingGaps(detected []DetectedChapter, sc *sttSidecar) []DetectedChapter {
+	if len(detected) < 2 {
+		return detected
+	}
+
+	// Skip if the run is "Part" — we don't have part-grade silences to fill.
+	if detected[0].Kind != "chapter" {
+		return detected
+	}
+
+	// Collect chapter-grade silence times so we can pick boundaries from
+	// real acoustic events. v1 sidecars have none — we'll fall back to even
+	// partitioning.
+	var silenceTimes []float64
+	if sc.isV2() {
+		for _, sil := range sc.Silences {
+			if sil.Kind == "chapter" {
+				silenceTimes = append(silenceTimes, sil.End)
+			}
+		}
+	}
+
+	out := make([]DetectedChapter, 0, len(detected))
+	for i := 0; i < len(detected); i++ {
+		out = append(out, detected[i])
+		if i+1 >= len(detected) {
+			continue
+		}
+		curr := detected[i]
+		next := detected[i+1]
+		missing := next.Number - curr.Number - 1
+		if missing <= 0 {
+			continue
+		}
+		gapStart := curr.StartSec
+		gapEnd := next.StartSec
+		boundaries := chooseGapBoundaries(silenceTimes, gapStart, gapEnd, missing)
+		for k := 1; k <= missing; k++ {
+			number := curr.Number + k
+			startSec := boundaries[k-1]
+			out = append(out, DetectedChapter{
+				Number:     number,
+				Kind:       "chapter",
+				Title:      titleFor("chapter", number),
+				StartSec:   startSec,
+				WordIdx:    wordAtOrAfter(sc.Words, startSec),
+				Confidence: 0.4, // inferred — lower than detected (0.5+ base)
+			})
+		}
+		log.Printf("sidecar-import: filled %d-chapter gap between Chapter %d and Chapter %d (silences=%d)",
+			missing, curr.Number, next.Number, len(silenceTimes))
+	}
+
+	// Recompute Index + EndSec on the merged slice.
+	for i := range out {
+		out[i].Index = i
+		if i+1 < len(out) {
+			out[i].EndSec = out[i+1].StartSec
+		} else if sc.Duration > 0 {
+			out[i].EndSec = sc.Duration
+		}
+	}
+	return out
+}
+
+// chooseGapBoundaries picks `missing` chapter boundaries inside the gap
+// (gapStart, gapEnd), preferring chapter-grade silences when available and
+// falling back to even time-partitioning when not. The returned slice is
+// strictly time-ordered so inferred chapters never overlap or invert.
+//
+// Algorithm: collect candidate silences inside the gap, sort by time. For
+// each of the `missing` expected proportional positions, walk forward
+// picking the silence closest to that position that is also AFTER the
+// previously picked silence. If we run out of silences (or there were
+// none), fall back to even time partitioning for the remaining slots.
+func chooseGapBoundaries(allSilences []float64, gapStart, gapEnd float64, missing int) []float64 {
+	out := make([]float64, missing)
+
+	// Collect + sort silences strictly inside the gap.
+	var gapSil []float64
+	for _, t := range allSilences {
+		if t > gapStart && t < gapEnd {
+			gapSil = append(gapSil, t)
+		}
+	}
+	sort.Float64s(gapSil)
+
+	prev := gapStart
+	silIdx := 0
+	for k := 0; k < missing; k++ {
+		expected := gapStart + float64(k+1)/float64(missing+1)*(gapEnd-gapStart)
+
+		// Among silences strictly after `prev`, pick the one closest to
+		// `expected`. Walk forward from silIdx; once we pass `expected`
+		// we know subsequent silences can only get farther, so we can
+		// stop after seeing one bracket.
+		bestIdx := -1
+		bestDist := -1.0
+		for i := silIdx; i < len(gapSil); i++ {
+			if gapSil[i] <= prev {
+				continue
+			}
+			d := gapSil[i] - expected
+			if d < 0 {
+				d = -d
+			}
+			if bestIdx == -1 || d < bestDist {
+				bestIdx = i
+				bestDist = d
+				continue
+			}
+			// Past expected and getting worse — done.
+			if gapSil[i] > expected {
+				break
+			}
+		}
+
+		if bestIdx == -1 {
+			// No usable silence remaining — fall back to even partition.
+			out[k] = expected
+		} else {
+			out[k] = gapSil[bestIdx]
+			prev = gapSil[bestIdx]
+			silIdx = bestIdx + 1
+		}
+
+		// Guarantee strictly-increasing time even in pathological inputs.
+		if k > 0 && out[k] <= out[k-1] {
+			out[k] = out[k-1] + 1.0
+		}
+	}
+	return out
+}
+
+// narratorRunIsStrong reports whether a DetectChapters result is good enough
+// to override silence-based detection. We require both a meaningful count
+// (>=5) and reasonable book coverage (last chapter starts past 60% of the
+// book) — without coverage, the run might be missing the entire first half
+// (e.g., narrator-pattern only detected chapters 16-31). Short books (<1h)
+// pass with just the count check since coverage math is noisy.
+func narratorRunIsStrong(detected []DetectedChapter, durationSec float64) bool {
+	if len(detected) < 5 {
+		return false
+	}
+	if durationSec < 3600 {
+		return true
+	}
+	last := detected[len(detected)-1].StartSec
+	return last >= durationSec*0.60
+}
+
+// detectedToSttChapters converts DetectChapters results into the sttChapter
+// shape used by sidecar_import, re-running inferChapterTitle so we pick up
+// any subtitle that follows the "Chapter N" announcement.
+func detectedToSttChapters(words []sttWord, detected []DetectedChapter) []sttChapter {
+	out := make([]sttChapter, len(detected))
+	for i, d := range detected {
+		title := inferChapterTitle(words, d.WordIdx, d.Number)
+		if title == "" {
+			title = d.Title
+		}
+		out[i] = sttChapter{
+			Title:   title,
+			Start:   d.StartSec,
+			End:     d.EndSec,
+			WordIdx: d.WordIdx,
+		}
+	}
+	return out
 }
 
 // sttToSyncTimestamps converts sidecar word records into the internal
