@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/pj/abookify/internal/library"
 )
 
 // GET /api/queue/status — current snapshot of incoming/processing/failed.
@@ -42,6 +44,46 @@ func (s *Server) handleQueueRemoveFailed(w http.ResponseWriter, r *http.Request)
 	}
 	s.Events.Broadcast(Event{Type: "queue_updated"})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/works/{id}/reprocess — rerun the full post-processing pipeline
+// against a work's existing sidecar. Cheap (seconds) since this only redoes
+// chapter detection, transcript split, paragraphs, RAG chunks — never the
+// expensive Whisper transcription.
+//
+// Contract: clobbers user-edited chapter rows. Documented limitation in the
+// post-processing design talk; future work could honor a "source: user"
+// flag to preserve hand-edits.
+func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
+	if s.LibraryDir == "" {
+		http.Error(w, "library not configured", http.StatusInternalServerError)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid work id", http.StatusBadRequest)
+		return
+	}
+	if err := library.ReimportWork(s.store, id, s.LibraryDir); err != nil {
+		// Specific error mapping: missing-sidecar / no-audio is 4xx
+		// (the work isn't in a state where reprocess is meaningful);
+		// import failures are 5xx.
+		msg := err.Error()
+		if strings.Contains(msg, "no sidecar") || strings.Contains(msg, "not found") || strings.Contains(msg, "no audio") {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+		http.Error(w, msg, http.StatusInternalServerError)
+		return
+	}
+	// Tell connected clients to refresh their library view so chapters
+	// + sync get reloaded from the new DB rows.
+	s.Events.Broadcast(Event{Type: "library_updated"})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"work_id": id,
+		"status":  "reprocessed",
+	})
 }
 
 // POST /api/books/{id}/embed — backfill chunk embeddings for one book.

@@ -1,6 +1,7 @@
 package library
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -338,21 +339,9 @@ func (w *Watcher) importSidecar(sidecarPath string) bool {
 }
 
 // reimportFromRedo handles a .stt.json.redo file dropped next to an
-// existing sidecar. It's the user/script-driven "rerun post-processing"
-// hook: we forget the cached chapter rows + sync_data, run the import
-// pipeline fresh against the existing words+silences, then delete the
-// .redo marker so it doesn't fire again. Returns true on a successful
-// re-import.
-//
-// Note: this does not re-transcribe — words and silences in the sidecar
-// are reused as-is. Only the cheap derivation passes (chapter detection,
-// transcript split, paragraphs) run again, which is the whole point.
-//
-// The redo file's contents are currently ignored — its presence is the
-// signal. A future selective-rerun implementation could parse a
-// {"redo": ["chapters"]} JSON body to skip unrelated passes, but with
-// post-processing in the seconds-to-minutes range it's not yet worth
-// the per-pass plumbing.
+// existing sidecar. Looks up the matching work and dispatches to the
+// shared ReimportWork helper, then removes the marker file so it
+// doesn't re-fire.
 func (w *Watcher) reimportFromRedo(redoPath string) bool {
 	// fsnotify fires a Remove event when we delete the redo file at the
 	// end of a successful run. That event re-queues this path through
@@ -388,30 +377,9 @@ func (w *Watcher) reimportFromRedo(redoPath string) bool {
 		}
 
 		log.Printf("watcher: REDO request for work %d (%s)", wk.ID, wk.Title)
-		// importOneSidecar overwrites sync_data and chapter rows itself,
-		// so we don't need to clear those. Chunks however are gated on
-		// "skip if already present" in ChunkBook — when chapter
-		// boundaries change, stale chunks stick around. Clear them so
-		// they get rebuilt against the fresh chapter splits.
-		if err := importOneSidecar(w.store, wk.ID, af.ID, sidecarPath); err != nil {
+		if err := ReimportWork(w.store, wk.ID, w.root); err != nil {
 			log.Printf("watcher: redo import for %s failed: %v", wk.Title, err)
 			return false
-		}
-		// Clear chunks for both the audio (transcript) book and any text
-		// book in this work so RAG search reflects the new chapters.
-		if fresh, ferr := w.store.GetWork(wk.ID); ferr == nil && fresh != nil {
-			for _, b := range fresh.AudioFiles {
-				w.store.DeleteChunksByBook(b.ID)
-			}
-			for _, b := range fresh.TextFiles {
-				w.store.DeleteChunksByBook(b.ID)
-				if b.Format == "epub" || b.Format == "transcript" {
-					ChunkBook(w.store, b.ID)
-				}
-			}
-			if err := LinkChapters(w.store, fresh); err != nil {
-				log.Printf("watcher: link-chapters after redo: %v", err)
-			}
 		}
 		// Marker file did its job — remove so a stale watch event doesn't
 		// trigger a second redo on next debounce tick.
@@ -423,4 +391,60 @@ func (w *Watcher) reimportFromRedo(redoPath string) bool {
 
 	log.Printf("watcher: redo %s has no matching work — leaving marker for future scan", filepath.Base(redoPath))
 	return false
+}
+
+// ReimportWork runs the post-processing pipeline against a work's
+// existing sidecar (no re-transcription). Used by the watcher's
+// .stt.json.redo handler and the HTTP reprocess endpoint — both share
+// the same body so behavior matches across triggers.
+//
+// Steps:
+//   1. Find the sidecar next to the work's first audio book
+//   2. Run importOneSidecar — overwrites sync_data + chapter rows in
+//      place, rebuilds the transcript book, repopulates paragraphs
+//   3. Clear stale RAG chunks (gated on count>0 inside ChunkBook, so
+//      they wouldn't refresh otherwise) and rebuild for text books
+//   4. Re-link audio↔text chapters against the fresh chapter rows
+//
+// Caller responsibility: broadcast WS events / return HTTP status.
+func ReimportWork(store *db.Store, workID int64, libraryRoot string) error {
+	wk, err := store.GetWork(workID)
+	if err != nil {
+		return fmt.Errorf("get work: %w", err)
+	}
+	if wk == nil {
+		return fmt.Errorf("work %d not found", workID)
+	}
+	if !wk.HasAudio || len(wk.AudioFiles) == 0 {
+		return fmt.Errorf("work %d has no audio book to reimport", workID)
+	}
+	af := wk.AudioFiles[0]
+	sidecarPath := findSidecar(af.Path, libraryRoot)
+	if sidecarPath == "" {
+		return fmt.Errorf("no sidecar found for work %d (%s)", workID, wk.Title)
+	}
+
+	if err := importOneSidecar(store, wk.ID, af.ID, sidecarPath); err != nil {
+		return fmt.Errorf("import sidecar: %w", err)
+	}
+
+	// Refresh RAG chunks: ChunkBook is idempotent (skips if count>0), so
+	// when chapter boundaries shift the stale chunks would survive
+	// otherwise. Clear and rebuild so vector search reflects new splits.
+	fresh, ferr := store.GetWork(workID)
+	if ferr == nil && fresh != nil {
+		for _, b := range fresh.AudioFiles {
+			store.DeleteChunksByBook(b.ID)
+		}
+		for _, b := range fresh.TextFiles {
+			store.DeleteChunksByBook(b.ID)
+			if b.Format == "epub" || b.Format == "transcript" {
+				ChunkBook(store, b.ID)
+			}
+		}
+		if err := LinkChapters(store, fresh); err != nil {
+			log.Printf("reimport: link-chapters after import: %v", err)
+		}
+	}
+	return nil
 }

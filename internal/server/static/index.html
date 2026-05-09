@@ -828,6 +828,7 @@
                 <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}</div>
               </div>
               <a href="#" class="media-pill" id="abook-dl-${work.id}" style="text-decoration:none;background:rgba(78,204,163,0.1);color:var(--epub);border:1px solid rgba(78,204,163,0.3);cursor:pointer;" onclick="event.stopPropagation(); downloadAbook(${work.id}, this);" title="Download as .abook">.abook</a>
+              ${work.has_audio ? `<a href="#" class="media-pill" id="reproc-${work.id}" style="text-decoration:none;background:rgba(120,120,160,0.1);color:var(--text-muted);border:1px solid rgba(120,120,160,0.3);cursor:pointer;" onclick="event.stopPropagation(); reprocessWork(${work.id}, this);" title="Re-run chapter detection + transcript split (no re-transcription)">↻ reprocess</a>` : ''}
               <div class="work-badges">
                 ${work.has_audio
                   ? `<span class="media-pill audio">${audioFiles.length} audio</span>`
@@ -2913,6 +2914,34 @@
       } finally {
         el.style.pointerEvents = '';
         delete el.dataset.downloading;
+      }
+    }
+
+    // Re-run post-processing (chapter detection, transcript split, paragraphs,
+    // RAG chunks) against the work's existing sidecar. Cheap — no Whisper
+    // re-transcription. Backend rebuilds DB rows + broadcasts library_updated
+    // so the WS handler refreshes our view automatically.
+    async function reprocessWork(workId, el) {
+      if (el.dataset.busy) return;
+      el.dataset.busy = 'true';
+      const origText = el.textContent;
+      el.innerHTML = '<span class="spinner" style="border-color:var(--text-muted);border-top-color:transparent;width:10px;height:10px;margin-right:4px;"></span>working...';
+      el.style.pointerEvents = 'none';
+      try {
+        const res = await fetch(`/api/works/${workId}/reprocess`, { method: 'POST' });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+        el.textContent = '↻ done!';
+        setTimeout(() => { el.textContent = origText; }, 2000);
+      } catch(e) {
+        el.textContent = '↻ error';
+        el.title = String(e);
+        setTimeout(() => { el.textContent = origText; }, 3000);
+      } finally {
+        el.style.pointerEvents = '';
+        delete el.dataset.busy;
       }
     }
 

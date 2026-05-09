@@ -80,6 +80,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/queue/status", s.handleQueueStatus)
 	mux.HandleFunc("DELETE /api/queue/failed/{name}", s.handleQueueRemoveFailed)
 	mux.HandleFunc("POST /api/books/{id}/embed", s.handleEmbedBook)
+	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
