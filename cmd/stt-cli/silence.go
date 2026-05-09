@@ -6,7 +6,6 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
-	"sort"
 	"strconv"
 )
 
@@ -109,52 +108,6 @@ func classifySilences(silences []silenceEvent) {
 	}
 }
 
-// v2Event is one element of the interleaved event stream. Either a word
-// or a silence. Serialized with a "type" discriminator.
-type v2Event struct {
-	Type string  `json:"type"`          // "word" | "silence"
-	S    float64 `json:"s"`
-	E    float64 `json:"e"`
-
-	// Word fields (only when Type == "word")
-	W    string  `json:"w,omitempty"`
-	Conf float64 `json:"conf,omitempty"`
-
-	// Silence fields (only when Type == "silence")
-	Duration float64 `json:"duration,omitempty"`
-	Source   string  `json:"source,omitempty"`
-	RmsDB   float64 `json:"rms_db,omitempty"`
-	Kind     string  `json:"kind,omitempty"`
-}
-
-// mergeEvents interleaves word events and silence events into a single
-// time-ordered stream. Overlapping events are kept — the consumer
-// understands that a silence can span a Whisper-assigned word boundary
-// (meaning Whisper interpolated and the silence is the ground truth).
-func mergeEvents(words []wordTS, silences []silenceEvent) []v2Event {
-	events := make([]v2Event, 0, len(words)+len(silences))
-	for _, w := range words {
-		events = append(events, v2Event{
-			Type: "word",
-			S:    w.Start,
-			E:    w.End,
-			W:    w.Word,
-			Conf: w.Probability,
-		})
-	}
-	for _, s := range silences {
-		events = append(events, v2Event{
-			Type:     "silence",
-			S:        s.Start,
-			E:        s.End,
-			Duration: s.Duration,
-			Source:   s.Source,
-			RmsDB:   s.RmsDB,
-			Kind:     s.Kind,
-		})
-	}
-	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].S < events[j].S
-	})
-	return events
-}
+// v2 had a merged event stream (interleaved words+silences) — retired
+// in v3. Server consumes words[] and silences[] directly, deriving any
+// post-processing (chapters, paragraphs, etc.) from those two arrays.

@@ -30,14 +30,15 @@ func main() {
 	whisperURL := flag.String("whisper", "http://localhost:5200", "Whisper STT service URL")
 	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
-	detectChapters := flag.Bool("detect-chapters", false, "Detect chapter boundaries in output")
 	flag.Parse()
 
 	if *audioPath == "" {
-		fmt.Fprintf(os.Stderr, "Usage: stt-cli --audio <file|dir> [--whisper url] [--output result.json | --stdout] [--detect-chapters]\n")
+		fmt.Fprintf(os.Stderr, "Usage: stt-cli --audio <file|dir> [--whisper url] [--output result.json | --stdout]\n")
 		fmt.Fprintf(os.Stderr, "  File input → writes <audio>.stt.json next to the source\n")
 		fmt.Fprintf(os.Stderr, "  Directory input → writes <dir>.stt.json next to the directory\n")
 		fmt.Fprintf(os.Stderr, "  (Directories are transcribed as one logical audiobook with continuous timestamps.)\n")
+		fmt.Fprintf(os.Stderr, "  Sidecar is written in v3 format: pure transcription (words + silences).\n")
+		fmt.Fprintf(os.Stderr, "  Chapter detection, summaries, etc. happen server-side as post-processing passes.\n")
 		os.Exit(1)
 	}
 
@@ -136,32 +137,28 @@ func main() {
 	classifySilences(allSilences)
 
 	// Build v2 event stream: words + silences interleaved by time.
-	events := mergeEvents(words, allSilences)
+	// (event-stream merging retired in v3 — server derives what it needs from words+silences)
 
-	// Convenience: flat silence list for consumers that only need pauses.
-	silenceList := make([]silenceEvent, len(allSilences))
-	copy(silenceList, allSilences)
-
+	// v3 sidecar: pure transcription. Atomic outputs only — no chapter
+	// detection, no event-merging. The server's post-processing passes
+	// derive everything else from words+silences on import.
 	out := struct {
 		Version  int              `json:"version"`
-		Language string           `json:"language"`
+		Schema   string           `json:"schema"`
+		Language string           `json:"language,omitempty"`
 		Duration float64          `json:"duration"`
-		Text     string           `json:"text"`
-		Events   []v2Event        `json:"events"`
-		Words    []wordTS         `json:"words"`         // backward compat
-		Silences []silenceEvent   `json:"silences"`
-		Chapters []chapterMark    `json:"chapters,omitempty"`
 		Sources  []sourceInfo     `json:"sources,omitempty"`
+		Words    []wordTS         `json:"words"`
+		Silences []silenceEvent   `json:"silences,omitempty"`
+		Metadata struct{}         `json:"metadata"`
 	}{
-		Version:  2,
+		Version:  3,
+		Schema:   "abookify-sidecar/v3",
 		Language: combined.Language,
 		Duration: combined.Duration,
-		Text:     combined.Text,
-		Events:   events,
 		Words:    words,
-		Silences: silenceList,
+		Silences: allSilences,
 	}
-
 	// If we processed a directory, record each source file's offset and duration
 	// so downstream tooling can map words back to their original file.
 	if len(files) > 1 {
@@ -174,11 +171,6 @@ func main() {
 			})
 			acc += durations[i]
 		}
-	}
-
-	if *detectChapters {
-		out.Chapters = detectChapterBoundaries(words)
-		log.Printf("Detected %d chapters", len(out.Chapters))
 	}
 
 	// Summary
@@ -345,12 +337,6 @@ type wordTS struct {
 	Idx         int     `json:"-"`
 }
 
-type chapterMark struct {
-	Title    string  `json:"title"`
-	StartSec float64 `json:"start_sec"`
-	WordIdx  int     `json:"word_idx"`
-}
-
 // sourceInfo records where each original file sits on the combined timeline
 // when --audio is a directory. Lets a consumer map a global timestamp back
 // to "file N at t=X within that file".
@@ -360,70 +346,6 @@ type sourceInfo struct {
 	Duration float64 `json:"duration"`
 }
 
-func detectChapterBoundaries(words []wordTS) []chapterMark {
-	norm := make([]string, len(words))
-	for i, w := range words {
-		norm[i] = strings.ToLower(strings.TrimFunc(w.Word, func(r rune) bool {
-			return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
-		}))
-	}
-
-	var chapters []chapterMark
-
-	numberWords := map[string]int{
-		"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-		"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-		"eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-		"sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
-		"twentyone": 21, "twentytwo": 22, "twentythree": 23, "twentyfour": 24, "twentyfive": 25,
-		"twentysix": 26, "twentyseven": 27, "twentyeight": 28, "twentynine": 29, "thirty": 30,
-	}
-
-	for i := 0; i < len(norm)-1; i++ {
-		if norm[i] != "chapter" {
-			continue
-		}
-		next := norm[i+1]
-		var num int
-		if n, ok := numberWords[next]; ok {
-			num = n
-		} else if n, err := strconv.Atoi(next); err == nil {
-			num = n
-		} else {
-			continue
-		}
-		chapters = append(chapters, chapterMark{
-			Title:    fmt.Sprintf("Chapter %d", num),
-			StartSec: words[i].Start,
-			WordIdx:  i,
-		})
-	}
-
-	for i := 0; i < len(norm)-1; i++ {
-		if norm[i] != "part" {
-			continue
-		}
-		next := norm[i+1]
-		var num int
-		if n, ok := numberWords[next]; ok {
-			num = n
-		} else if n, err := strconv.Atoi(next); err == nil {
-			num = n
-		} else {
-			continue
-		}
-		chapters = append(chapters, chapterMark{
-			Title:    fmt.Sprintf("Part %d", num),
-			StartSec: words[i].Start,
-			WordIdx:  i,
-		})
-	}
-
-	for i := 1; i < len(chapters); i++ {
-		for j := i; j > 0 && chapters[j].StartSec < chapters[j-1].StartSec; j-- {
-			chapters[j], chapters[j-1] = chapters[j-1], chapters[j]
-		}
-	}
-
-	return chapters
-}
+// Narrator-pattern chapter detection moved to the server's post-processing
+// pipeline as of v3 sidecar (internal/library/chapter_detect.go). stt-cli
+// now writes a pure-transcription sidecar with no derived metadata.
