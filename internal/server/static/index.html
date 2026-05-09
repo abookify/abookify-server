@@ -102,6 +102,38 @@
     .split-pane { display: flex; flex-direction: column; }
     .split-pane + .split-pane { border-left: 1px solid var(--border); }
 
+    /* When text chapters are time-synced to audio, the audio pane is
+       redundant — collapse to a single-column layout so the ebook+TOC pane
+       gets the full width. The audio pane retains its DOM (so playAudio's
+       row-highlighting code still finds elements) but is hidden visually.
+       The text pane reorganizes internally: header on top, chapter-list as
+       a 33% sidebar on the left, sync-panel + reader on the right. This
+       keeps the TOC visible at-a-glance while giving the reader text room
+       to breathe. */
+    .split-view.unified { grid-template-columns: 1fr; }
+    .split-view.unified > .split-pane.audio-pane { display: none; }
+    .split-view.unified > .split-pane:not(.audio-pane) {
+      display: grid;
+      grid-template-columns: minmax(240px, 33%) 1fr;
+      grid-template-rows: auto auto 1fr;
+      grid-template-areas:
+        "header header"
+        "list   sync"
+        "list   reader";
+    }
+    .split-view.unified > .split-pane:not(.audio-pane) > .pane-header { grid-area: header; }
+    .split-view.unified > .split-pane:not(.audio-pane) > .chapter-list {
+      grid-area: list;
+      max-height: none !important;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+    }
+    .split-view.unified > .split-pane:not(.audio-pane) > .sync-panel { grid-area: sync; }
+    .split-view.unified > .split-pane:not(.audio-pane) > .reader-content {
+      grid-area: reader;
+      max-height: none;
+    }
+
     .pane-header {
       font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.05em; padding: 0.75rem 1.25rem;
@@ -120,11 +152,35 @@
       padding: 0.45rem 1.25rem; font-size: 0.8rem;
       color: var(--text-muted); cursor: pointer; transition: background 0.1s;
       border-bottom: 1px solid rgba(42,58,92,0.3);
+      position: relative;
     }
     .chapter-row:last-child { border-bottom: none; }
     .chapter-row:hover { background: var(--surface-hover); }
     .chapter-row.active { background: rgba(78,204,163,0.08); color: var(--text); }
     .chapter-row.playing { background: rgba(233,69,96,0.1); color: var(--text); }
+    /* Per-chapter progress bar — fills left-to-right based on playback position.
+       Set to 100% on chapters already finished, 0% on unstarted. The chapter
+       currently playing gets the partial fill. */
+    .chapter-progress {
+      position: absolute; left: 0; bottom: 0; height: 2px;
+      background: var(--mp3); opacity: 0.6;
+      width: 0; transition: width 0.25s ease-out;
+      pointer-events: none;
+    }
+    .chapter-row.playing .chapter-progress { opacity: 0.9; height: 3px; }
+    .chapter-duration {
+      flex-shrink: 0; font-variant-numeric: tabular-nums;
+      font-size: 0.72rem; color: var(--text-muted); opacity: 0.75;
+      min-width: 2.8em; text-align: right;
+    }
+    /* Header above chapter list — shows "Chapter X of Y · Q% complete". */
+    .toc-summary {
+      padding: 0.4rem 1.25rem; font-size: 0.72rem;
+      color: var(--text-muted); border-bottom: 1px solid rgba(42,58,92,0.4);
+      background: rgba(255,255,255,0.02); display: flex; gap: 0.5rem; align-items: center;
+    }
+    .toc-summary .pos { font-variant-numeric: tabular-nums; }
+    .toc-summary .pct { margin-left: auto; font-variant-numeric: tabular-nums; }
     /* Part rows render as section headers above their child chapters — bold,
        slightly taller, distinct background. No regen button. */
     .chapter-row.chapter-row-part {
@@ -414,6 +470,42 @@
       padding: 0 2rem; display: none;
     }
     .jobs-bar.visible { display: block; }
+
+    /* Queue status panel — sits above jobs-bar, surfaces ingest queue depth
+       and any failed items. Hidden when queue is empty. */
+    .queue-bar {
+      padding: 0.5rem 2rem 0; display: none; font-size: 0.8rem;
+    }
+    .queue-bar.visible { display: block; }
+    .queue-bar .queue-row {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
+      display: flex; align-items: center; gap: 0.6rem;
+    }
+    .queue-bar .queue-counts {
+      flex: 1; color: var(--text-muted);
+    }
+    .queue-bar .queue-counts strong { color: var(--text); font-weight: 600; }
+    .queue-bar .queue-failed-list {
+      margin-top: 0.4rem; padding-left: 1rem; font-size: 0.75rem;
+    }
+    .queue-bar .queue-failed-item {
+      display: flex; align-items: center; gap: 0.4rem; padding: 0.15rem 0;
+      color: var(--text-muted);
+    }
+    .queue-bar .queue-failed-name {
+      flex-shrink: 0; font-weight: 500; color: #ff6b8a;
+    }
+    .queue-bar .queue-failed-error {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; opacity: 0.85;
+    }
+    .queue-bar .queue-dismiss {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      cursor: pointer; border-radius: 4px; padding: 1px 6px; font-size: 0.7rem;
+      flex-shrink: 0;
+    }
+    .queue-bar .queue-dismiss:hover { color: var(--text); border-color: var(--text); }
     .job-item {
       background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
       padding: 0.6rem 1rem; margin-bottom: 0.5rem;
@@ -497,6 +589,7 @@
     </div>
   </div>
 
+  <div class="queue-bar" id="queue-bar"></div>
   <div class="jobs-bar" id="jobs-bar"></div>
   <div id="custom-tooltip"></div>
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
@@ -592,11 +685,31 @@
     let currentPlayingId = null;
     // Cache loaded chapters per book: { bookId: { chapters: [...], loadedContent: { index: text } } }
     const chapterCache = {};
+    // True once an LLM provider (Anthropic/OpenAI/Ollama) is configured.
+    // Drives whether the Q&A panel shows the input or a "configure in settings"
+    // hint. Loaded once at startup; updated when settings change.
+    let llmConfigured = false;
+
+    async function loadLLMConfig() {
+      try {
+        const res = await fetch('/api/settings');
+        const s = await res.json();
+        const provider = (s.llm_provider || '').trim();
+        const apiKey = (s.llm_api_key || '').trim();
+        // Ollama doesn't need an API key — provider alone is enough.
+        llmConfigured = !!provider && (provider === 'ollama' || !!apiKey);
+      } catch {
+        llmConfigured = false;
+      }
+    }
 
     async function loadWorks() {
       try {
-        const res = await fetch('/api/works');
-        allWorks = await res.json();
+        const [worksRes] = await Promise.all([
+          fetch('/api/works'),
+          loadLLMConfig(),
+        ]);
+        allWorks = await worksRes.json();
         const totalFiles = allWorks.reduce((s, w) =>
           s + (w.audio_files || []).length + (w.text_files || []).length, 0);
         document.getElementById('status-text').textContent =
@@ -731,7 +844,7 @@
                 </div>
                 <div id="bookmarks-list-${work.id}" style="font-size:0.8rem;color:var(--text-muted);">Loading...</div>
               </div>
-              ${work.has_text ? `
+              ${work.has_text ? (llmConfigured ? `
               <div class="qa-panel">
                 <div class="qa-header">Ask about this book</div>
                 <div class="qa-input-row">
@@ -743,7 +856,14 @@
                 <div class="qa-results" id="qa-results-${work.id}">
                   <div class="qa-empty">Ask a question to find relevant passages</div>
                 </div>
-              </div>` : ''}
+              </div>` : `
+              <div class="qa-panel">
+                <div class="qa-header">Ask about this book</div>
+                <div style="padding:0.8rem 1rem; font-size:0.8rem; color:var(--text-muted); text-align:center;">
+                  ✨ Natural-language Q&amp;A is available with an AI provider.
+                  <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
+                </div>
+              </div>`) : ''}
             </div>
           </div>`;
       }).join('');
@@ -751,7 +871,7 @@
 
     function renderAudioPane(work, files) {
       if (files.length === 0) {
-        return `<div class="split-pane"><div class="missing-pane">
+        return `<div class="split-pane audio-pane"><div class="missing-pane">
           <div class="icon">&#9835;</div><p>No audiobook files</p>
           <button class="generate-btn" onclick="generateAudio(${work.id})" id="gen-audio-${work.id}">Generate with TTS</button>
         </div></div>`;
@@ -766,7 +886,7 @@
       const audioListId = 'audio-chapters-' + work.id;
       queueMicrotask(() => loadAudioChapterList(files[0], work));
       return `
-        <div class="split-pane">
+        <div class="split-pane audio-pane">
           <div class="pane-header audio">&#9835; Audiobook &middot; <span id="audio-count-${work.id}">${files.length}</span> chapters</div>
           <div class="chapter-list">
             <div id="${audioListId}">
@@ -836,10 +956,15 @@
       if (textTimeSynced) {
         const counter = document.getElementById('audio-count-' + work.id);
         if (counter) counter.textContent = chapters.length;
-        mount.innerHTML = `
-          <div class="chapter-row" style="cursor:default; font-style:italic; color:var(--text-muted); padding:0.7rem 1.25rem;">
-            ${chapters.length} synchronized chapter${chapters.length === 1 ? '' : 's'} — navigate from the ebook pane →
-          </div>`;
+        // Hide the redundant audio pane and let the ebook pane take full
+        // width. The audio pane DOM stays in place (preserves the chapter
+        // counter id) but is collapsed via the .unified class on .split-view.
+        mount.innerHTML = '';
+        const audioPane = mount.closest('.split-pane');
+        const splitView = audioPane?.parentElement;
+        if (splitView?.classList?.contains('split-view')) {
+          splitView.classList.add('unified');
+        }
         return;
       }
 
@@ -1009,6 +1134,19 @@
       }
     }
 
+    // Compact human-friendly chapter duration: "12m", "1h 4m", "47s".
+    // Designed for scan-readability — exact seconds aren't useful in a TOC.
+    function formatChapterDuration(secs) {
+      if (!secs || secs <= 0) return '';
+      const s = Math.round(secs);
+      if (s < 60) return s + 's';
+      const m = Math.round(s / 60);
+      if (m < 60) return m + 'm';
+      const h = Math.floor(m / 60);
+      const rem = m - h * 60;
+      return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+    }
+
     function renderChapterList(bookId, workId) {
       const el = document.getElementById('text-chapters-' + bookId);
       if (!el) return;
@@ -1017,21 +1155,84 @@
       const hasAudio = work && work.has_audio;
       const chapters = chapterCache[bookId].chapters;
 
-      el.innerHTML = chapters.map((ch, i) => {
+      // Total duration of the audio book (for the % complete summary).
+      // Falls back to last chapter's end_sec if audio_files have no duration.
+      const totalSec = (work?.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0)
+        || chapters.reduce((m, c) => Math.max(m, c.end_sec || 0), 0);
+
+      // Count real chapters (not parts) for the "Chapter N of M" summary.
+      const realCount = chapters.filter(c => c.src !== 'part').length;
+
+      const summary = (totalSec > 0 && realCount > 0) ? `
+        <div class="toc-summary" id="toc-summary-${bookId}">
+          <span class="pos">Chapter <span id="toc-current-${bookId}">1</span> of ${realCount}</span>
+          <span>·</span>
+          <span>${formatChapterDuration(totalSec)} total</span>
+          <span class="pct" id="toc-pct-${bookId}">0% through</span>
+        </div>` : '';
+
+      const rows = chapters.map((ch, i) => {
         // Parts render as section headers above their child chapters
         // (bolder, no regen button, smaller "part" label).
         const isPart = ch.src === 'part';
         const rowClass = isPart ? 'chapter-row chapter-row-part' : 'chapter-row';
         const regenBtn = isPart ? '' :
           `<button class="regen-btn" onclick="event.stopPropagation(); regenChapter(${workId}, ${ch.index}, ${bookId}, '${escapeJs(ch.title)}', this)" title="Regenerate audio for this chapter">regen</button>`;
+        const dur = (ch.start_sec != null && ch.end_sec != null) ? (ch.end_sec - ch.start_sec) : 0;
+        const durLabel = (dur > 0 && !isPart) ? `<span class="chapter-duration">${formatChapterDuration(dur)}</span>` : '';
+        const wordsLabel = isPart ? '' : `<span class="chapter-words">${formatWords(ch.word_count)}</span>`;
+        // data-* attrs let updateChapterProgress find the time range without
+        // re-querying the chapter cache on every timeupdate (4×/sec).
         return `
         <div class="${rowClass}" id="text-ch-${bookId}-${ch.index}"
+             data-start="${ch.start_sec || 0}" data-end="${ch.end_sec || 0}"
              onclick="loadChapter(${bookId}, ${ch.index}, ${workId})">
           <span class="chapter-name">${escapeHtml(ch.title)}</span>
-          <span class="chapter-words">${formatWords(ch.word_count)}</span>
+          ${durLabel}
+          ${wordsLabel}
           ${regenBtn}
+          <div class="chapter-progress"></div>
         </div>`;
       }).join('');
+
+      el.innerHTML = summary + rows;
+    }
+
+    // Walk all chapter rows for a book and update their per-chapter progress
+    // bars + the TOC summary (Chapter X of N · Q% through). Cheap enough to
+    // run on every audio timeupdate (~4Hz) for ≤100 chapters.
+    function updateChapterProgress(bookId, currentBookSec, totalSec) {
+      const list = document.getElementById('text-chapters-' + bookId);
+      if (!list) return;
+      const rows = list.querySelectorAll('.chapter-row');
+      let currentIdx = 0;
+      let realChapterCounter = 0;
+      let currentRealChapter = 1;
+      rows.forEach((row, i) => {
+        if (row.classList.contains('chapter-row-part')) return;
+        realChapterCounter++;
+        const start = parseFloat(row.dataset.start) || 0;
+        const end = parseFloat(row.dataset.end) || 0;
+        const fill = row.querySelector('.chapter-progress');
+        if (!fill || end <= start) return;
+        let pct;
+        if (currentBookSec >= end) {
+          pct = 100;
+        } else if (currentBookSec <= start) {
+          pct = 0;
+        } else {
+          pct = ((currentBookSec - start) / (end - start)) * 100;
+          currentRealChapter = realChapterCounter;
+        }
+        fill.style.width = pct + '%';
+      });
+      // Update summary
+      const curEl = document.getElementById('toc-current-' + bookId);
+      const pctEl = document.getElementById('toc-pct-' + bookId);
+      if (curEl) curEl.textContent = currentRealChapter;
+      if (pctEl && totalSec > 0) {
+        pctEl.textContent = Math.min(100, Math.round((currentBookSec / totalSec) * 100)) + '% through';
+      }
     }
 
     // Used by playAudio to update the reader pane without triggering a
@@ -1824,6 +2025,20 @@
       document.getElementById('scrub-fill').style.width = pct + '%';
       document.getElementById('scrub-thumb').style.left = pct + '%';
       document.getElementById('player-cur').textContent = fmtPlayerTime(p.currentTime);
+
+      // TOC progress: per-chapter fill bars + summary "Chapter X of N · Q%".
+      // currentAudioOffset is the cumulative duration of files BEFORE the
+      // currently-playing one; adding p.currentTime gives book-absolute time.
+      // Skip if there's no synced text book to render against.
+      if (currentSyncBookId != null && currentWorkId != null) {
+        const work = allWorks.find(w => w.id === currentWorkId);
+        const totalSec = (work?.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0);
+        const bookSec = p.currentTime + (currentAudioOffset || 0);
+        // Update every text-chapter list belonging to this work.
+        (work?.text_files || []).forEach(tf => {
+          updateChapterProgress(tf.id, bookSec, totalSec);
+        });
+      }
     });
     document.getElementById('audio-player').addEventListener('loadedmetadata', () => {
       const p = document.getElementById('audio-player');
@@ -2409,6 +2624,7 @@
     });
 
     loadWorks();
+    loadQueue();
     applyWaveformVisibility();
 
     // Custom tooltip — delegated event listeners on the document for any
@@ -2453,6 +2669,54 @@
     // Clear any terminal-state notifications from previous sessions so a fresh
     // page load feels fresh. Running/queued jobs are preserved server-side.
     fetch('/api/jobs/inactive', { method: 'DELETE' }).finally(loadJobs);
+
+    // Ingest queue status — populates the bar above the jobs bar.
+    // Hidden when nothing is queued, processing, or failed.
+    async function loadQueue() {
+      const bar = document.getElementById('queue-bar');
+      if (!bar) return;
+      try {
+        const res = await fetch('/api/queue/status');
+        const s = await res.json();
+        const incoming = (s.incoming || []).length;
+        const processing = (s.processing || []).length;
+        const failed = s.failed || [];
+        if (incoming === 0 && processing === 0 && failed.length === 0) {
+          bar.classList.remove('visible');
+          bar.innerHTML = '';
+          return;
+        }
+        const counts = [];
+        if (incoming > 0)   counts.push(`<strong>${incoming}</strong> waiting`);
+        if (processing > 0) counts.push(`<strong>${processing}</strong> processing`);
+        if (failed.length)  counts.push(`<strong style="color:#ff6b8a;">${failed.length}</strong> failed`);
+        const failedList = failed.length ? `
+          <div class="queue-failed-list">
+            ${failed.map(f => `
+              <div class="queue-failed-item">
+                <span class="queue-failed-name">${escapeHtml(f.name)}</span>
+                <span class="queue-failed-error" data-tooltip="${escapeHtml(f.last_error || '')}">${escapeHtml(f.last_error || 'unknown error')}</span>
+                <button class="queue-dismiss" onclick="dismissFailedQueueItem('${escapeJs(f.name)}')">dismiss</button>
+              </div>`).join('')}
+          </div>` : '';
+        bar.innerHTML = `
+          <div class="queue-row">
+            <span style="font-size:1rem;">📥</span>
+            <div class="queue-counts">Ingest queue: ${counts.join(' · ')}</div>
+          </div>
+          ${failedList}`;
+        bar.classList.add('visible');
+      } catch {
+        // Silent fail — queue is non-critical.
+      }
+    }
+
+    async function dismissFailedQueueItem(name) {
+      try {
+        await fetch('/api/queue/failed/' + encodeURIComponent(name), { method: 'DELETE' });
+        loadQueue();
+      } catch {}
+    }
 
     // Jobs management
     let activeJobs = {};
@@ -2773,8 +3037,11 @@
           const event = JSON.parse(e.data);
           if (event.type === 'library_updated') {
             loadWorks();
+            loadQueue();
           } else if (event.type === 'job_update') {
             handleJobUpdate(event.data);
+          } else if (event.type === 'queue_updated') {
+            loadQueue();
           }
         } catch {}
       };

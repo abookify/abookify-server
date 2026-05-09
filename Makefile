@@ -29,8 +29,8 @@ relay-down:
 # Build CLI tools as static binaries (copy to GPU box via scp)
 build-cli:
 	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm \
-		sh -c 'CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/stt-cli ./cmd/stt-cli && \
-		       CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/tts-cli ./cmd/tts-cli'
+		sh -c 'CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o bin/stt-cli ./cmd/stt-cli && \
+		       CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o bin/tts-cli ./cmd/tts-cli'
 	@echo "Built: bin/stt-cli  bin/tts-cli"
 	@echo "Copy to GPU box:  scp bin/stt-cli bin/tts-cli user@gpu-host:~/"
 	@echo ""

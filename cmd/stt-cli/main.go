@@ -263,10 +263,34 @@ func transcribeFile(client *stt.Client, path string, dur, baseOffset float64, wa
 		}
 
 		log.Printf("  segment %d/%d (file offset %ds)...", i+1, nSegs, segStart)
-		result, err := client.TranscribeFile(segPath)
+
+		// Retry the Whisper call on transient failures. Whisper sometimes
+		// returns a 500 on a segment ("Invalid data found when processing
+		// input") that succeeds when retried — likely intermittent decoder
+		// state. After maxAttempts retries we give up on the segment and
+		// continue with an empty result so a single bad chunk doesn't lose
+		// hours of completed work elsewhere in the file.
+		const maxAttempts = 3
+		var result *stt.TranscribeResult
+		var err error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			result, err = client.TranscribeFile(segPath)
+			if err == nil {
+				break
+			}
+			if attempt < maxAttempts {
+				backoff := time.Duration(attempt*2) * time.Second
+				log.Printf("    segment %d attempt %d/%d failed (%v); retry in %v",
+					i+1, attempt, maxAttempts, err, backoff)
+				time.Sleep(backoff)
+			}
+		}
 		os.Remove(segPath)
 		if err != nil {
-			return nil, fmt.Errorf("transcribe segment %d: %w", i, err)
+			log.Printf("  segment %d failed permanently after %d attempts: %v — skipping",
+				i+1, maxAttempts, err)
+			// Continue with an empty result rather than abort the whole file.
+			result = &stt.TranscribeResult{}
 		}
 
 		// Shift all timestamps into the global timeline: base offset (prior
