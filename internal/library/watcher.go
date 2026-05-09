@@ -103,6 +103,20 @@ func (w *Watcher) loop() {
 }
 
 func (w *Watcher) queuePath(path string) {
+	// Sidecars are .stt.json files — landed here by remote-stt or syncthing.
+	// They aren't books themselves; they describe an existing audio book.
+	// Queue them in the same debounce buffer so processPending can dispatch.
+	if strings.HasSuffix(strings.ToLower(path), ".stt.json") {
+		w.mu.Lock()
+		w.pending[path] = true
+		if w.timer != nil {
+			w.timer.Stop()
+		}
+		w.timer = time.AfterFunc(2*time.Second, w.processPending)
+		w.mu.Unlock()
+		return
+	}
+
 	ext := strings.ToLower(filepath.Ext(path))
 	if _, ok := supportedExts[ext]; !ok {
 		// Also watch for new directories
@@ -142,6 +156,16 @@ func (w *Watcher) processPending() {
 
 	changed := false
 	for _, path := range paths {
+		// Sidecar landed: import it for the matching audio book. Idempotent —
+		// sidecar_import skips works that already have sync_data, so a
+		// repeated rsync write doesn't redo the work.
+		if strings.HasSuffix(strings.ToLower(path), ".stt.json") {
+			if w.importSidecar(path) {
+				changed = true
+			}
+			continue
+		}
+
 		info, err := os.Stat(path)
 		if err != nil {
 			// File was removed — could handle deletion here later
@@ -228,4 +252,70 @@ func titleFromPath(path string) string {
 	title = strings.ReplaceAll(title, "_", " ")
 	title = strings.ReplaceAll(title, "-", " ")
 	return title
+}
+
+// importSidecar handles a .stt.json file landing while the server is
+// running (e.g. rsynced by remote-stt or syncthing). Looks up the audio
+// book this sidecar belongs to and runs the import pipeline. Returns
+// true if anything was imported (signals onChange to broadcast).
+//
+// Idempotent: importOneSidecar already short-circuits when sync_data
+// exists for the work, so a re-fired event from a partial-write rsync
+// doesn't redo the work.
+func (w *Watcher) importSidecar(sidecarPath string) bool {
+	// Map host path → /library prefix the way the rest of the code expects.
+	// Sidecars sit next to the audio they describe; we walk works looking
+	// for one whose audio book's findSidecar resolves to this path.
+	works, err := w.store.ListWorks()
+	if err != nil {
+		log.Printf("watcher: list works for sidecar %s: %v", filepath.Base(sidecarPath), err)
+		return false
+	}
+
+	// Resolve to the absolute host path so string-equality vs findSidecar's
+	// returned path is robust against relative-path drift in the watcher
+	// stream (fsnotify gives the path as registered, which can be relative).
+	absSidecar, err := filepath.Abs(sidecarPath)
+	if err != nil {
+		absSidecar = sidecarPath
+	}
+
+	for _, wk := range works {
+		if !wk.HasAudio || len(wk.AudioFiles) == 0 {
+			continue
+		}
+		af := wk.AudioFiles[0]
+
+		// Skip works that already have sync_data — importOneSidecar would
+		// no-op anyway, but checking here avoids the file read.
+		existing, _ := w.store.GetSyncData(wk.ID, af.ID, 0)
+		if existing != "" && existing != "[]" {
+			continue
+		}
+
+		candidate := findSidecar(af.Path, w.root)
+		if candidate == "" {
+			continue
+		}
+		absCandidate, _ := filepath.Abs(candidate)
+		if absCandidate != absSidecar {
+			continue
+		}
+
+		log.Printf("watcher: importing sidecar for work %d (%s)", wk.ID, wk.Title)
+		if err := importOneSidecar(w.store, wk.ID, af.ID, sidecarPath); err != nil {
+			log.Printf("watcher: sidecar import for %s failed: %v", wk.Title, err)
+			return false
+		}
+		// Re-link audio↔text chapters now that we have new chapter rows.
+		if fresh, ferr := w.store.GetWork(wk.ID); ferr == nil && fresh != nil {
+			if err := LinkChapters(w.store, fresh); err != nil {
+				log.Printf("watcher: link-chapters after sidecar import: %v", err)
+			}
+		}
+		return true
+	}
+
+	log.Printf("watcher: sidecar %s has no matching audio work yet (audio not imported?)", filepath.Base(sidecarPath))
+	return false
 }
