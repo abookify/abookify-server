@@ -486,16 +486,125 @@
     .drop-overlay .drop-box { background: var(--surface); border: 3px dashed var(--accent); border-radius: 16px; padding: 48px 64px; text-align: center; color: var(--text); }
     .drop-overlay .drop-box h2 { margin: 0 0 8px; font-size: 1.5rem; }
     .drop-overlay .drop-box p { color: var(--text-muted); margin: 0; font-size: 0.9rem; }
+    /* Two-row floating now-playing bar.
+       Grid: [big-play] [stacked meta + scrubber] [right controls]. */
+    :root { --np-height: 92px; }
     .now-playing {
-      position: fixed; bottom: 0; left: 0; right: 0;
-      background: var(--surface); border-top: 1px solid var(--border);
-      padding: 0.75rem 2rem; display: none; align-items: center; gap: 1rem; z-index: 100;
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      display: none;
+      grid-template-columns: auto 1fr auto;
+      align-items: stretch;
+      gap: 0.75rem;
+      padding: 0.5rem 1.25rem;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.3);
     }
-    .now-playing.visible { display: flex; }
+    .now-playing.visible { display: grid; }
+    .np-bigplay {
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 50%;
+      width: 62px; height: 62px;
+      font-size: 1.6rem; line-height: 1;
+      cursor: pointer; align-self: center;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      transition: filter 0.12s;
+    }
+    .np-bigplay:hover { filter: brightness(1.12); }
+    .np-bigplay:active { filter: brightness(0.95); }
+    .np-center { display: flex; flex-direction: column; gap: 4px; min-width: 0; justify-content: center; }
+    .np-meta-row, .np-progress-row { display: flex; align-items: center; gap: 8px; }
     .now-playing .np-info { flex: 1; min-width: 0; }
-    .now-playing .np-title { font-size: 0.85rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .now-playing .np-work { font-size: 0.75rem; color: var(--text-muted); }
-    .now-playing audio { flex: 3; min-width: 300px; height: 40px; }
+    .now-playing .np-title { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .now-playing .np-work { font-size: 0.72rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .np-transport { display: flex; gap: 2px; flex-shrink: 0; }
+    .np-right { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+
+    /* Ebook overlay docked above the now-playing bar.
+       hidden / open (at saved height) / maximized covers everything except the bar. */
+    .np-overlay {
+      position: fixed; bottom: var(--np-height); left: 0; right: 0;
+      z-index: 95;
+      height: 360px;
+      background: #f5f0e8;
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -4px 14px rgba(0,0,0,0.35);
+      display: none; flex-direction: column;
+    }
+    .np-overlay.visible { display: flex; }
+    .np-overlay.maximized { top: 0; height: auto !important; bottom: var(--np-height); }
+    .np-grip {
+      height: 10px; cursor: ns-resize; position: relative;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.04), transparent);
+      flex-shrink: 0;
+    }
+    .np-grip::after {
+      content: ''; position: absolute; top: 3px; left: 50%; transform: translateX(-50%);
+      width: 44px; height: 4px; border-radius: 2px;
+      background: #b8b2a5;
+    }
+    .np-overlay.maximized .np-grip { cursor: default; }
+    .np-overlay-bar {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0.9rem;
+      background: rgba(245, 240, 232, 0.96);
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      font-size: 0.78rem; color: #444; flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .np-overlay-bar button {
+      background: #fff; border: 1px solid #ccc; border-radius: 4px;
+      color: #444; padding: 3px 8px; cursor: pointer; font-size: 0.78rem;
+    }
+    .np-overlay-bar button:hover { background: rgba(0,0,0,0.04); }
+    .np-overlay-bar input[type=checkbox] { accent-color: var(--epub); }
+    .np-overlay-bar input[type=number] {
+      background: #fff; border: 1px solid #ddd; border-radius: 4px;
+      padding: 2px 6px; width: 64px; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .np-overlay-bar select {
+      background: #fff; border: 1px solid #ddd; border-radius: 4px;
+      padding: 2px 6px; font-size: 0.75rem;
+    }
+    .np-overlay-bar .np-overlay-title {
+      flex: 1; font-weight: 600; color: #222;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 80px;
+    }
+    .np-overlay-body { flex: 1; display: flex; min-height: 0; }
+    .np-toc-drawer {
+      width: 0; overflow: hidden; transition: width 0.16s ease;
+      background: var(--surface); color: var(--text);
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .np-toc-drawer.open { width: 280px; overflow-y: auto; }
+    .np-toc-drawer .np-toc-section {
+      padding: 0.5rem 0.75rem; font-size: 0.7rem;
+      text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-muted); font-weight: 600;
+      border-bottom: 1px solid var(--border);
+    }
+    .np-toc-drawer .chapter-row { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+    #np-reader-host { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+    #np-reader-host > .reader-content {
+      flex: 1; max-height: none; border-top: none; padding: 1.5rem 2rem;
+      overflow-y: auto;
+    }
+    /* Hint shown in the work card now that the reader has moved to the overlay. */
+    .reader-moved-hint {
+      padding: 0.65rem 0.9rem; font-size: 0.78rem;
+      color: var(--text-muted); border-top: 1px solid var(--border);
+      background: var(--bg); text-align: center;
+    }
+    .reader-moved-hint button {
+      background: rgba(78,204,163,0.15); border: 1px solid rgba(78,204,163,0.3);
+      color: var(--accent); border-radius: 4px; padding: 3px 10px;
+      cursor: pointer; font-size: 0.75rem; margin-left: 6px;
+    }
+    .reader-moved-hint button:hover { background: rgba(78,204,163,0.25); }
 
     /* Q&A panel */
     .qa-panel {
@@ -882,38 +991,9 @@
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
   <div class="works-list" id="works-list"></div>
 
-  <!-- Full-screen reader topbar. Applied when any reader-content goes
-       fullscreen. Controls mirror the inline sync-panel so the user has the
-       same knobs in either view. The reader element itself is the same DOM
-       node either way — only its class toggles — so karaoke state persists. -->
-  <div class="reader-fs-topbar" id="reader-fs-topbar">
-    <button class="fs-close" onclick="closeFullscreenReader()" data-tooltip="Close (Esc)">✕ Close</button>
-    <div class="fs-title" id="fs-title"></div>
-    <label style="display:flex;align-items:center;gap:6px;" id="fs-sync-wrap">
-      <input type="checkbox" id="fs-sync-toggle" checked onchange="toggleSync(fullscreenWorkId, this.checked)">
-      Sync
-    </label>
-    <label style="display:flex;align-items:center;gap:4px;">
-      Lead
-      <input type="number" id="fs-sync-lead" value="0" step="50" onchange="setSyncLead(this.value); document.getElementById('sync-lead-' + fullscreenWorkId).value = this.value;">
-      ms
-    </label>
-    <select id="fs-font-size" onchange="setReaderFontSize(this.value)" data-tooltip="Font size">
-      <option value="16px">Small</option>
-      <option value="18px" selected>Medium</option>
-      <option value="20px">Large</option>
-      <option value="22px">X-Large</option>
-    </select>
-    <select id="fs-measure" onchange="setReaderMeasure(this.value)" data-tooltip="Line width">
-      <option value="28rem">Narrow</option>
-      <option value="33rem" selected>Normal</option>
-      <option value="40rem">Wide</option>
-    </select>
-  </div>
-  <!-- Legacy fullscreen-np left for the NowPlaying bar's ⛶ button to still
-       have a target until that button's wiring is migrated. Hidden when
-       reader-fs is active. -->
-  <div class="fullscreen-np" id="fullscreen-np" style="display:none;"></div>
+  <!-- The old reader-fs-topbar + fullscreen-np elements were subsumed by
+       the now-playing overlay's toolbar + maximize state. -->
+
   <div class="drop-overlay" id="drop-overlay">
     <div class="drop-box">
       <h2>Drop files to import</h2>
@@ -922,33 +1002,85 @@
     </div>
   </div>
   <audio id="audio-player" preload="auto" style="display:none;"></audio>
-  <div class="now-playing" id="now-playing">
-    <div class="np-info">
-      <div class="np-title" id="np-title"></div>
-      <div class="np-work" id="np-work"></div>
+
+  <!-- Ebook overlay: docked above the now-playing bar, resizable via top grip,
+       can be maximized to cover everything except the bar, hidden via ✕.
+       Single reader element lives here; its `id` gets set to `reader-<workId>`
+       when a work becomes active so existing lookups still resolve. -->
+  <div class="np-overlay" id="np-overlay">
+    <div class="np-grip" id="np-grip" title="Drag to resize"></div>
+    <div class="np-overlay-bar">
+      <button id="np-toc-toggle" onclick="toggleNpToc()" title="Show/hide chapters">&#9776; Chapters</button>
+      <span class="np-overlay-title" id="np-overlay-title">Reader</span>
+      <label class="sync-panel-item" id="np-sync-wrap" style="display:none;align-items:center;gap:4px;">
+        <input type="checkbox" id="np-sync-toggle" checked
+               onchange="toggleSync(currentReaderWorkId, this.checked)">
+        Sync
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;" id="np-lead-wrap">
+        Lead
+        <input type="number" id="np-sync-lead" value="0" step="50"
+               onchange="setSyncLead(this.value)">
+        ms
+      </label>
+      <select id="np-font-size" onchange="setReaderFontSize(this.value)" title="Font size">
+        <option value="16px">Small</option>
+        <option value="18px" selected>Medium</option>
+        <option value="20px">Large</option>
+        <option value="22px">X-Large</option>
+      </select>
+      <select id="np-measure" onchange="setReaderMeasure(this.value)" title="Line width">
+        <option value="28rem">Narrow</option>
+        <option value="33rem" selected>Normal</option>
+        <option value="40rem">Wide</option>
+      </select>
+      <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
+      <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
-    <div class="player-controls" style="flex:1;">
-      <button class="player-btn" onclick="skipChapter(-1)" title="Previous chapter">&#9198;</button>
-      <button class="player-btn" onclick="skipTime(-30)" title="Back 30s" style="font-size:0.7rem;">-30</button>
-      <button class="player-btn" id="play-pause-btn" onclick="togglePlayPause()" title="Play/Pause" style="font-size:1.5rem;">&#9654;</button>
-      <button class="player-btn" onclick="skipTime(30)" title="Forward 30s" style="font-size:0.7rem;">+30</button>
-      <button class="player-btn" onclick="skipChapter(1)" title="Next chapter">&#9197;</button>
-      <span class="player-time" id="player-cur">0:00</span>
-      <div class="player-scrubber" id="player-scrubber">
-        <div class="scrub-track"></div>
-        <canvas class="waveform" id="scrub-waveform" width="1000" height="24"></canvas>
-        <div class="scrub-fill" id="scrub-fill" style="mix-blend-mode: color-dodge;"></div>
-        <div class="scrub-thumb" id="scrub-thumb"></div>
-        <!-- Chapter ticks inserted dynamically -->
+    <div class="np-overlay-body">
+      <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true"></aside>
+      <div id="np-reader-host">
+        <div class="reader-content" id="np-reader">
+          <div class="placeholder">Select a chapter to read</div>
+        </div>
       </div>
-      <span class="player-time" id="player-dur">0:00</span>
     </div>
-    <div style="display:flex; align-items:center; gap:6px;">
+  </div>
+
+  <div class="now-playing" id="now-playing">
+    <button class="np-bigplay" id="play-pause-btn" onclick="togglePlayPause()" title="Play / Pause">&#9654;</button>
+    <div class="np-center">
+      <div class="np-meta-row">
+        <div class="np-info">
+          <div class="np-title" id="np-title"></div>
+          <div class="np-work" id="np-work"></div>
+        </div>
+        <div class="np-transport">
+          <button class="player-btn" onclick="skipChapter(-1)" title="Previous chapter">&#9198;</button>
+          <button class="player-btn" onclick="skipTime(-30)" title="Back 30s" style="font-size:0.7rem;">-30</button>
+          <button class="player-btn" onclick="skipTime(30)" title="Forward 30s" style="font-size:0.7rem;">+30</button>
+          <button class="player-btn" onclick="skipChapter(1)" title="Next chapter">&#9197;</button>
+          <button class="player-btn" onclick="toggleNpOverlay()" title="Show / hide reader" style="font-size:0.95rem;">&#128214;</button>
+        </div>
+      </div>
+      <div class="np-progress-row">
+        <span class="player-time" id="player-cur">0:00</span>
+        <div class="player-scrubber" id="player-scrubber">
+          <div class="scrub-track"></div>
+          <canvas class="waveform" id="scrub-waveform" width="1000" height="24"></canvas>
+          <div class="scrub-fill" id="scrub-fill" style="mix-blend-mode: color-dodge;"></div>
+          <div class="scrub-thumb" id="scrub-thumb"></div>
+          <!-- Chapter ticks inserted dynamically -->
+        </div>
+        <span class="player-time" id="player-dur">0:00</span>
+      </div>
+    </div>
+    <div class="np-right">
       <div class="player-vol">
-        <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute/Unmute">&#128266;</button>
+        <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute / Unmute">&#128266;</button>
         <input type="range" id="vol-slider" min="0" max="100" value="100" oninput="setVolume(this.value)" title="Volume">
       </div>
-      <button class="player-btn" id="waveform-toggle" onclick="toggleWaveform()" title="Show/hide waveform" style="font-size:0.95rem;">&#9835;</button>
+      <button class="player-btn" id="waveform-toggle" onclick="toggleWaveform()" title="Show / hide waveform" style="font-size:0.95rem;">&#9835;</button>
       <select id="speed-select" onchange="setSpeed(this.value)" title="Playback speed"
         style="background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
         <option value="0.5">0.5x</option>
@@ -962,7 +1094,6 @@
       <button onclick="addBookmark()" title="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
       <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
       <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
-      <button onclick="openFullscreenNP()" title="Full-screen reading" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">⛶</button>
     </div>
   </div>
 
@@ -1532,7 +1663,6 @@
         const preferred = files.find(f => f.id === work.display_text_id);
         if (preferred) book = preferred;
       }
-      const readerId = 'reader-' + work.id;
       const chListId = 'text-chapters-' + book.id;
 
       // Edition picker: shown when multiple text files exist.
@@ -1545,40 +1675,20 @@
         </select>` : '';
 
       if (book.chapter_count > 0) {
-        // Sync panel sits *directly above* the reader text so it reads as
-        // "these controls affect what's below" — the reader is the
-        // now-playing-for-text surface, so its controls belong adjacent to
-        // the text, not up near the chapter list. Expand/fullscreen button
-        // lives here too so it's at the right edge of the same strip.
-        const syncPanel = work.has_audio ? `
-          <div class="sync-panel">
-            <label class="sync-panel-item">
-              <input type="checkbox" id="sync-${work.id}" checked onchange="toggleSync(${work.id}, this.checked)">
-              <span>Sync audio ↔ text</span>
-            </label>
-            <label class="sync-panel-item" data-tooltip="Nudge the highlight earlier (positive) or later (negative). Whisper timestamps are usually accurate so 0 is a good default.">
-              <span style="color:var(--text-muted);">Lead:</span>
-              <input type="number" id="sync-lead-${work.id}" value="0" step="50"
-                     onchange="setSyncLead(this.value)"
-                     style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:0.75rem;text-align:right;">
-              <span style="color:var(--text-muted); font-size:0.7rem;">ms</span>
-            </label>
-            <button onclick="openFullscreenReader(${work.id})" class="sync-resync-btn" data-tooltip="Full-screen reading with sync">&#x26F6; Full screen</button>
-          </div>` : `
-          <div class="sync-panel" style="justify-content:flex-end;">
-            <button onclick="openFullscreenReader(${work.id})" class="sync-resync-btn" data-tooltip="Full-screen reading">&#x26F6; Full screen</button>
-          </div>`;
+        // Reader content lives in the floating now-playing overlay — pick a
+        // chapter here and it opens there. Sync controls live in the overlay
+        // toolbar, so the work card just shows the TOC + a hint.
         return `
           <div class="split-pane">
             <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters${editionPicker}</div>
-            <div class="chapter-list" id="${chListId}" style="max-height:250px">
+            <div class="chapter-list" id="${chListId}" style="max-height:360px">
               <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">
                 Loading chapters...
               </div>
             </div>
-            ${syncPanel}
-            <div class="reader-content" id="${readerId}">
-              <div class="placeholder">Select a chapter to read</div>
+            <div class="reader-moved-hint">
+              Reader opens in the playback bar.
+              <button onclick="openOverlayFromWork(${work.id})">Open reader</button>
             </div>
           </div>`;
       }
@@ -1783,6 +1893,10 @@
 
     async function loadChapter(bookId, index, workId, opts) {
       opts = opts || {};
+      // Reader now lives in the floating overlay — promote the host to this
+      // work, then auto-open the overlay unless the user explicitly closed it.
+      ensureActiveReader(workId);
+      if (!npOverlayClosed) openNpOverlay();
       const readerId = 'reader-' + workId;
       const reader = document.getElementById(readerId);
       if (!reader) return;
@@ -2541,6 +2655,247 @@
       document.getElementById('play-pause-btn').innerHTML = '&#9654;';
     });
 
+    // === Now-playing ebook overlay ===========================================
+    // The reader lives inside a resizable overlay docked above the playback
+    // bar. Single reader element (`#np-reader-host > .reader-content`); its
+    // `id` is set to `reader-<workId>` when a work becomes active so existing
+    // `getElementById('reader-' + workId)` lookups still resolve.
+    //
+    // Persistence (localStorage):
+    //   npOverlayClosed: user explicitly hit ✕. Stays closed until reopened.
+    //   npOverlayHeight: last drag height in px (when not maximized).
+    //   npOverlayMaxed:  user maximized.
+    //   npTocOpen:       TOC drawer open inside overlay.
+    let currentReaderWorkId = null;
+    let npOverlayClosed = localStorage.getItem('npOverlayClosed') === '1';
+    let npOverlayMaxed  = localStorage.getItem('npOverlayMaxed')  === '1';
+    let npTocOpen       = localStorage.getItem('npTocOpen')       === '1';
+    let npOverlayHeight = (() => {
+      const h = parseInt(localStorage.getItem('npOverlayHeight') || '', 10);
+      return (Number.isFinite(h) && h >= 140 && h <= 2000) ? h : 360;
+    })();
+
+    (function hydrateOverlay() {
+      const ov = document.getElementById('np-overlay');
+      if (ov) ov.style.height = npOverlayHeight + 'px';
+      const drawer = document.getElementById('np-toc-drawer');
+      if (drawer && npTocOpen) drawer.classList.add('open');
+      const maxBtn = document.getElementById('np-max-btn');
+      if (maxBtn) {
+        maxBtn.title = npOverlayMaxed ? 'Restore' : 'Maximize';
+        if (npOverlayMaxed) maxBtn.innerHTML = '&#8623;';
+      }
+    })();
+
+    function openNpOverlay() {
+      npOverlayClosed = false;
+      localStorage.setItem('npOverlayClosed', '0');
+      const ov = document.getElementById('np-overlay');
+      ov.classList.add('visible');
+      if (npOverlayMaxed) ov.classList.add('maximized');
+      else { ov.classList.remove('maximized'); ov.style.height = npOverlayHeight + 'px'; }
+    }
+    function closeNpOverlay() {
+      npOverlayClosed = true;
+      localStorage.setItem('npOverlayClosed', '1');
+      const ov = document.getElementById('np-overlay');
+      ov.classList.remove('visible');
+      ov.classList.remove('maximized');
+    }
+    function toggleNpOverlay() {
+      const ov = document.getElementById('np-overlay');
+      if (ov.classList.contains('visible')) closeNpOverlay();
+      else openNpOverlay();
+    }
+    function toggleNpOverlayMax() {
+      const ov = document.getElementById('np-overlay');
+      npOverlayMaxed = !npOverlayMaxed;
+      localStorage.setItem('npOverlayMaxed', npOverlayMaxed ? '1' : '0');
+      const maxBtn = document.getElementById('np-max-btn');
+      if (npOverlayMaxed) {
+        ov.classList.add('maximized');
+        if (maxBtn) { maxBtn.innerHTML = '&#8623;'; maxBtn.title = 'Restore'; }
+      } else {
+        ov.classList.remove('maximized');
+        ov.style.height = npOverlayHeight + 'px';
+        if (maxBtn) { maxBtn.innerHTML = '&#9974;'; maxBtn.title = 'Maximize'; }
+      }
+      // Make sure the overlay is visible — maximize implies open.
+      if (!ov.classList.contains('visible')) {
+        ov.classList.add('visible');
+        npOverlayClosed = false;
+        localStorage.setItem('npOverlayClosed', '0');
+      }
+    }
+    function toggleNpToc() {
+      const drawer = document.getElementById('np-toc-drawer');
+      if (!drawer) return;
+      npTocOpen = !npTocOpen;
+      drawer.classList.toggle('open', npTocOpen);
+      localStorage.setItem('npTocOpen', npTocOpen ? '1' : '0');
+      if (npTocOpen) renderNpToc();
+    }
+    function renderNpToc() {
+      const drawer = document.getElementById('np-toc-drawer');
+      if (!drawer) return;
+      if (!currentReaderWorkId) {
+        drawer.innerHTML = '<div class="np-toc-section">No work loaded</div>';
+        return;
+      }
+      const work = allWorks.find(w => w.id === currentReaderWorkId);
+      if (!work) return;
+      const textBook = (work.text_files || []).find(t => t.chapter_count > 0);
+      if (!textBook) {
+        drawer.innerHTML = '<div class="np-toc-section">No text chapters</div>';
+        return;
+      }
+      const chapters = chapterCache[textBook.id]?.chapters || [];
+      drawer.innerHTML =
+        '<div class="np-toc-section">' + escapeHtml(work.title || 'Chapters') + '</div>' +
+        chapters.map(c =>
+          `<div class="chapter-row" onclick="loadChapter(${textBook.id}, ${c.index}, ${work.id})">
+             <span class="chapter-name">${escapeHtml(c.title || ('Chapter ' + (c.index+1)))}</span>
+           </div>`
+        ).join('');
+    }
+
+    // Promote the overlay reader to a given work. Sets reader id, populates
+    // the overlay title + sync controls. Wipes the reader DOM only when
+    // switching to a different work (otherwise keeps karaoke state intact).
+    function ensureActiveReader(workId) {
+      const host = document.getElementById('np-reader-host');
+      if (!host) return;
+      let reader = host.querySelector('.reader-content');
+      if (!reader) {
+        reader = document.createElement('div');
+        reader.className = 'reader-content';
+        host.appendChild(reader);
+      }
+      if (currentReaderWorkId !== workId) {
+        reader.innerHTML = '<div class="placeholder">Loading...</div>';
+        currentReaderWorkId = workId;
+      }
+      reader.id = 'reader-' + workId;
+
+      const work = allWorks.find(w => w.id === workId);
+      document.getElementById('np-overlay-title').textContent = work?.title || 'Reader';
+      document.getElementById('np-sync-wrap').style.display =
+        work?.has_audio ? 'flex' : 'none';
+      const leadInput = document.getElementById('np-sync-lead');
+      if (leadInput) leadInput.value = Math.round(syncLeadSecs * 1000);
+      const fs = document.getElementById('np-font-size');
+      if (fs) fs.value = localStorage.getItem('readerFontSize') || '18px';
+      const m = document.getElementById('np-measure');
+      if (m) m.value = localStorage.getItem('readerMeasure') || '33rem';
+      if (npTocOpen) renderNpToc();
+    }
+
+    // Drag-to-resize on the top grip (mouse).
+    (function wireNpGrip() {
+      const grip = document.getElementById('np-grip');
+      const ov = document.getElementById('np-overlay');
+      if (!grip || !ov) return;
+      let startY = 0, startH = 0, dragging = false;
+      grip.addEventListener('mousedown', (e) => {
+        if (ov.classList.contains('maximized')) return;
+        dragging = true;
+        startY = e.clientY;
+        startH = ov.getBoundingClientRect().height;
+        e.preventDefault();
+        document.body.style.userSelect = 'none';
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const dy = startY - e.clientY;
+        const npH = document.querySelector('.now-playing')?.getBoundingClientRect().height || 92;
+        const maxH = window.innerHeight - npH - 8;
+        const newH = Math.max(140, Math.min(maxH, startH + dy));
+        ov.style.height = newH + 'px';
+        npOverlayHeight = newH;
+      });
+      window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.userSelect = '';
+        localStorage.setItem('npOverlayHeight', String(Math.round(npOverlayHeight)));
+      });
+    })();
+
+    // Touch drag-to-resize on mobile.
+    (function wireNpGripTouch() {
+      const grip = document.getElementById('np-grip');
+      const ov = document.getElementById('np-overlay');
+      if (!grip || !ov) return;
+      let startY = 0, startH = 0, dragging = false;
+      grip.addEventListener('touchstart', (e) => {
+        if (ov.classList.contains('maximized')) return;
+        dragging = true;
+        startY = e.touches[0].clientY;
+        startH = ov.getBoundingClientRect().height;
+      }, { passive: true });
+      window.addEventListener('touchmove', (e) => {
+        if (!dragging) return;
+        const dy = startY - e.touches[0].clientY;
+        const npH = document.querySelector('.now-playing')?.getBoundingClientRect().height || 92;
+        const maxH = window.innerHeight - npH - 8;
+        const newH = Math.max(140, Math.min(maxH, startH + dy));
+        ov.style.height = newH + 'px';
+        npOverlayHeight = newH;
+        e.preventDefault();
+      }, { passive: false });
+      window.addEventListener('touchend', () => {
+        if (!dragging) return;
+        dragging = false;
+        localStorage.setItem('npOverlayHeight', String(Math.round(npOverlayHeight)));
+      });
+    })();
+
+    // Keep the --np-height CSS variable matched to the actual bar height,
+    // so the overlay's `bottom: var(--np-height)` follows wrap/responsive
+    // changes (two-row → three-row on phones, etc.).
+    (function syncNpHeight() {
+      const bar = document.getElementById('now-playing');
+      if (!bar) return;
+      const sync = () => {
+        // When the bar isn't visible (no audio loaded), the overlay should
+        // extend all the way to the bottom of the screen instead of leaving
+        // a phantom 92px strip.
+        const visible = bar.classList.contains('visible');
+        const h = visible ? bar.getBoundingClientRect().height : 0;
+        document.documentElement.style.setProperty('--np-height', h + 'px');
+      };
+      if (typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(sync).observe(bar);
+      }
+      window.addEventListener('resize', sync);
+      // First measurement happens when the bar becomes visible (playAudio
+      // adds .visible). Run it then via a MutationObserver on classList.
+      new MutationObserver(sync).observe(bar, { attributes: true, attributeFilter: ['class', 'style'] });
+      sync();
+    })();
+
+    // Open the overlay onto a work that isn't currently playing (called by
+    // the work-card "Open reader" hint). Loads the chapter list first if
+    // needed, then renders the first chapter into the overlay.
+    async function openOverlayFromWork(workId) {
+      const work = allWorks.find(w => w.id === workId);
+      if (!work) return;
+      const textBook = (work.text_files || []).find(t => t.chapter_count > 0);
+      if (!textBook) return;
+      if (!chapterCache[textBook.id]?.chapters) {
+        await loadChapterList(textBook.id, workId);
+      }
+      ensureActiveReader(workId);
+      openNpOverlay();
+      const reader = document.getElementById('reader-' + workId);
+      if (reader && reader.querySelector('.placeholder')) {
+        const chapters = chapterCache[textBook.id]?.chapters;
+        if (chapters && chapters.length) {
+          loadChapter(textBook.id, chapters[0].index, workId, { skipAudioSeek: true });
+        }
+      }
+    }
+
     // Scrubber: timeupdate → move fill + thumb.
     document.getElementById('audio-player').addEventListener('timeupdate', () => {
       const p = document.getElementById('audio-player');
@@ -2911,52 +3266,21 @@
     // listeners don't need rebinding, and the karaoke tick loop keeps
     // ticking uninterrupted. The NowPlaying bar is position:fixed at the
     // bottom already, so it naturally appears over the fullscreen reader.
-    let fullscreenWorkId = null;
-    let prevScrollTop = 0;
-
+    // The fullscreen reader was unified with the now-playing overlay: the
+    // "maximize" button on the overlay's toolbar is the new fullscreen.
+    // These thin wrappers keep older entry points (citation jumps, keyboard
+    // shortcuts) working — they just promote the overlay and maximize it.
     function openFullscreenReader(workId) {
-      const reader = document.getElementById('reader-' + workId);
-      if (!reader) return;
-      fullscreenWorkId = workId;
-      prevScrollTop = reader.scrollTop;
-      reader.classList.add('fullscreen');
-      document.getElementById('reader-fs-topbar').classList.add('active');
-      document.body.style.overflow = 'hidden';
-
-      // Populate topbar state from the inline sync-panel.
-      const work = allWorks.find(w => w.id == workId);
-      document.getElementById('fs-title').textContent = work?.title || '';
-      const inlineSync = document.getElementById('sync-' + workId);
-      const fsSync = document.getElementById('fs-sync-toggle');
-      fsSync.checked = inlineSync ? inlineSync.checked : true;
-      // Hide sync controls when there's no audio for this work.
-      document.getElementById('fs-sync-wrap').style.display =
-        work?.has_audio ? 'flex' : 'none';
-      document.getElementById('fs-sync-lead').value = Math.round(syncLeadSecs * 1000);
-      // Seed appearance selects from saved prefs.
-      document.getElementById('fs-font-size').value =
-        localStorage.getItem('readerFontSize') || '18px';
-      document.getElementById('fs-measure').value =
-        localStorage.getItem('readerMeasure') || '33rem';
+      if (workId != null) ensureActiveReader(workId);
+      if (!npOverlayMaxed) toggleNpOverlayMax();
+      openNpOverlay();
     }
-
     function closeFullscreenReader() {
-      if (fullscreenWorkId === null) return;
-      const reader = document.getElementById('reader-' + fullscreenWorkId);
-      if (reader) {
-        reader.classList.remove('fullscreen');
-        reader.scrollTop = prevScrollTop;
-      }
-      document.getElementById('reader-fs-topbar').classList.remove('active');
-      document.body.style.overflow = '';
-      fullscreenWorkId = null;
+      if (npOverlayMaxed) toggleNpOverlayMax();
     }
-
-    // Keep old entry-point alive — the NowPlaying bar still has a ⛶ button
-    // wired to openFullscreenNP, and external callers may too. Forward it to
-    // the current playing work's reader.
     function openFullscreenNP() {
-      if (currentWorkId) openFullscreenReader(currentWorkId);
+      if (currentReaderWorkId != null) openFullscreenReader(currentReaderWorkId);
+      else if (currentWorkId != null) openFullscreenReader(currentWorkId);
     }
     function closeFullscreenNP() { closeFullscreenReader(); }
 
@@ -2978,9 +3302,13 @@
       if (m) document.documentElement.style.setProperty('--reader-measure', m);
     })();
 
-    // Escape to close.
+    // Escape: restore from maximize, or close the overlay if not maximized.
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && fullscreenWorkId !== null) closeFullscreenReader();
+      if (e.key !== 'Escape') return;
+      const ov = document.getElementById('np-overlay');
+      if (!ov) return;
+      if (ov.classList.contains('maximized')) toggleNpOverlayMax();
+      else if (ov.classList.contains('visible')) closeNpOverlay();
     });
 
     // --- Chapter boundary override: right-click scrubber to mark ---
