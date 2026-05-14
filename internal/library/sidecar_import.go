@@ -213,7 +213,7 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 			// continuous. Without this, the UI would jump from "Chapter 13"
 			// to "Chapter 16" with no explanation.
 			detected = fillNumberingGaps(detected, &sc)
-			audioChapters = detectedToSttChapters(sc.Words, detected)
+			audioChapters = detectedToSttChapters(sc.Words, sc.Silences, detected)
 		}
 	}
 	if len(audioChapters) == 0 && sc.isV2() {
@@ -351,7 +351,7 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 			// 1-31 (gaps filled) but the text book would have only the
 			// announced 29 — chapter-link would mismatch.
 			detected = fillNumberingGaps(detected, sc)
-			chaptersToUse = detectedToSttChapters(sc.Words, detected)
+			chaptersToUse = detectedToSttChapters(sc.Words, sc.Silences, detected)
 			useChapters = true
 			log.Printf("sidecar-import: text book using DetectChapters narrator-pattern (%d %ss, strong run)", len(detected), detected[0].Kind)
 		}
@@ -604,7 +604,7 @@ func detectPartsFromSilences(sc *sttSidecar) []sttChapter {
 		}
 		seenNumbers[num] = true
 		parts = append(parts, sttChapter{
-			Title:   inferChapterTitle(sc.Words, i, num),
+			Title:   inferChapterTitleWithSilences(sc.Words, sc.Silences, i, num),
 			Start:   syncWords[i].Start,
 			WordIdx: i,
 		})
@@ -634,7 +634,7 @@ func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 	// opening content, not silence).
 	var chapters []sttChapter
 	chapters = append(chapters, sttChapter{
-		Title:   inferChapterTitle(sc.Words, 0, 1),
+		Title:   inferChapterTitleWithSilences(sc.Words, sc.Silences, 0, 1),
 		Start:   0,
 		WordIdx: 0,
 	})
@@ -656,7 +656,7 @@ func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 		}
 		n := len(chapters) + 1
 		chapters = append(chapters, sttChapter{
-			Title:   inferChapterTitle(sc.Words, wordIdx, n),
+			Title:   inferChapterTitleWithSilences(sc.Words, sc.Silences, wordIdx, n),
 			Start:   sc.Words[wordIdx].Start,
 			WordIdx: wordIdx,
 		})
@@ -754,6 +754,53 @@ func detectChaptersFromPauses(words []sttWord) []sttChapter {
 	return chapters
 }
 
+// silenceBetween returns the duration of the longest acoustic silence
+// event whose start falls in (after, before). Returns 0 if none. Used as
+// a fallback signal when Whisper's word-boundary timestamps absorb a real
+// silence into adjacent word durations (common — Whisper stretches words
+// to fill gaps within a recognized phrase).
+func silenceBetween(silences []sttSilence, after, before float64) float64 {
+	var best float64
+	for _, s := range silences {
+		if s.Start > after && s.Start < before {
+			if s.Duration > best {
+				best = s.Duration
+			}
+		}
+	}
+	return best
+}
+
+// gapBetweenWords returns the effective acoustic gap between two
+// consecutive words. Takes the max of (a) Whisper's word-boundary gap and
+// (b) the longest independent silence event observed at the transition.
+//
+// The "transition" window is widened on the right past b.Start, all the
+// way to b.End. Reason: Whisper sometimes drifts the first body word
+// backwards into the preceding silence. e.g. Norm Macdonald ch 21,
+// "...The Lost Days. [2.2s silence] I awaken from my blackout..." comes
+// out of Whisper as words[Days].End=12521.12, words[I].Start=12521.12
+// (0s gap), but a real ffmpeg silencedetect event runs 12521.58→12523.78
+// — its start (12521.58) sits INSIDE Whisper's reported "I" word
+// (12521.12→12522.04). Without this widening the silence is invisible to
+// the title-extraction loop and "I" gets glued onto the title.
+func gapBetweenWords(words []sttWord, silences []sttSilence, idxA, idxB int) float64 {
+	if idxA < 0 || idxB >= len(words) || idxA >= idxB {
+		return 0
+	}
+	a, b := words[idxA], words[idxB]
+	whisper := b.Start - a.End
+	if whisper < 0 {
+		whisper = 0
+	}
+	const leftSlack = 0.15
+	sil := silenceBetween(silences, a.End-leftSlack, b.End)
+	if sil > whisper {
+		return sil
+	}
+	return whisper
+}
+
 // extractChapterTitle handles the "Chapter/Part/Book N [subtitle]" case.
 // Real narrator patterns and how we disambiguate them:
 //
@@ -765,15 +812,20 @@ func detectChaptersFromPauses(words []sttWord) []sttChapter {
 //   B. "Chapter 2 [0.96s] Caffeine, Jet Lag and Melatonin Losing and
 //      Gaining Control of Your Sleep Rhythm [pause] …"
 //      → no period on number but clear pause after, subtitle follows.
-//        Cut at next period OR at a pause >= 1.0s.
+//        Cut at next period OR at a pause >= 0.6s.
 //
 //   C. "Chapter 1 [0s] What's two plus two? [1.76s] Something about…"
 //      → no pause after number, narrator flowed into body. No subtitle.
 //
+//   D. (Norm Macdonald) "Chapter 23. [pause] Make a Wish [audible 0.7s
+//      silence in audio, but Whisper records 0s gap] Atom..."
+//      → ground-truth silence comes from the sidecar Silences[] stream,
+//        not from word.End → next.Start. We consult both and take the max.
+//
 // So the real signal is: does the narrator PAUSE after "Chapter N"? That
 // pause is the marker of a subtitle announcement. A period helps but
 // isn't required (Whisper is inconsistent about inserting them).
-func extractChapterTitle(words []sttWord, rawTokens, displayTokens []string, startWord int) string {
+func extractChapterTitle(words []sttWord, silences []sttSilence, rawTokens, displayTokens []string, startWord int) string {
 	if len(rawTokens) < 2 {
 		return strings.Join(rawTokens, " ")
 	}
@@ -787,38 +839,51 @@ func extractChapterTitle(words []sttWord, rawTokens, displayTokens []string, sta
 	// Decide whether a subtitle follows. Use the real acoustic gap between
 	// the chapter-number word and the next word.
 	const ANNOUNCEMENT_PAUSE_MIN = 0.5
-	const TITLE_END_PAUSE = 1.0
+	// 0.6s matches TITLE_PAUSE_SECS — a paragraph-break-grade silence.
+	// Was 1.0s but real narrator pauses between a short title and the
+	// body are typically 0.6-0.8s (e.g. "Make a Wish [0.7s] Atom..."
+	// from Norm Macdonald's _Based on a True Story_). Multi-clause
+	// titles with comma pauses ("Caffeine, Jet Lag, and Melatonin")
+	// still hold together because within-clause gaps are 0.2-0.3s.
+	const TITLE_END_PAUSE = 0.6
 
-	// words[startWord+1] is the number; words[startWord+2] is the next word.
-	gapAfterNumber := 0.0
-	if startWord+2 < len(words) {
-		gapAfterNumber = words[startWord+2].Start - words[startWord+1].End
-	}
-	if gapAfterNumber < ANNOUNCEMENT_PAUSE_MIN {
-		// Narrator flowed into body; no subtitle.
-		return base
-	}
+	_ = ANNOUNCEMENT_PAUSE_MIN // kept for documentation; gating retired below.
 
-	// Subtitle follows. Collect tokens 2..N until a sentence-ending period
-	// attached to a token, a pause >= TITLE_END_PAUSE between words, or we
-	// run out of peek tokens.
+	// New gating logic: extract a subtitle only if we find a *title-end*
+	// signal — either a sentence-terminator (.!?) on a token or a
+	// silence-aware gap >= TITLE_END_PAUSE — within the peek window.
+	//
+	// The previous gate required a pause IMMEDIATELY after the chapter
+	// number ("Chapter 5 [pause] Eight Years Old…"). That broke for
+	// narrators (Norm Macdonald) who flow tight from number into title
+	// and pause only before the body: "Chapter 4, Six Years Old to Eight
+	// Years Old, [1.4s] One day…". Either signal is fine — the absence of
+	// EITHER means we don't fabricate a subtitle from possibly-body words.
 	var subTokens []string
+	foundTitleEnd := false
 	for j := 2; j < len(rawTokens); j++ {
 		subTokens = append(subTokens, displayTokens[j])
 		tok := rawTokens[j]
 		if len(tok) > 0 {
 			last := tok[len(tok)-1:]
 			if last == "." || last == "!" || last == "?" {
+				foundTitleEnd = true
 				break
 			}
 		}
 		wi := startWord + j
 		if wi+1 < len(words) {
-			gap := words[wi+1].Start - words[wi].End
+			gap := gapBetweenWords(words, silences, wi, wi+1)
 			if gap >= TITLE_END_PAUSE {
+				foundTitleEnd = true
 				break
 			}
 		}
+	}
+	if !foundTitleEnd {
+		// No clear title boundary — narrator may have flowed straight
+		// into body, OR our peek window cut off mid-title. Don't guess.
+		return base
 	}
 
 	subtitle := strings.TrimSpace(strings.Join(subTokens, ""))
@@ -910,6 +975,15 @@ const TITLE_PAUSE_SECS = 0.6
 // Lag and Melatonin Losing and Gaining Control…") because Whisper often
 // skips the header-to-body period.
 func inferChapterTitle(words []sttWord, start, chapNum int) string {
+	return inferChapterTitleWithSilences(words, nil, start, chapNum)
+}
+
+// inferChapterTitleWithSilences extends inferChapterTitle with the v3
+// independent silence event stream. When silences is non-nil, real
+// acoustic pauses (which Whisper sometimes records as 0s word gaps) are
+// used as the title-boundary signal — fixing cases like Norm Macdonald's
+// "Make a Wish [audible silence] Atom" where word.End→next.Start is 0.
+func inferChapterTitleWithSilences(words []sttWord, silences []sttSilence, start, chapNum int) string {
 	const peek = 20
 	end := start + peek
 	if end > len(words) {
@@ -930,7 +1004,7 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 		// AND we're past the first couple of words (so "Chapter" [pause] "N"
 		// doesn't cut off the number), this is our title boundary.
 		if i+1 < end && i > start+1 {
-			gap := words[i+1].Start - words[i].End
+			gap := gapBetweenWords(words, silences, i, i+1)
 			if gap >= TITLE_PAUSE_SECS {
 				cutAt = i + 1
 				break
@@ -957,7 +1031,7 @@ func inferChapterTitle(words []sttWord, start, chapNum int) string {
 	// just return "Chapter N".
 	for _, prefix := range []string{"chapter", "part", "book"} {
 		if strings.HasPrefix(lower, prefix+" ") {
-			title := extractChapterTitle(words, rawTokens, displayTokens, start)
+			title := extractChapterTitle(words, silences, rawTokens, displayTokens, start)
 			return NormalizeChapterTitle(strings.TrimSpace(title))
 		}
 	}
@@ -1266,11 +1340,13 @@ func narratorRunIsStrong(detected []DetectedChapter, durationSec float64) bool {
 
 // detectedToSttChapters converts DetectChapters results into the sttChapter
 // shape used by sidecar_import, re-running inferChapterTitle so we pick up
-// any subtitle that follows the "Chapter N" announcement.
-func detectedToSttChapters(words []sttWord, detected []DetectedChapter) []sttChapter {
+// any subtitle that follows the "Chapter N" announcement. Silences feed
+// the title-end detection so acoustic pauses Whisper missed still cut
+// the title cleanly.
+func detectedToSttChapters(words []sttWord, silences []sttSilence, detected []DetectedChapter) []sttChapter {
 	out := make([]sttChapter, len(detected))
 	for i, d := range detected {
-		title := inferChapterTitle(words, d.WordIdx, d.Number)
+		title := inferChapterTitleWithSilences(words, silences, d.WordIdx, d.Number)
 		if title == "" {
 			title = d.Title
 		}

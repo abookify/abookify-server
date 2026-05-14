@@ -203,6 +203,23 @@ func MatchAndCreateWorks(store *db.Store) error {
 			log.Printf("created work: %q by %q (%d audio, %d text files)",
 				workTitle, c.author, len(c.audioIDs), len(c.textIDs))
 		} else {
+			// Self-heal legacy works: if an existing work is found via its
+			// audio dir but its title is bogus (empty or a track-number
+			// fallback like "01"), repair it from the dir-derived title.
+			// Pre-looksLikeTrackNumber versions of this matcher created
+			// such works directly. We only overwrite when the existing
+			// title is clearly worse — never when the user has set a real
+			// title themselves.
+			if existing, err := store.GetWork(workID); err == nil && existing != nil {
+				needsFix := existing.Title == "" || existing.Title == "Unknown Title" || looksLikeTrackNumber(existing.Title)
+				if needsFix && workTitle != "" && !looksLikeTrackNumber(workTitle) {
+					if err := store.UpdateWork(workID, workTitle, c.author); err != nil {
+						log.Printf("self-heal title for work %d failed: %v", workID, err)
+					} else {
+						log.Printf("self-heal: work %d title %q → %q", workID, existing.Title, workTitle)
+					}
+				}
+			}
 			log.Printf("adding %d audio + %d text files to existing work %d (dir %q)",
 				len(c.audioIDs), len(c.textIDs), workID, c.dir)
 		}

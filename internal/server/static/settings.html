@@ -67,6 +67,36 @@
     }
     .save-btn:hover { opacity: 0.9; }
     .save-msg { font-size: 0.8rem; color: var(--epub); margin-left: 1rem; display: none; }
+
+    /* Pairing row layout — desktop default keeps QR + text side by side. */
+    .pairing-row {
+      display: flex; gap: 1.5rem; align-items: flex-start;
+    }
+    .pairing-row #qr-img { flex-shrink: 0; }
+    .pairing-row > div { min-width: 0; flex: 1; }
+
+    @media (max-width: 700px) {
+      header { padding: 0.75rem 1rem; }
+      header h1 { font-size: 1.1rem; }
+
+      /* Tighter outer padding on phones — section text was being eaten
+         by 2rem * 2 = 64px of side gutter on a 360px screen. */
+      .settings { padding: 1rem; }
+      .section { padding: 1rem; }
+
+      /* Stack QR + text vertically. Side-by-side at 200px QR + ~1.5rem
+         gap left ~10% width for the descriptive text on a phone, which
+         was the user-visible bug. */
+      .pairing-row { flex-direction: column; align-items: stretch; gap: 1rem; }
+      .pairing-row #qr-img { align-self: center; }
+
+      /* Prevent iOS Safari from auto-zooming when an input is focused
+         (it bumps the page scale for any control with font-size < 16px). */
+      input, select, textarea { font-size: 16px !important; }
+
+      /* Buttons big enough to tap. */
+      .save-btn, #preview-btn { min-height: 44px; padding: 0.7rem 1.5rem; }
+    }
   </style>
 </head>
 <body>
@@ -159,10 +189,11 @@
       <div class="hint" style="margin-bottom:12px;">Add your own AI API key to enable intelligent question and answer about your books. Your key is stored locally on this server and only sent to the provider you select.</div>
       <div class="field">
         <label>Provider</label>
-        <select id="llm-provider">
+        <select id="llm-provider" onchange="onProviderChange()">
           <option value="">Not configured (keyword search only)</option>
           <option value="anthropic">Anthropic (Claude)</option>
           <option value="openai">OpenAI (ChatGPT)</option>
+          <option value="openrouter">OpenRouter (Claude, GPT, Gemini, Llama, …)</option>
           <option value="ollama">Ollama (free, runs locally)</option>
         </select>
       </div>
@@ -171,8 +202,12 @@
         <input type="text" id="llm-api-key" placeholder="sk-... or leave blank for Ollama">
       </div>
       <div class="field">
-        <label>Model (optional)</label>
-        <input type="text" id="llm-model" placeholder="Leave blank for default">
+        <label>Model</label>
+        <select id="llm-model-select" onchange="onModelSelectChange()">
+          <option value="">Default for this provider</option>
+        </select>
+        <input type="text" id="llm-model" placeholder="custom-model-id" style="margin-top:6px; display:none;">
+        <div class="hint" id="llm-model-hint">Pick a model — switch to a more capable one for better answers.</div>
       </div>
       <div class="field">
         <label>Base URL (optional, for proxies or self-hosted)</label>
@@ -200,7 +235,7 @@
 
     <div class="section">
       <h2>Mobile App Pairing</h2>
-      <div style="display:flex; gap:1.5rem; align-items:flex-start;">
+      <div class="pairing-row">
         <img id="qr-img" src="/api/pair-qr" width="200" height="200" style="border-radius:8px; background:#fff;">
         <div>
           <div class="field">
@@ -230,8 +265,66 @@
   </div>
 
   <script>
+    let allModels = {}; // { provider → [{id, label}, ...] }
+
+    async function loadModels() {
+      try {
+        const res = await fetch('/api/llm/models');
+        if (res.ok) allModels = await res.json();
+      } catch {}
+    }
+
+    // Re-populate the model <select> when the provider changes. Adds a
+    // "Custom…" option that reveals the free-text input for any model
+    // not in the curated list.
+    function onProviderChange() {
+      const provider = document.getElementById('llm-provider').value;
+      const sel = document.getElementById('llm-model-select');
+      const txt = document.getElementById('llm-model');
+      const hint = document.getElementById('llm-model-hint');
+      sel.innerHTML = '<option value="">Default for this provider</option>';
+      if (provider && allModels[provider]) {
+        for (const m of allModels[provider]) {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.label + ' — ' + m.id;
+          sel.appendChild(opt);
+        }
+      }
+      sel.appendChild(new Option('Custom…', '__custom__'));
+      // If the saved model isn't in the curated list, show it as Custom.
+      const saved = (txt.value || '').trim();
+      if (saved && [...sel.options].every(o => o.value !== saved)) {
+        sel.value = '__custom__';
+        txt.style.display = '';
+      } else if (saved) {
+        sel.value = saved;
+        txt.style.display = 'none';
+      } else {
+        txt.style.display = 'none';
+      }
+      if (hint) {
+        hint.textContent = provider === 'openrouter'
+          ? 'Models are namespaced like vendor/model (e.g. anthropic/claude-3.5-sonnet).'
+          : 'Pick a model — switch to a more capable one for better answers.';
+      }
+    }
+
+    function onModelSelectChange() {
+      const sel = document.getElementById('llm-model-select');
+      const txt = document.getElementById('llm-model');
+      if (sel.value === '__custom__') {
+        txt.style.display = '';
+        txt.focus();
+      } else {
+        txt.style.display = 'none';
+        txt.value = sel.value;
+      }
+    }
+
     async function loadSettings() {
       try {
+        await loadModels();
         const res = await fetch('/api/settings');
         const settings = await res.json();
         if (settings.tts_voice) document.getElementById('tts-voice').value = settings.tts_voice;
@@ -243,17 +336,29 @@
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
         if (settings.voice_api_key) document.getElementById('voice-api-key').value = settings.voice_api_key;
+        // Now that provider+model are loaded, populate the model <select>.
+        onProviderChange();
       } catch {}
     }
 
     async function saveSettings() {
+      // Resolve the model: select wins unless it's empty/__custom__, in
+      // which case the free-text input is the source of truth. Saving
+      // an empty string explicitly clears the model so the LLM client
+      // falls back to its provider default on next start.
+      const sel = document.getElementById('llm-model-select').value;
+      const txt = document.getElementById('llm-model').value.trim();
+      let llmModel;
+      if (sel && sel !== '__custom__') llmModel = sel;
+      else llmModel = txt;
+
       const settings = {
         tts_voice: document.getElementById('tts-voice').value,
         stt_model: document.getElementById('stt-model').value,
         stt_idle_timeout: document.getElementById('stt-idle-timeout').value,
         llm_provider: document.getElementById('llm-provider').value,
         llm_api_key: document.getElementById('llm-api-key').value,
-        llm_model: document.getElementById('llm-model').value,
+        llm_model: llmModel,
         llm_base_url: document.getElementById('llm-base-url').value,
         voice_provider: document.getElementById('voice-provider').value,
         voice_api_key: document.getElementById('voice-api-key').value,

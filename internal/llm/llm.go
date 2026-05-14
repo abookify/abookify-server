@@ -13,9 +13,10 @@ import (
 type Provider string
 
 const (
-	ProviderAnthropic Provider = "anthropic"
-	ProviderOpenAI    Provider = "openai"
-	ProviderOllama    Provider = "ollama"
+	ProviderAnthropic  Provider = "anthropic"
+	ProviderOpenAI     Provider = "openai"
+	ProviderOllama     Provider = "ollama"
+	ProviderOpenRouter Provider = "openrouter"
 )
 
 // Client is a multi-provider LLM client.
@@ -57,6 +58,9 @@ func NewClient(provider Provider, apiKey, model, baseURL string) *Client {
 			model = "gpt-4o"
 		case ProviderOllama:
 			model = "llama3.2"
+		case ProviderOpenRouter:
+			// Solid default — cheap and capable.
+			model = "openai/gpt-4o-mini"
 		}
 	}
 	if baseURL == "" {
@@ -67,6 +71,11 @@ func NewClient(provider Provider, apiKey, model, baseURL string) *Client {
 			baseURL = "https://api.openai.com"
 		case ProviderOllama:
 			baseURL = "http://localhost:11434"
+		case ProviderOpenRouter:
+			// OpenRouter's chat-completions endpoint sits at
+			// /api/v1/chat/completions — same path shape as OpenAI's
+			// /v1/chat/completions appended to this baseURL.
+			baseURL = "https://openrouter.ai/api"
 		}
 	}
 
@@ -87,7 +96,11 @@ func (c *Client) Complete(req CompletionRequest) (*CompletionResponse, error) {
 	switch c.provider {
 	case ProviderAnthropic:
 		return c.completeAnthropic(req)
-	case ProviderOpenAI:
+	case ProviderOpenAI, ProviderOpenRouter:
+		// OpenRouter implements the OpenAI chat-completions API verbatim,
+		// so the request shape and parsing are identical. Auth is also a
+		// Bearer token. The only delta is the base URL, which is set in
+		// NewClient.
 		return c.completeOpenAI(req)
 	case ProviderOllama:
 		return c.completeOllama(req)
@@ -178,6 +191,12 @@ func (c *Client) completeOpenAI(req CompletionRequest) (*CompletionResponse, err
 	httpReq, _ := http.NewRequest("POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	// OpenRouter recommends an attribution header so app-level rate-limit
+	// rules and dashboards can identify traffic. No-op for OpenAI proper.
+	if c.provider == ProviderOpenRouter {
+		httpReq.Header.Set("HTTP-Referer", "https://abookify.local")
+		httpReq.Header.Set("X-Title", "abookify")
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

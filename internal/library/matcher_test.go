@@ -105,6 +105,69 @@ func TestMatchAndCreateWorks_UntaggedMP3sUseDirName(t *testing.T) {
 	}
 }
 
+// Regression: a work that already exists in the DB with a bogus title
+// (a track-number string like "01" carried over from a pre-looksLikeTrackNumber
+// matcher version) gets self-healed when a fresh book in the same dir
+// triggers a re-match. The matcher finds the legacy work via FindWorkByAudioDir
+// and rewrites its title using the dir name. Observed in production: work #10
+// "01" / Clockwork Orange had the bogus title stuck across many rescans.
+func TestMatchAndCreateWorks_SelfHealsLegacyTrackNumberTitle(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	dir := "/library/audiobooks/Anthony Burgess – A Clockwork Orange"
+
+	// Pre-create the work with the bogus title that legacy code produced,
+	// owning 5 of 6 audio files (already assigned).
+	legacyID, err := store.CreateWork("01", "")
+	if err != nil {
+		t.Fatalf("create legacy work: %v", err)
+	}
+	for i := 1; i <= 5; i++ {
+		fn := fmt.Sprintf("0%d.mp3", i)
+		if err := store.UpsertBook(db.Book{
+			Path: dir + "/" + fn, Filename: fn, Format: "mp3",
+			MediaType: "audio",
+			Title:     fmt.Sprintf("0%d", i),
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", fn, err)
+		}
+	}
+	owned, _ := store.ListBooks()
+	var ownedIDs []int64
+	for _, b := range owned {
+		ownedIDs = append(ownedIDs, b.ID)
+	}
+	if err := store.AssignBooksToWork(legacyID, ownedIDs); err != nil {
+		t.Fatalf("assign owned: %v", err)
+	}
+
+	// A 6th file lands in the same dir, unassigned — modeling a fresh
+	// rescan / new file event. The matcher must group it with the existing
+	// work's directory and self-heal the bogus title.
+	if err := store.UpsertBook(db.Book{
+		Path: dir + "/06.mp3", Filename: "06.mp3", Format: "mp3",
+		MediaType: "audio", Title: "06",
+	}); err != nil {
+		t.Fatalf("upsert new file: %v", err)
+	}
+
+	if err := MatchAndCreateWorks(store); err != nil {
+		t.Fatalf("match: %v", err)
+	}
+
+	w, err := store.GetWork(legacyID)
+	if err != nil || w == nil {
+		t.Fatalf("get healed work: %v", err)
+	}
+	if w.Title == "01" || looksLikeTrackNumber(w.Title) {
+		t.Fatalf("title still bogus after heal: %q", w.Title)
+	}
+	if w.Title != "Anthony Burgess – A Clockwork Orange" {
+		t.Fatalf("want healed title from dir, got %q", w.Title)
+	}
+}
+
 // Regression: untagged multi-file audiobooks with descriptive filenames like
 // "why-we-sleep-part1.mp3" should still prefer the directory name, since no
 // Album tag means the Title is filename-derived. The dir name is typically

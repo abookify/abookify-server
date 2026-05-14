@@ -86,31 +86,21 @@ func TestInferChapterTitle(t *testing.T) {
 		}
 		return out
 	}
-	// mkWithGap builds a word slice with a specific gap inserted after index `afterIdx`.
-	mkWithGap := func(afterIdx int, gapSec float64, ss ...string) []sttWord {
-		out := make([]sttWord, len(ss))
-		t := 0.0
-		for i, s := range ss {
-			out[i] = sttWord{Start: t, End: t + 0.3, Word: s}
-			t += 0.3
-			if i == afterIdx {
-				t += gapSec // inject the announcement gap
-			}
-		}
-		return out
-	}
 	cases := []struct {
 		name string
 		in   []sttWord
 		want string
 	}{
-		// All mk() cases have 0s gaps between words → no announcement pause
-		// → narrator flowed to body → return just "Chapter N". These tests
-		// reflect the new pause-based contract.
-		{"zero-gap flow = no subtitle (ch 1)", mk("Chapter", " 1.", " The", " Discovery."), "Chapter 1"},
+		// "Chapter 1. The Discovery." — even with 0s gaps between words,
+		// the period on "Discovery." is the title-end signal. The subtitle
+		// is extracted and the base "Chapter 1" gets ": The Discovery"
+		// appended. Predicate: a punctuation OR a long pause is what makes
+		// a subtitle real; absence of EITHER means we don't fabricate.
+		{"period-terminated subtitle (ch 1)", mk("Chapter", " 1.", " The", " Discovery."), "Chapter 1: The Discovery"},
 		// Title-normalization pass converts spelled-out numbers to digits
 		// so the TOC isn't a mix of "Chapter Two" + "Chapter 3" depending
-		// on Whisper's transcription style.
+		// on Whisper's transcription style. Three words, no terminator,
+		// no pause → no subtitle even with a "Chapter Two" prefix.
 		{"zero-gap flow = no subtitle (ch two)", mk("Chapter ", "two", " What's"), "Chapter 2"},
 		{"zero-gap flow = no subtitle (part one)", mk("Part ", "One:", " This", " Thing"), "Part 1"},
 		{"single-word section", mk("Foreword", ".", " Content"), "Foreword"},
@@ -137,13 +127,73 @@ func TestInferChapterTitle(t *testing.T) {
 		}
 	})
 
-	// WWS-style alt: "Chapter 2 [0.96s cross-segment gap] Caffeine, Jet Lag,
-	// and Melatonin…" — no period on "2" but the 0.96s gap is real (Whisper
-	// segmented there). Should trigger subtitle extraction.
-	t.Run("wws ch2 no period but real cross-segment gap", func(t *testing.T) {
-		ws := mkWithGap(1, 0.7, "Chapter", " 2", " Caffeine,", " Jet", " Lag,", " and", " Melatonin")
+	// WWS-style: "Chapter 2 [pause] Caffeine, Jet Lag, and Melatonin
+	// [body pause] When…" — the title-end signal is the body pause AFTER
+	// "Melatonin", not before. Mirrors the real data shape.
+	t.Run("wws ch2 subtitle bounded by post-title pause", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 0.0, End: 0.3, Word: "Chapter"},
+			{Start: 0.3, End: 0.6, Word: " 2"},
+			{Start: 1.3, End: 1.6, Word: " Caffeine,"}, // 0.7s pause after number
+			{Start: 1.6, End: 1.9, Word: " Jet"},
+			{Start: 1.9, End: 2.2, Word: " Lag,"},
+			{Start: 2.2, End: 2.5, Word: " and"},
+			{Start: 2.5, End: 2.9, Word: " Melatonin"},
+			{Start: 3.7, End: 4.0, Word: " When"}, // 0.8s pause = body
+		}
 		got := inferChapterTitle(ws, 0, 2)
 		want := "Chapter 2: Caffeine, Jet Lag, and Melatonin"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Norm Macdonald _Based on a True Story_, ch 21: Whisper drift case.
+	// "Chapter 21. The Lost Days. [2.2s real silence] I awaken from my
+	// blackout..." but Whisper records "I" as starting at the same time
+	// the previous word ends — the silence event's Start sits INSIDE
+	// the reported "I" word's time range. Without widening the silence
+	// scan past b.Start, "I" got glued onto the title.
+	t.Run("norm ch21 whisper drift past b.Start caught via silence-end widening", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 12518.50, End: 12518.82, Word: " Chapter"},
+			{Start: 12518.82, End: 12519.24, Word: " 21"},
+			{Start: 12519.24, End: 12520.28, Word: " The"},
+			{Start: 12520.28, End: 12520.68, Word: " Lost"},
+			{Start: 12520.68, End: 12521.12, Word: " Days"},
+			{Start: 12521.12, End: 12522.04, Word: " I"},      // drift!
+			{Start: 12523.73, End: 12524.07, Word: " awaken"},
+		}
+		// Real silence runs 12521.58 → 12523.78; its start (12521.58)
+		// is 0.46s into Whisper's "I" word.
+		sils := []sttSilence{
+			{Start: 12521.58, End: 12523.78, Duration: 2.20, Source: "silencedetect", Kind: "paragraph"},
+		}
+		got := inferChapterTitleWithSilences(ws, sils, 0, 21)
+		want := "Chapter 21: The Lost Days"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Norm Macdonald _Based on a True Story_, ch 3: "Chapter 3, [tight]
+	// My First Five Years [1.97s body pause] It doesn't take..." — the
+	// narrator flows from number straight into title with NO announcement
+	// pause. The old gate (require pause after number) rejected this. The
+	// new gate (require any title-end signal within peek) extracts it.
+	t.Run("norm ch3 tight number-to-title flow extracts via post-title pause", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 1537.96, End: 1538.52, Word: " Chapter"},
+			{Start: 1538.52, End: 1538.88, Word: " 3,"},  // 0s gap to title
+			{Start: 1538.98, End: 1539.14, Word: " My"},
+			{Start: 1539.14, End: 1539.42, Word: " First"},
+			{Start: 1539.42, End: 1539.66, Word: " Five"},
+			{Start: 1539.66, End: 1540.22, Word: " Years"},
+			{Start: 1542.19, End: 1542.75, Word: " It"}, // 1.97s pause = body
+			{Start: 1542.75, End: 1543.05, Word: " doesn't"},
+		}
+		got := inferChapterTitle(ws, 0, 3)
+		want := "Chapter 3: My First Five Years"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -169,6 +219,98 @@ func TestInferChapterTitle(t *testing.T) {
 		}
 		got := inferChapterTitle(ws, 0, 4)
 		want := "Chapter 4: Ape Beds, Dinosaurs, and Napping with Half a Brain"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Norm Macdonald _Based on a True Story_, ch 23: "Chapter 23. Make a
+	// Wish [0.7s] Atom..." Whisper drops the period after "Wish" and the
+	// pause is shorter than the old 1.0s threshold. With the threshold
+	// dropped to 0.6s the title cuts cleanly at "Wish".
+	t.Run("norm ch23 short title with mid-pause cut", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 100.0, End: 100.4, Word: " Chapter"},
+			{Start: 100.4, End: 100.8, Word: " 23."},      // announcement period
+			{Start: 101.4, End: 101.7, Word: " Make"},     // 0.6s announcement pause
+			{Start: 101.7, End: 101.8, Word: " a"},
+			{Start: 101.8, End: 102.2, Word: " Wish"},     // no period
+			{Start: 102.9, End: 103.3, Word: " Atom"},     // 0.7s pause — body
+			{Start: 103.3, End: 103.6, Word: " bombs"},
+		}
+		got := inferChapterTitle(ws, 0, 23)
+		want := "Chapter 23: Make a Wish"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Whisper sometimes absorbs the actual acoustic silence into adjacent
+	// word durations, recording word.End → next.Start as 0s even when
+	// there's a clear pause in the audio. The v3 silence-event stream
+	// (independent ffmpeg silencedetect output) is the ground truth in
+	// that case. Without consulting silences, "Make a Wish [audible 0.7s]
+	// Atom" would title as "Make a Wish Atom".
+	t.Run("norm ch23 whisper-recorded 0s gap rescued by silence event", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 100.0, End: 100.4, Word: " Chapter"},
+			{Start: 100.4, End: 100.8, Word: " 23."},
+			{Start: 101.4, End: 101.7, Word: " Make"},     // 0.6s announcement pause
+			{Start: 101.7, End: 101.8, Word: " a"},
+			{Start: 101.8, End: 102.5, Word: " Wish"},     // word stretched — End=102.5
+			{Start: 102.5, End: 103.0, Word: " Atom"},     // Whisper says 0s gap…
+			{Start: 103.0, End: 103.3, Word: " bombs"},
+		}
+		// …but ffmpeg silencedetect found a 0.7s real silence between
+		// words 4 (Wish) and 5 (Atom).
+		sils := []sttSilence{
+			{Start: 102.5, End: 103.2, Duration: 0.7, Source: "silencedetect", Kind: "paragraph"},
+		}
+		got := inferChapterTitleWithSilences(ws, sils, 0, 23)
+		want := "Chapter 23: Make a Wish"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Same book ch 24: "Chapter 24. Heading North [0.7s] This..."
+	t.Run("norm ch24 two-word title with mid-pause cut", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 200.0, End: 200.4, Word: " Chapter"},
+			{Start: 200.4, End: 200.8, Word: " 24."},
+			{Start: 201.4, End: 201.9, Word: " Heading"},  // 0.6s announcement pause
+			{Start: 201.9, End: 202.3, Word: " North"},    // no period
+			{Start: 203.0, End: 203.3, Word: " This"},     // 0.7s pause — body
+			{Start: 203.3, End: 203.6, Word: " is"},
+		}
+		got := inferChapterTitle(ws, 0, 24)
+		want := "Chapter 24: Heading North"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Same book ch 5: "Chapter 5. Eight Years Old to Thirteen Years Old.
+	// [0.7s] I..." — full clause with period. Even with a period the old
+	// code grabbed "I" because the period+capital were on the next sentence
+	// of body, not on the title. Period-cut works here, so this passes
+	// regardless of TITLE_END_PAUSE — but ensures we don't regress on it.
+	t.Run("norm ch5 long phrase title cut at period", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 300.0, End: 300.4, Word: " Chapter"},
+			{Start: 300.4, End: 300.8, Word: " 5."},
+			{Start: 301.4, End: 301.6, Word: " Eight"},
+			{Start: 301.6, End: 302.0, Word: " Years"},
+			{Start: 302.0, End: 302.2, Word: " Old"},
+			{Start: 302.2, End: 302.3, Word: " to"},
+			{Start: 302.3, End: 302.7, Word: " Thirteen"},
+			{Start: 302.7, End: 303.0, Word: " Years"},
+			{Start: 303.0, End: 303.4, Word: " Old."},  // period
+			{Start: 304.1, End: 304.3, Word: " I"},
+			{Start: 304.3, End: 304.5, Word: " was"},
+		}
+		got := inferChapterTitle(ws, 0, 5)
+		want := "Chapter 5: Eight Years Old to Thirteen Years Old"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}

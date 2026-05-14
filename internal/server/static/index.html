@@ -127,6 +127,44 @@
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
 
+    /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
+       author. Filled by hydrateWorkProgress() once positions arrive. */
+    .work-progress { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; opacity: 0.8; }
+    .work-progress.complete { color: var(--epub); opacity: 1; }
+
+    /* Work-card three-dot menu. The trigger is a circular button; the
+       popover anchors to the card via position:absolute and the
+       work-header acting as position:relative. Stays inside the card
+       so toggleWork's outer click handler doesn't fire. */
+    .work-header { position: relative; }
+    .work-menu-btn {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      cursor: pointer; font-size: 1.1rem; line-height: 1;
+      width: 32px; height: 32px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: background 0.1s, color 0.1s;
+    }
+    .work-menu-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .work-menu-btn.open { background: var(--surface-hover); color: var(--text); border-color: var(--text-muted); }
+    .work-menu-popover {
+      position: absolute; top: calc(100% - 8px); right: 1.25rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+      min-width: 220px; padding: 4px 0; z-index: 50;
+      display: none;
+    }
+    .work-menu-popover.open { display: block; }
+    .work-menu-item {
+      display: flex; align-items: center; gap: 8px;
+      width: 100%; background: none; border: none; color: var(--text);
+      padding: 8px 14px; font-size: 0.85rem; cursor: pointer; text-align: left;
+    }
+    .work-menu-item:hover { background: var(--surface-hover); }
+    .work-menu-item.danger { color: #e94560; }
+    .work-menu-item.danger:hover { background: rgba(233,69,96,0.1); }
+    .work-menu-item .icon { width: 16px; text-align: center; opacity: 0.8; }
+    .work-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
+
     .expand-arrow {
       color: var(--text-muted); font-size: 0.8rem; transition: transform 0.2s; flex-shrink: 0;
     }
@@ -509,6 +547,118 @@
       padding: 1rem; font-style: italic;
     }
 
+    /* Chat-style Q&A: session tabs on top, scrollable transcript in
+       the middle, persistent input at the bottom. The input never
+       clears between turns — pressing Enter starts the next turn. */
+    .chat-tabs {
+      display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+      margin-bottom: 0.6rem; padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    /* Chat tab is a wrapper holding two real <button> siblings: the
+       title-select button and the kebab-menu button. Visually one pill
+       split into two halves by a divider — no nested onclicks, no
+       ambiguous click areas, no chance the kebab is mistaken for an
+       ellipsis. */
+    .chat-tab {
+      position: relative;
+      display: inline-flex; align-items: stretch;
+      border: 1px solid var(--border); border-radius: 14px;
+      background: var(--bg); color: var(--text-muted);
+      flex-shrink: 0; overflow: visible;
+    }
+    .chat-tab:hover { border-color: var(--text-muted); }
+    .chat-tab.active {
+      background: rgba(240,165,0,0.12); border-color: rgba(240,165,0,0.45);
+      color: #f0a500;
+    }
+    .chat-tab-select {
+      background: none; border: none; color: inherit; font: inherit;
+      padding: 0.25rem 0.6rem; cursor: pointer;
+      max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; font-size: 0.78rem;
+      border-radius: 14px 0 0 14px;
+    }
+    .chat-tab-select:hover { color: var(--text); }
+    .chat-tab.active .chat-tab-select:hover { color: #f0a500; }
+    .chat-tab-menu-btn {
+      background: none; color: var(--text-muted); cursor: pointer;
+      border: none; border-left: 1px solid var(--border);
+      padding: 0 0.5rem; font-size: 1rem; line-height: 1;
+      display: flex; align-items: center;
+      border-radius: 0 14px 14px 0;
+    }
+    .chat-tab.active .chat-tab-menu-btn { border-left-color: rgba(240,165,0,0.35); color: #f0a500; }
+    .chat-tab-menu-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+    .chat-tab-popover {
+      display: none; position: absolute; top: calc(100% + 4px); right: 0;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      min-width: 130px; padding: 4px 0; z-index: 60;
+    }
+    .chat-tab-popover.open { display: block; }
+    .chat-tab-popover button {
+      display: block; width: 100%; background: none; border: none;
+      color: var(--text); padding: 7px 12px; text-align: left;
+      font-size: 0.8rem; cursor: pointer;
+    }
+    .chat-tab-popover button:hover { background: var(--surface-hover); }
+    .chat-tab-popover button.danger { color: #e94560; }
+    .chat-tab-popover button.danger:hover { background: rgba(233,69,96,0.1); }
+    .chat-new-btn {
+      background: none; border: 1px dashed var(--border); color: var(--text-muted);
+      border-radius: 14px; padding: 0.25rem 0.7rem; font-size: 0.78rem;
+      cursor: pointer; flex-shrink: 0;
+    }
+    .chat-new-btn:hover { border-color: #f0a500; color: #f0a500; }
+
+    .chat-thread {
+      position: relative;
+      max-height: 380px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 0.5rem;
+      padding: 0.25rem 0.1rem; margin-bottom: 0.6rem;
+    }
+    .chat-msg {
+      max-width: 90%; padding: 0.6rem 0.85rem; border-radius: 10px;
+      font-size: 0.85rem; line-height: 1.5; word-wrap: break-word;
+    }
+    .chat-msg.user {
+      align-self: flex-end; background: rgba(123,104,238,0.12);
+      color: var(--text); border: 1px solid rgba(123,104,238,0.3);
+    }
+    .chat-msg.assistant {
+      align-self: flex-start; background: var(--bg);
+      color: var(--text); border: 1px solid var(--border);
+    }
+    .chat-msg.assistant .chat-citations {
+      margin-top: 0.5rem; padding-top: 0.5rem;
+      border-top: 1px dashed var(--border);
+      font-size: 0.75rem; color: var(--text-muted);
+    }
+    .chat-msg.assistant .chat-citation {
+      display: block; padding: 4px 0; cursor: pointer;
+    }
+    .chat-msg.assistant .chat-citation:hover { color: var(--text); }
+    .chat-citations-toggle {
+      background: none; border: none; color: var(--text-muted);
+      padding: 2px 0; cursor: pointer; font-size: 0.7rem;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      font-family: inherit;
+    }
+    .chat-citations-toggle:hover { color: var(--text); }
+    .chat-citations-toggle .caret { display: inline-block; width: 1em; }
+    /* Brief flash when scrolled-to-citation lands. Yellow to match the
+       existing karaoke highlight palette. */
+    @keyframes citation-pulse {
+      0% { background: rgba(240,165,0,0.55); }
+      100% { background: transparent; }
+    }
+    .citation-flash { animation: citation-pulse 1.6s ease-out; border-radius: 3px; }
+    .chat-thinking {
+      align-self: flex-start; color: var(--text-muted); font-style: italic;
+      font-size: 0.8rem; padding: 0.4rem 0.85rem;
+    }
+
     /* Jobs bar */
     .jobs-bar {
       padding: 0 2rem; display: none;
@@ -619,24 +769,34 @@
       }
 
       /* Work-card header on mobile:
-         Row 1: [cover] [title-block — fills the row] [arrow]
-         Row 2: [.abook] [↻ reprocess] [audio badge] [text badge]
-         Achieved by giving the title-block flex-basis:100% minus the
-         width of cover (~48px), arrow (~16px), and gaps; the action
-         pills then naturally wrap to a second row. */
+         Row 1: [cover] [title-block — fills the row] [⋯ menu] [arrow]
+         Row 2: [audio badge] [text badge]
+         Title-block reserves space for cover (~48px), menu (~32px),
+         arrow (~16px), and gaps; badges wrap below. */
       .work-header { flex-wrap: wrap; gap: 0.5rem 0.75rem; }
-      .work-title-block { flex: 1 1 calc(100% - 100px); min-width: 0; }
+      .work-title-block { flex: 1 1 calc(100% - 140px); min-width: 0; }
       .work-title { font-size: 1rem; line-height: 1.3; word-break: break-word; }
       .work-author { font-size: 0.78rem; }
-      /* Direct-child action pills + the badges container all share row 2. */
-      .work-header > .media-pill,
       .work-badges { flex-basis: auto; }
+      /* Popover anchors to right edge with breathing room for the
+         smaller phone padding. */
+      .work-menu-popover { right: 0.75rem; min-width: 200px; }
 
-      /* Player bar: tighten paddings + hide the secondary controls
-         that aren't critical on small screens (speed dropdown, sleep
-         menu still accessible from full-screen NowPlaying view). */
-      .now-playing { padding: 0.5rem 0.75rem; gap: 0.5rem; }
-      .now-playing .np-info { font-size: 0.8rem; }
+      /* Player bar on phone: 3-row stack instead of fighting for space
+         in one row.
+           Row 1: title + work (full width — was being crushed to ~10%
+                  by the scrubber + control buttons)
+           Row 2: scrubber + chapter skip / play / +-30s
+           Row 3: volume + waveform + speed
+         The fullscreen NowPlaying view still hosts the full controls. */
+      .now-playing { padding: 0.5rem 0.75rem; gap: 0.4rem 0.5rem; flex-wrap: wrap; }
+      .now-playing .np-info {
+        flex: 1 1 100%; min-width: 0; font-size: 0.8rem;
+      }
+      .now-playing .np-info .np-title { font-size: 0.9rem; white-space: normal; line-height: 1.2; }
+      .now-playing .player-controls { flex: 1 1 100%; gap: 0.3rem; }
+      .now-playing .player-controls .player-scrubber { flex: 1; min-width: 0; }
+      .now-playing > div:last-child { flex: 1 1 100%; justify-content: center; }
 
       /* Top toolbar: search input was fixed at 280px which crowded the
          filter buttons off the screen. Make it fluid + tighten the
@@ -653,6 +813,11 @@
       /* Touch targets: chapter rows + filter buttons get a min-height
          of 44px (Apple HIG) so tapping them on a phone is reliable. */
       .filter-btn, .chapter-row { min-height: 44px; }
+
+      /* iOS Safari auto-zooms when focusing an input whose font-size
+         is < 16px. Bump every form control on small screens to prevent
+         the page from rescaling on tap. */
+      input, textarea, select { font-size: 16px !important; }
     }
   </style>
 </head>
@@ -680,6 +845,21 @@
   </div>
 
   <!-- Merge dialog -->
+  <div id="rename-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+      <h3 style="margin:0 0 16px; color:var(--text);">Rename work</h3>
+      <input type="hidden" id="rename-work-id" value="">
+      <label style="font-size:0.8rem; color:var(--text-muted);">Title:</label>
+      <input id="rename-title" type="text" style="width:100%; padding:8px; margin:4px 0 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+      <label style="font-size:0.8rem; color:var(--text-muted);">Author:</label>
+      <input id="rename-author" type="text" style="width:100%; padding:8px; margin:4px 0 16px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button onclick="closeRenameDialog()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
+        <button onclick="saveRename()" style="background:var(--accent); border:none; color:#fff; border-radius:6px; padding:6px 14px; cursor:pointer;">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div id="merge-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
     <div style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
       <h3 style="margin:0 0 16px; color:var(--text);">Merge works</h3>
@@ -698,6 +878,7 @@
   <div class="queue-bar" id="queue-bar"></div>
   <div class="jobs-bar" id="jobs-bar"></div>
   <div id="custom-tooltip"></div>
+  <div id="toast" style="display:none; position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:200; padding:10px 16px; border-radius:8px; font-size:0.85rem; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
   <div class="works-list" id="works-list"></div>
 
@@ -836,6 +1017,7 @@
           `${allWorks.length} works | ${totalFiles} files`;
         render();
         hydrateSyncLeadInputs();
+        hydrateWorkProgress();
         loadDuplicates();
       } catch (e) {
         // Surface the actual error in the status text so cross-host
@@ -876,6 +1058,52 @@
       }
     }
 
+    // For every work card visible in the list, fetch the saved playback
+    // position + total duration and render "Listened: HH:MM (NN%)". Best
+    // effort — silent on failure so we don't trash card layout if any
+    // single fetch errors.
+    async function hydrateWorkProgress() {
+      const works = allWorks || [];
+      await Promise.all(works.filter(w => w.has_audio).map(async (w) => {
+        try {
+          const audioFiles = w.audio_files || [];
+          const total = audioFiles.reduce((s, f) => s + (f.duration_secs || 0), 0);
+          if (total <= 0) return;
+          const res = await fetch(`/api/works/${w.id}/position`);
+          if (!res.ok) return;
+          const pos = await res.json();
+          // Sum the durations of fully-completed earlier files + the
+          // partial position in the current file. file_index is 0-based
+          // pointing at the file currently being played.
+          const fileIdx = pos.file_index || 0;
+          let elapsed = 0;
+          for (let i = 0; i < fileIdx && i < audioFiles.length; i++) {
+            elapsed += audioFiles[i].duration_secs || 0;
+          }
+          elapsed += pos.position_secs || 0;
+          if (elapsed <= 1) return; // ignore unstarted books
+          const pct = Math.min(100, Math.round((elapsed / total) * 100));
+          const el = document.getElementById('work-progress-' + w.id);
+          if (!el) return;
+          el.style.display = '';
+          if (pct >= 99) {
+            el.classList.add('complete');
+            el.textContent = `✓ Finished · ${formatTimeHuman(total)}`;
+          } else {
+            el.textContent = `▶ ${formatTimeHuman(elapsed)} of ${formatTimeHuman(total)} · ${pct}%`;
+          }
+        } catch {}
+      }));
+    }
+
+    function formatTimeHuman(secs) {
+      secs = Math.max(0, Math.round(secs));
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
     async function mergeDuplicateGroup(targetId, sourceIds) {
       if (!confirm(`Merge ${sourceIds.length} work(s) into #${targetId}? This deletes the duplicates.`)) return;
       for (const sid of sourceIds) {
@@ -908,6 +1136,172 @@
       const d = document.createElement('div');
       d.textContent = str;
       return d.innerHTML;
+    }
+
+    // Build the menu items shown when clicking the ⋯ button on a work
+    // card. Two distinct re-runs that the UI used to conflate:
+    //   • /reprocess — cheap. Re-runs chapter detection + transcript
+    //     split + RAG chunks against the EXISTING sidecar. No Whisper.
+    //     Use when you've changed detection logic or the sidecar.
+    //   • /transcribe — expensive. Full Whisper run on the audio.
+    //     Hours on CPU. Use when the transcript is wrong or missing.
+    function renderWorkMenu(work) {
+      const items = [];
+      const hasAudio = !!work.has_audio;
+      const hasText = !!work.has_text;
+      if (hasAudio) {
+        items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); reprocessWorkFromMenu(${work.id});">
+          <span class="icon">&#8635;</span>Re-detect chapters
+        </button>`);
+      }
+      if (hasText && !hasAudio) {
+        items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); generateAudio(${work.id});">
+          <span class="icon">&#9835;</span>Generate audio (TTS)
+        </button>`);
+      }
+      if (hasAudio && !hasText) {
+        items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); transcribeAudio(${work.id});">
+          <span class="icon">&#9856;</span>Transcribe audio (Whisper)
+        </button>`);
+      }
+      // Re-transcribe: only meaningful when a transcript already exists.
+      // Confirms before kicking off because it's a multi-hour CPU job.
+      if (hasAudio && hasText) {
+        items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); confirmRetranscribe(${work.id});">
+          <span class="icon">&#9856;</span>Re-transcribe audio (slow)
+        </button>`);
+      }
+      items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); openRenameDialog(${work.id});">
+        <span class="icon">&#9998;</span>Rename
+      </button>`);
+      items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); downloadAbookFromMenu(${work.id});">
+        <span class="icon">&#11015;</span>Download .abook
+      </button>`);
+      items.push(`<div class="work-menu-divider"></div>`);
+      items.push(`<button class="work-menu-item danger" onclick="closeAllWorkMenus(); deleteWork(${work.id});">
+        <span class="icon">&#128465;</span>Delete work
+      </button>`);
+      return items.join('');
+    }
+
+    function closeAllWorkMenus() {
+      document.querySelectorAll('.work-menu-popover.open').forEach(p => p.classList.remove('open'));
+      document.querySelectorAll('.work-menu-btn.open').forEach(b => {
+        b.classList.remove('open');
+        b.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    function toggleWorkMenu(workId, ev) {
+      const pop = document.getElementById('menu-pop-' + workId);
+      const btn = document.getElementById('menu-btn-' + workId);
+      const wasOpen = pop && pop.classList.contains('open');
+      closeAllWorkMenus();
+      if (!wasOpen && pop && btn) {
+        pop.classList.add('open');
+        btn.classList.add('open');
+        btn.setAttribute('aria-expanded', 'true');
+      }
+    }
+
+    // Global: clicking anywhere outside a menu closes it. Menu popovers
+    // stop propagation themselves so internal clicks don't trigger this.
+    document.addEventListener('click', () => closeAllWorkMenus());
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllWorkMenus(); });
+
+    // Wrapper that matches reprocessWork's expected element-based UX —
+    // menu items don't have the "↻ working/done" pill UI, so route the
+    // status into the work-progress label and refresh on success.
+    // Toast: short-lived top-of-page message. Used for actions that
+    // produce no other visible feedback (re-detect chapters, etc.) so
+    // the user gets confirmation without hunting for it.
+    function showToast(text, kind) {
+      const el = document.getElementById('toast');
+      if (!el) return;
+      const colors = {
+        ok:   { bg: 'rgba(78,204,163,0.92)',   color: '#0e1c1f' },
+        err:  { bg: 'rgba(233,69,96,0.92)',    color: '#fff' },
+        info: { bg: 'rgba(123,104,238,0.92)',  color: '#fff' },
+      };
+      const c = colors[kind || 'info'];
+      el.style.background = c.bg;
+      el.style.color = c.color;
+      el.textContent = text;
+      el.style.display = 'block';
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, kind === 'err' ? 5000 : 2800);
+    }
+
+    async function reprocessWorkFromMenu(workId) {
+      showToast('Re-detecting chapters…', 'info');
+      try {
+        const res = await fetch(`/api/works/${workId}/reprocess`, { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
+        showToast('Chapters re-detected', 'ok');
+      } catch (e) {
+        showToast('Re-detect failed: ' + (e.message || e), 'err');
+        return;
+      }
+      // Server broadcasts library_updated → loadWorks() runs from the WS
+      // handler. Belt-and-suspenders refresh here in case WS isn't
+      // connected (e.g. in a temporary tab).
+      setTimeout(() => loadWorks(), 600);
+    }
+
+    // Menu version of downloadAbook: no pill element to mutate, so just
+    // trigger the download and let the browser handle progress.
+    async function downloadAbookFromMenu(workId) {
+      const status = document.getElementById('work-progress-' + workId);
+      const orig = status ? status.textContent : '';
+      if (status) { status.style.display = ''; status.textContent = 'Zipping .abook…'; }
+      try {
+        const res = await fetch(`/api/works/${workId}/export.abook`);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `work-${workId}.abook`;
+        a.click();
+        URL.revokeObjectURL(url);
+        if (status) status.textContent = 'Downloaded';
+      } catch (e) {
+        if (status) status.textContent = 'Download failed';
+      }
+      setTimeout(() => { if (status) status.textContent = orig; }, 1500);
+    }
+
+    function openRenameDialog(workId) {
+      const work = (allWorks || []).find(w => w.id === workId);
+      if (!work) return;
+      document.getElementById('rename-work-id').value = workId;
+      document.getElementById('rename-title').value = work.title || '';
+      document.getElementById('rename-author').value = work.author || '';
+      document.getElementById('rename-dialog').style.display = 'flex';
+      setTimeout(() => document.getElementById('rename-title').focus(), 50);
+    }
+    function closeRenameDialog() { document.getElementById('rename-dialog').style.display = 'none'; }
+    async function saveRename() {
+      const workId = document.getElementById('rename-work-id').value;
+      const title = document.getElementById('rename-title').value.trim();
+      const author = document.getElementById('rename-author').value.trim();
+      if (!title) { alert('Title is required'); return; }
+      const res = await fetch(`/api/works/${workId}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ title, author }),
+      });
+      if (!res.ok) { alert('Rename failed: ' + (await res.text())); return; }
+      closeRenameDialog();
+      loadWorks();
+    }
+
+    async function deleteWork(workId) {
+      const work = (allWorks || []).find(w => w.id === workId);
+      const name = work ? work.title : `#${workId}`;
+      if (!confirm(`Delete "${name}"? This removes the work from the library (files on disk are kept).`)) return;
+      const res = await fetch(`/api/works/${workId}`, { method: 'DELETE' });
+      if (!res.ok) { alert('Delete failed: ' + (await res.text())); return; }
+      loadWorks();
     }
 
     function render() {
@@ -944,9 +1338,8 @@
               <div class="work-title-block">
                 <div class="work-title">${escapeHtml(work.title)}</div>
                 <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}</div>
+                <div class="work-progress" id="work-progress-${work.id}" style="display:none;"></div>
               </div>
-              <a href="#" class="media-pill" id="abook-dl-${work.id}" style="text-decoration:none;background:rgba(78,204,163,0.1);color:var(--epub);border:1px solid rgba(78,204,163,0.3);cursor:pointer;" onclick="event.stopPropagation(); downloadAbook(${work.id}, this);" title="Download as .abook">.abook</a>
-              ${work.has_audio ? `<a href="#" class="media-pill" id="reproc-${work.id}" style="text-decoration:none;background:rgba(120,120,160,0.1);color:var(--text-muted);border:1px solid rgba(120,120,160,0.3);cursor:pointer;" onclick="event.stopPropagation(); reprocessWork(${work.id}, this);" title="Re-run chapter detection + transcript split (no re-transcription)">↻ reprocess</a>` : ''}
               <div class="work-badges">
                 ${work.has_audio
                   ? `<span class="media-pill audio">${audioFiles.length} audio</span>`
@@ -954,6 +1347,13 @@
                 ${work.has_text
                   ? `<span class="media-pill text">${textFiles.length} text</span>`
                   : `<span class="media-pill missing">no text</span>`}
+              </div>
+              <button class="work-menu-btn" id="menu-btn-${work.id}"
+                onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
+                title="More actions" aria-haspopup="menu" aria-expanded="false">&#8943;</button>
+              <div class="work-menu-popover" id="menu-pop-${work.id}" role="menu"
+                onclick="event.stopPropagation();">
+                ${renderWorkMenu(work)}
               </div>
               <span class="expand-arrow">&#9654;</span>
             </div>
@@ -972,14 +1372,17 @@
               ${work.has_text ? (llmConfigured ? `
               <div class="qa-panel">
                 <div class="qa-header">Ask about this book</div>
-                <div class="qa-input-row">
-                  <input type="text" id="qa-input-${work.id}" placeholder="Ask a question or search..."
-                    data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
-                    onkeydown="if(event.key==='Enter')askQuestion(${work.id})">
-                  <button onclick="askQuestion(${work.id})">Search</button>
+                <div class="chat-tabs" id="chat-tabs-${work.id}">
+                  <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
                 </div>
-                <div class="qa-results" id="qa-results-${work.id}">
-                  <div class="qa-empty">Ask a question to find relevant passages</div>
+                <div class="chat-thread" id="chat-thread-${work.id}">
+                  <div class="qa-empty">Pick a chat or start a new one to begin.</div>
+                </div>
+                <div class="qa-input-row">
+                  <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
+                    data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
+                    onkeydown="if(event.key==='Enter')chatSend(${work.id})">
+                  <button onclick="chatSend(${work.id})">Ask</button>
                 </div>
               </div>` : `
               <div class="qa-panel">
@@ -1160,7 +1563,6 @@
                      style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:0.75rem;text-align:right;">
               <span style="color:var(--text-muted); font-size:0.7rem;">ms</span>
             </label>
-            <button onclick="resyncWork(${work.id})" class="sync-resync-btn" data-tooltip="Re-run Whisper alignment">Re-sync</button>
             <button onclick="openFullscreenReader(${work.id})" class="sync-resync-btn" data-tooltip="Full-screen reading with sync">&#x26F6; Full screen</button>
           </div>` : `
           <div class="sync-panel" style="justify-content:flex-end;">
@@ -1216,6 +1618,11 @@
         // Show resume indicator if there's a saved position
         if (work && work.has_audio) {
           resumeIfSaved(workId);
+        }
+        // Hydrate chat sessions for the Q&A panel (no-op when LLM
+        // isn't configured — the chat panel doesn't render).
+        if (work && work.has_text && llmConfigured && document.getElementById('chat-tabs-' + workId)) {
+          loadChatSessions(workId);
         }
       }
     }
@@ -2895,14 +3302,18 @@
       }
     }
 
-    async function resyncWork(workId) {
-      if (!confirm('Re-run Whisper to generate word-level sync timestamps? This can take a while for long audiobooks.')) return;
+    // Full Whisper re-transcription. Replaces the existing transcript
+    // sidecar — multi-hour CPU job, queued like a fresh transcribe.
+    // Confirmation prompt because the cost is high enough that an
+    // accidental click is annoying.
+    async function confirmRetranscribe(workId) {
+      if (!confirm('Re-transcribe the entire audiobook with Whisper? This replaces the existing transcript and can take hours on CPU. The job runs in the background.')) return;
       const res = await fetch(`/api/works/${workId}/transcribe`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: '{}',
       });
-      if (res.ok) { loadJobs(); } else { alert('Failed to start sync job'); }
+      if (res.ok) { loadJobs(); } else { alert('Failed to start re-transcription'); }
     }
 
     function openMergeDialog() {
@@ -2997,61 +3408,6 @@
       } catch(e) { alert('Request failed'); if (btn) { btn.disabled = false; btn.textContent = 'Generate transcript'; } }
     }
 
-    // .abook download with spinner
-    async function downloadAbook(workId, el) {
-      if (el.dataset.downloading) return;
-      el.dataset.downloading = 'true';
-      const origText = el.textContent;
-      el.innerHTML = '<span class="spinner" style="border-color:var(--epub);border-top-color:transparent;width:10px;height:10px;margin-right:4px;"></span>Zipping...';
-      el.style.pointerEvents = 'none';
-      try {
-        const res = await fetch(`/api/works/${workId}/export.abook`);
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `work-${workId}.abook`;
-        a.click();
-        URL.revokeObjectURL(url);
-        el.textContent = 'Done!';
-        setTimeout(() => { el.textContent = origText; }, 2000);
-      } catch(e) {
-        el.textContent = 'Error';
-        setTimeout(() => { el.textContent = origText; }, 2000);
-      } finally {
-        el.style.pointerEvents = '';
-        delete el.dataset.downloading;
-      }
-    }
-
-    // Re-run post-processing (chapter detection, transcript split, paragraphs,
-    // RAG chunks) against the work's existing sidecar. Cheap — no Whisper
-    // re-transcription. Backend rebuilds DB rows + broadcasts library_updated
-    // so the WS handler refreshes our view automatically.
-    async function reprocessWork(workId, el) {
-      if (el.dataset.busy) return;
-      el.dataset.busy = 'true';
-      const origText = el.textContent;
-      el.innerHTML = '<span class="spinner" style="border-color:var(--text-muted);border-top-color:transparent;width:10px;height:10px;margin-right:4px;"></span>working...';
-      el.style.pointerEvents = 'none';
-      try {
-        const res = await fetch(`/api/works/${workId}/reprocess`, { method: 'POST' });
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `HTTP ${res.status}`);
-        }
-        el.textContent = '↻ done!';
-        setTimeout(() => { el.textContent = origText; }, 2000);
-      } catch(e) {
-        el.textContent = '↻ error';
-        el.title = String(e);
-        setTimeout(() => { el.textContent = origText; }, 3000);
-      } finally {
-        el.style.pointerEvents = '';
-        delete el.dataset.busy;
-      }
-    }
-
     // Import .abook
     async function importAbook(input) {
       const file = input.files[0];
@@ -3075,99 +3431,296 @@
     }
 
     // Q&A — tries LLM-powered RAG first, falls back to keyword search
-    async function askQuestion(workId) {
-      const input = document.getElementById('qa-input-' + workId);
-      const resultsEl = document.getElementById('qa-results-' + workId);
-      const query = input.value.trim();
-      const bookId = input.dataset.bookId;
+    // Chat sessions per work. activeChatSessionId[workId] tracks which
+    // session's messages are currently rendered in the thread. Tabs are
+    // re-rendered from scratch on every fetch — small enough to be cheap.
+    const activeChatSessionId = {};
 
-      if (!query || query.length < 2) return;
-
-      resultsEl.innerHTML = '<div class="qa-empty">Thinking...</div>';
-
-      // Try LLM-powered Q&A first
+    async function loadChatSessions(workId) {
+      const tabsEl = document.getElementById('chat-tabs-' + workId);
+      if (!tabsEl) return;
       try {
-        const askRes = await fetch(`/api/works/${workId}/ask`, {
+        const res = await fetch(`/api/works/${workId}/sessions`);
+        const sessions = res.ok ? await res.json() : [];
+        renderChatTabs(workId, sessions);
+        // Auto-select the most-recently-updated session if none active yet.
+        if (sessions.length > 0 && !activeChatSessionId[workId]) {
+          selectChatSession(workId, sessions[0].id);
+        } else if (sessions.length === 0) {
+          // No sessions yet — show empty thread + prompt.
+          const thread = document.getElementById('chat-thread-' + workId);
+          if (thread) thread.innerHTML = '<div class="qa-empty">Start a chat by asking a question below.</div>';
+        }
+      } catch (e) {
+        tabsEl.innerHTML = '<span style="color:var(--accent); font-size:0.75rem;">Failed to load chats</span>';
+      }
+    }
+
+    function renderChatTabs(workId, sessions) {
+      const tabsEl = document.getElementById('chat-tabs-' + workId);
+      if (!tabsEl) return;
+      const activeId = activeChatSessionId[workId];
+      const tabs = sessions.map(sess => {
+        const isActive = sess.id === activeId;
+        const popId = `chat-tab-pop-${workId}-${sess.id}`;
+        return `<span class="chat-tab ${isActive ? 'active' : ''}" data-id="${sess.id}">
+          <button class="chat-tab-select" type="button" title="${escapeHtml(sess.title)}"
+            onclick="selectChatSession(${workId}, ${sess.id})">${escapeHtml(sess.title)}</button>
+          <button class="chat-tab-menu-btn" type="button" aria-label="Chat actions" title="Rename or delete this chat"
+            onclick="event.stopPropagation(); toggleChatTabMenu('${popId}')">&#8942;</button>
+          <div class="chat-tab-popover" id="${popId}" onclick="event.stopPropagation();">
+            <button type="button" onclick="closeAllChatTabMenus(); renameChatSession(${workId}, ${sess.id});">&#9998; Rename</button>
+            <button type="button" class="danger" onclick="closeAllChatTabMenus(); deleteChatSession(${workId}, ${sess.id});">&#128465; Delete</button>
+          </div>
+        </span>`;
+      }).join('');
+      tabsEl.innerHTML = tabs +
+        `<button class="chat-new-btn" onclick="newChatSession(${workId})" title="Start a new chat">+ New chat</button>`;
+    }
+
+    function closeAllChatTabMenus() {
+      document.querySelectorAll('.chat-tab-popover.open').forEach(p => p.classList.remove('open'));
+    }
+    function toggleChatTabMenu(popId) {
+      const pop = document.getElementById(popId);
+      const wasOpen = pop && pop.classList.contains('open');
+      closeAllChatTabMenus();
+      if (!wasOpen && pop) pop.classList.add('open');
+    }
+    // Close on outside click. The work-card outer-click handler above
+    // doesn't see these because they're nested inside .work-card; add a
+    // dedicated listener so they collapse when you click anywhere else.
+    document.addEventListener('click', () => closeAllChatTabMenus());
+
+    async function renameChatSession(workId, sessionId) {
+      const tabsEl = document.getElementById('chat-tabs-' + workId);
+      const cur = tabsEl ? tabsEl.querySelector(`[data-id="${sessionId}"]`)?.getAttribute('title') : '';
+      const next = prompt('Rename chat:', cur || '');
+      if (next == null) return; // cancelled
+      const trimmed = next.trim();
+      if (!trimmed) return;
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ title: trimmed }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await loadChatSessions(workId);
+      } catch (e) { alert('Rename failed: ' + (e.message || e)); }
+    }
+
+    async function selectChatSession(workId, sessionId) {
+      activeChatSessionId[workId] = sessionId;
+      // Update active state on tabs without re-fetching the list.
+      const tabsEl = document.getElementById('chat-tabs-' + workId);
+      if (tabsEl) {
+        tabsEl.querySelectorAll('.chat-tab').forEach(t => {
+          t.classList.toggle('active', String(sessionId) === t.dataset.id);
+        });
+      }
+      const thread = document.getElementById('chat-thread-' + workId);
+      if (thread) thread.innerHTML = '<div class="qa-empty">Loading…</div>';
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/messages`);
+        const messages = res.ok ? await res.json() : [];
+        renderChatThread(workId, messages);
+      } catch {
+        if (thread) thread.innerHTML = '<div class="qa-empty">Failed to load messages</div>';
+      }
+    }
+
+    function renderChatThread(workId, messages) {
+      const thread = document.getElementById('chat-thread-' + workId);
+      if (!thread) return;
+      if (!messages || messages.length === 0) {
+        thread.innerHTML = '<div class="qa-empty">No messages yet — ask a question below.</div>';
+        return;
+      }
+      const work = allWorks.find(w => w.id === workId);
+      const bookId = work && work.text_files && work.text_files[0] ? work.text_files[0].id : null;
+      thread.innerHTML = messages.map(m => renderChatMessage(m, workId, bookId)).join('');
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    function renderChatMessage(m, workId, bookId) {
+      const cls = m.role === 'user' ? 'user' : 'assistant';
+      let citations = '';
+      if (m.role === 'assistant' && m.citations && m.citations.length) {
+        const expanded = chatSourcesExpanded();
+        const caret = expanded ? '▾' : '▸'; // ▾ / ▸
+        const inner = m.citations.map(c => {
+          const cite = JSON.stringify({b: bookId, ch: c.chapter_idx, sw: c.start_word, ew: c.end_word, w: workId});
+          return `<a class="chat-citation"
+            onclick='jumpToCitation(${cite})'>${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)} — ${escapeHtml(c.excerpt)}</a>`;
+        }).join('');
+        citations = `<div class="chat-citations">
+          <button class="chat-citations-toggle" onclick="toggleChatSources(this)">
+            <span class="caret">${caret}</span> Sources (${m.citations.length})
+          </button>
+          <div class="chat-citations-list" style="display:${expanded ? 'block' : 'none'};">${inner}</div>
+        </div>`;
+      }
+      // Preserve newlines from the LLM. escapeHtml prevents injection;
+      // white-space: pre-wrap on .chat-msg renders the newlines visibly.
+      return `<div class="chat-msg ${cls}" style="white-space:pre-wrap;">${escapeHtml(m.content)}${citations}</div>`;
+    }
+
+    // Sources expand/collapse — preference persisted in localStorage so
+    // it sticks across reloads. Default: collapsed (less visual noise).
+    function chatSourcesExpanded() {
+      return localStorage.getItem('abookify.chatSourcesExpanded') === '1';
+    }
+    function setChatSourcesExpanded(v) {
+      localStorage.setItem('abookify.chatSourcesExpanded', v ? '1' : '0');
+    }
+    function toggleChatSources(btn) {
+      const wrap = btn.parentElement;
+      const list = wrap.querySelector('.chat-citations-list');
+      const caret = btn.querySelector('.caret');
+      const open = list.style.display !== 'none';
+      list.style.display = open ? 'none' : 'block';
+      if (caret) caret.textContent = open ? '▸' : '▾';
+      // Update default for *future* messages so the user's last toggle
+      // becomes their preference. Doesn't retroactively change other
+      // already-rendered messages — each is independent.
+      setChatSourcesExpanded(!open);
+    }
+
+    // Citation click: load the chapter, then scroll to the cited word
+    // range. The reader wraps each word in <span class="sync-word"
+    // data-widx="N"> when karaoke is available; we use that to anchor
+    // the scroll. Falls back to chapter-top scroll if no widx span exists
+    // (plain-text books, non-karaoke renderings).
+    async function jumpToCitation(c) {
+      await loadChapter(c.b, c.ch, c.w, { skipAudioSeek: true });
+      // Wait one frame for the chapter content to render before measuring.
+      requestAnimationFrame(() => {
+        const reader = document.getElementById('reader-' + c.w);
+        if (!reader) return;
+        const target = reader.querySelector(`.sync-word[data-widx="${c.sw}"]`);
+        if (!target) return;
+        const tRect = target.getBoundingClientRect();
+        const rRect = reader.getBoundingClientRect();
+        // Land the citation a touch below the top so it's not jammed
+        // against the pane header — feels more like "scroll-to-show".
+        reader.scrollTop += (tRect.top - rRect.top) - 40;
+        // Brief flash so the user sees where the cited passage lives.
+        target.classList.add('citation-flash');
+        setTimeout(() => target.classList.remove('citation-flash'), 1800);
+      });
+    }
+
+    async function newChatSession(workId) {
+      try {
+        const res = await fetch(`/api/works/${workId}/sessions`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ question: query }),
+          body: JSON.stringify({}),
         });
+        if (!res.ok) throw new Error('create failed');
+        const sess = await res.json();
+        // Switch to the new session BEFORE re-rendering tabs. selectChatSession
+        // fetches its (empty) message list and replaces the thread — without
+        // this, the old session's messages stayed visible because we'd updated
+        // activeChatSessionId but never asked the thread to reload.
+        await selectChatSession(workId, sess.id);
+        await loadChatSessions(workId);
+        const input = document.getElementById('qa-input-' + workId);
+        if (input) { input.value = ''; input.focus(); }
+      } catch (e) { alert('Failed to start chat'); }
+    }
 
-        if (askRes.ok) {
-          const answer = await askRes.json();
-          let html = `<div class="qa-result" style="cursor:default; border-color:rgba(240,165,0,0.3);">
-            <div class="qa-passage" style="white-space:pre-wrap; line-height:1.6;">${escapeHtml(answer.text)}</div>
-            <div class="qa-cite" style="margin-top:8px;">Powered by ${escapeHtml(answer.model || 'AI')} &middot; ${answer.chunks_used} passages referenced</div>
-          </div>`;
-
-          if (answer.citations && answer.citations.length > 0) {
-            html += '<div style="font-size:0.75rem;color:var(--text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em;">Sources</div>';
-            html += answer.citations.map(c =>
-              `<div class="qa-result" onclick="loadChapter(${bookId}, ${c.chapter_idx}, ${workId})">
-                <div class="qa-passage" style="font-size:0.75rem;">${escapeHtml(c.excerpt)}</div>
-                <div class="qa-cite">${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)}</div>
-              </div>`
-            ).join('');
-          }
-
-          resultsEl.innerHTML = html;
-          return;
-        }
-        // If 503 (no LLM configured), fall through to keyword search
-      } catch {}
-
-      // Fallback: keyword search
+    async function deleteChatSession(workId, sessionId) {
+      if (!confirm('Delete this chat?')) return;
       try {
-        const res = await fetch(`/api/books/${bookId}/search?q=${encodeURIComponent(query)}`);
-        const chunks = await res.json();
+        await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+        if (activeChatSessionId[workId] === sessionId) {
+          delete activeChatSessionId[workId];
+          const thread = document.getElementById('chat-thread-' + workId);
+          if (thread) thread.innerHTML = '<div class="qa-empty">Pick a chat or start a new one to begin.</div>';
+        }
+        await loadChatSessions(workId);
+      } catch { alert('Failed to delete'); }
+    }
 
-        if (chunks.length === 0) {
-          resultsEl.innerHTML = '<div class="qa-empty">No matching passages found. Configure an AI provider in Settings for smarter answers.</div>';
+    async function chatSend(workId) {
+      const input = document.getElementById('qa-input-' + workId);
+      if (!input) return;
+      const text = input.value.trim();
+      if (!text) return;
+      // Auto-create a session if the user hits Ask without picking one
+      // — typical first-time flow on a freshly-opened card.
+      if (!activeChatSessionId[workId]) {
+        await newChatSession(workId);
+      }
+      const sessionId = activeChatSessionId[workId];
+      if (!sessionId) return;
+
+      input.value = '';
+      input.focus();
+      const work = allWorks.find(w => w.id === workId);
+      const bookId = work && work.text_files && work.text_files[0] ? work.text_files[0].id : null;
+      const thread = document.getElementById('chat-thread-' + workId);
+      if (!thread) return;
+      // Strip "empty" placeholder if present.
+      const empty = thread.querySelector('.qa-empty');
+      if (empty) empty.remove();
+      // Optimistically render the user's message.
+      thread.insertAdjacentHTML('beforeend',
+        renderChatMessage({role: 'user', content: text}, workId, bookId));
+      const userBubble = thread.lastElementChild;
+      // Thinking indicator.
+      const thinkingId = 'chat-thinking-' + Date.now();
+      thread.insertAdjacentHTML('beforeend',
+        `<div class="chat-thinking" id="${thinkingId}">Thinking…</div>`);
+      // Anchor the question at the top of the visible thread.
+      pinToTop(thread, userBubble);
+
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ content: text }),
+        });
+        document.getElementById(thinkingId)?.remove();
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({error: 'request failed'}));
+          thread.insertAdjacentHTML('beforeend',
+            `<div class="chat-msg assistant" style="border-color:var(--accent); color:var(--accent);">Error: ${escapeHtml(err.error || 'failed')}</div>`);
           return;
         }
-
-        let chapterTitles = {};
-        if (chapterCache[bookId]?.chapters) {
-          for (const ch of chapterCache[bookId].chapters) chapterTitles[ch.index] = ch.title;
+        const data = await res.json();
+        if (data.assistant) {
+          thread.insertAdjacentHTML('beforeend', renderChatMessage(data.assistant, workId, bookId));
+          // Re-anchor on the *next frame* so layout has settled with the
+          // assistant bubble + its citation block before we measure. The
+          // earlier offsetTop-based version raced layout and ended up at
+          // the bottom on long answers.
+          requestAnimationFrame(() => pinToTop(thread, userBubble));
         }
-
-        resultsEl.innerHTML = '<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">Keyword results (configure AI in Settings for smarter answers)</div>' +
-          chunks.map(c => {
-            const highlighted = highlightWords(c.content, query);
-            const preview = smartTruncate(highlighted, query, 300);
-            const chTitle = chapterTitles[c.chapter_idx] || ('Chapter ' + c.chapter_idx);
-            return `<div class="qa-result" onclick="loadChapter(${bookId}, ${c.chapter_idx}, ${workId})">
-              <div class="qa-passage">${preview}</div>
-              <div class="qa-cite">${escapeHtml(chTitle)} &middot; words ${c.start_word}-${c.end_word}</div>
-            </div>`;
-          }).join('');
-      } catch {
-        resultsEl.innerHTML = '<div class="qa-empty">Search failed</div>';
+        // Refresh the tabs so the auto-derived title shows up after the
+        // first turn (the server renames "New chat" to a question summary).
+        loadChatSessions(workId);
+      } catch (e) {
+        document.getElementById(thinkingId)?.remove();
+        thread.insertAdjacentHTML('beforeend',
+          `<div class="chat-msg assistant" style="border-color:var(--accent); color:var(--accent);">Network error</div>`);
       }
     }
 
-    function highlightWords(text, query) {
-      const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-      let result = escapeHtml(text);
-      for (const word of words) {
-        const re = new RegExp(`(${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-        result = result.replace(re, '<mark>$1</mark>');
-      }
-      return result;
+    // Scroll a child into view at the *top* of its scrollable parent.
+    // Uses bounding-rect math so it works regardless of the parent's
+    // positioning — getBoundingClientRect.top - container.top is the
+    // pixel delta the container needs to scroll. offsetTop without a
+    // positioned parent silently misreports.
+    function pinToTop(container, child) {
+      if (!container || !child) return;
+      const cRect = container.getBoundingClientRect();
+      const tRect = child.getBoundingClientRect();
+      container.scrollTop += (tRect.top - cRect.top);
     }
 
-    function smartTruncate(html, query, maxLen) {
-      // Find position of first <mark> and center around it
-      const markIdx = html.indexOf('<mark>');
-      if (markIdx < 0 || html.length <= maxLen) return html;
-
-      const start = Math.max(0, markIdx - 100);
-      const end = Math.min(html.length, start + maxLen);
-      let snippet = html.substring(start, end);
-      if (start > 0) snippet = '...' + snippet;
-      if (end < html.length) snippet += '...';
-      return snippet;
-    }
 
     // WebSocket for live updates
     function connectWS() {

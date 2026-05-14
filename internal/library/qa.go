@@ -111,7 +111,14 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 	// Invoke the underlying RAG completion via its public Client path.
 	systemPrompt := fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
 Answer questions based ONLY on the provided passages from the book.
-Be specific and reference which passages support your answer (e.g., "In Passage 3...").
+
+IMPORTANT — citation style: NEVER mention "Passage N" or "Passages 3-5" or
+any reference to internal passage numbers. The user does NOT see passage
+numbers; they see your prose answer plus a separate Sources panel below it
+that names the chapters. Cite by chapter name or by a short inline quote
+(e.g., 'In Chapter 5, the author argues…' or 'as the text puts it, "…"').
+The passage-N labels in your context are an internal hint for you only.
+
 If the passages don't contain enough information to answer, say so honestly.
 Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
 

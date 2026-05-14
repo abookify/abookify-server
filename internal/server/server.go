@@ -57,6 +57,12 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/search", s.handleSearchWork)
 	mux.HandleFunc("GET /api/books/{id}/waveform", s.handleWaveform)
 	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
+	mux.HandleFunc("GET /api/works/{id}/sessions", s.handleListSessions)
+	mux.HandleFunc("POST /api/works/{id}/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleListMessages)
+	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleAppendMessage)
+	mux.HandleFunc("PUT /api/sessions/{id}", s.handleRenameSession)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
@@ -86,6 +92,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
@@ -1165,6 +1172,52 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// handleListLLMModels returns curated model lists per provider for the
+// Settings UI dropdown. Hardcoded — providers don't all expose a public
+// list endpoint, and even when they do (OpenAI, OpenRouter) the noise of
+// returning every variant outweighs the benefit. Users who want a model
+// outside this list can pick "Custom" in the UI.
+func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
+	type modelInfo struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+	out := map[string][]modelInfo{
+		"anthropic": {
+			{ID: "claude-opus-4-20250514", Label: "Claude Opus 4 — flagship"},
+			{ID: "claude-sonnet-4-20250514", Label: "Claude Sonnet 4 — balanced (default)"},
+			{ID: "claude-3-5-haiku-20241022", Label: "Claude 3.5 Haiku — fast"},
+		},
+		"openai": {
+			{ID: "gpt-4o", Label: "GPT-4o — flagship"},
+			{ID: "gpt-4o-mini", Label: "GPT-4o mini — cheap, very capable"},
+			{ID: "gpt-4-turbo", Label: "GPT-4 Turbo"},
+			{ID: "o1", Label: "o1 — reasoning"},
+			{ID: "o1-mini", Label: "o1 mini — reasoning, cheaper"},
+			{ID: "gpt-3.5-turbo", Label: "GPT-3.5 Turbo — legacy"},
+		},
+		"openrouter": {
+			{ID: "anthropic/claude-3.5-sonnet", Label: "Claude 3.5 Sonnet"},
+			{ID: "anthropic/claude-3.5-haiku", Label: "Claude 3.5 Haiku"},
+			{ID: "openai/gpt-4o", Label: "OpenAI GPT-4o"},
+			{ID: "openai/gpt-4o-mini", Label: "OpenAI GPT-4o mini (default)"},
+			{ID: "google/gemini-pro-1.5", Label: "Google Gemini Pro 1.5"},
+			{ID: "google/gemini-flash-1.5", Label: "Google Gemini Flash 1.5"},
+			{ID: "meta-llama/llama-3.1-405b-instruct", Label: "Llama 3.1 405B"},
+			{ID: "meta-llama/llama-3.1-70b-instruct", Label: "Llama 3.1 70B"},
+			{ID: "mistralai/mistral-large", Label: "Mistral Large"},
+		},
+		"ollama": {
+			{ID: "llama3.2", Label: "Llama 3.2 (default — pull first)"},
+			{ID: "llama3.1", Label: "Llama 3.1"},
+			{ID: "qwen2.5", Label: "Qwen 2.5"},
+			{ID: "mistral", Label: "Mistral 7B"},
+			{ID: "gemma2", Label: "Gemma 2"},
+		},
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {

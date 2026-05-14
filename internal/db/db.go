@@ -353,6 +353,35 @@ func migrate(db *sql.DB) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);
+
+		-- Q&A chat sessions: a session is a multi-turn conversation
+		-- scoped to one work. A book can have many parallel sessions
+		-- (one per topic, draft, or open tab). Title is auto-derived
+		-- from the first user message but can be renamed.
+		CREATE TABLE IF NOT EXISTS qa_sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_id    INTEGER NOT NULL,
+			title      TEXT NOT NULL DEFAULT 'New chat',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (work_id) REFERENCES works(id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_qa_sessions_work ON qa_sessions(work_id, updated_at DESC);
+
+		-- One message per turn. role is "user" or "assistant".
+		-- citations_json stores []llm.Citation for assistant turns; "" for user.
+		CREATE TABLE IF NOT EXISTS qa_messages (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id     INTEGER NOT NULL,
+			role           TEXT    NOT NULL,
+			content        TEXT    NOT NULL,
+			citations_json TEXT    NOT NULL DEFAULT '',
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (session_id) REFERENCES qa_sessions(id) ON DELETE CASCADE
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
 	`)
 	if err != nil {
 		return err
@@ -1471,6 +1500,11 @@ func (s *Store) DeleteWork(id int64) error {
 	tx.Exec(`DELETE FROM bookmarks WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM playback_positions WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM jobs WHERE work_id = ?`, id)
+	// Cascade-delete chat sessions + their messages. ON DELETE CASCADE
+	// only fires when foreign_keys=ON, which we don't enable, so we
+	// drop dependents explicitly.
+	tx.Exec(`DELETE FROM qa_messages WHERE session_id IN (SELECT id FROM qa_sessions WHERE work_id = ?)`, id)
+	tx.Exec(`DELETE FROM qa_sessions WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM works WHERE id = ?`, id)
 	return tx.Commit()
 }
