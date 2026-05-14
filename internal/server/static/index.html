@@ -146,6 +146,22 @@
     }
     .work-menu-btn:hover { background: var(--surface-hover); color: var(--text); }
     .work-menu-btn.open { background: var(--surface-hover); color: var(--text); border-color: var(--text-muted); }
+
+    /* Per-work play / resume button on the card header. Resumes from the
+       saved position (or starts from 0). Click stops propagation so the
+       card doesn't toggle. Shows pause glyph while THIS work is playing. */
+    .work-play-btn {
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 50%;
+      width: 40px; height: 40px;
+      font-size: 1rem; line-height: 1;
+      cursor: pointer; flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+      transition: filter 0.1s, transform 0.05s;
+    }
+    .work-play-btn:hover { filter: brightness(1.12); }
+    .work-play-btn:active { transform: scale(0.96); }
     .work-menu-popover {
       position: absolute; top: calc(100% - 8px); right: 1.25rem;
       background: var(--surface); border: 1px solid var(--border);
@@ -575,12 +591,30 @@
     }
     .np-overlay-body { flex: 1; display: flex; min-height: 0; }
     .np-toc-drawer {
-      width: 0; overflow: hidden; transition: width 0.16s ease;
+      width: 0; flex-shrink: 0; position: relative;
       background: var(--surface); color: var(--text);
       border-right: 1px solid var(--border);
-      flex-shrink: 0;
+      transition: width 0.16s ease;
+      overflow: hidden;
     }
-    .np-toc-drawer.open { width: 280px; overflow-y: auto; }
+    .np-toc-drawer.open {
+      width: var(--np-toc-width, 280px);
+      overflow: visible;
+    }
+    .np-toc-drawer .np-toc-content {
+      width: 100%; height: 100%; overflow-y: auto;
+    }
+    .np-toc-drawer.dragging { transition: none; }
+    .np-toc-drawer.dragging .np-toc-content { user-select: none; }
+    .np-toc-resizer {
+      position: absolute; top: 0; right: -3px; bottom: 0; width: 8px;
+      cursor: ew-resize; z-index: 3;
+    }
+    .np-toc-resizer::after {
+      content: ''; position: absolute; top: 0; bottom: 0; left: 3px;
+      width: 2px; background: var(--border);
+    }
+    .np-toc-drawer:not(.open) .np-toc-resizer { display: none; }
     .np-toc-drawer .np-toc-section {
       padding: 0.5rem 0.75rem; font-size: 0.7rem;
       text-transform: uppercase; letter-spacing: 0.04em;
@@ -588,6 +622,11 @@
       border-bottom: 1px solid var(--border);
     }
     .np-toc-drawer .chapter-row { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+    .np-toc-drawer .chapter-row.active {
+      background: rgba(78,204,163,0.1);
+      border-left: 3px solid var(--epub);
+      padding-left: calc(0.75rem - 3px);
+    }
     #np-reader-host { flex: 1; min-height: 0; display: flex; overflow: hidden; }
     #np-reader-host > .reader-content {
       flex: 1; max-height: none; border-top: none; padding: 1.5rem 2rem;
@@ -1038,7 +1077,10 @@
       <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
     <div class="np-overlay-body">
-      <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true"></aside>
+      <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true">
+        <div class="np-toc-content" id="np-toc-content"></div>
+        <div class="np-toc-resizer" id="np-toc-resizer" title="Drag to resize"></div>
+      </aside>
       <div id="np-reader-host">
         <div class="reader-content" id="np-reader">
           <div class="placeholder">Select a chapter to read</div>
@@ -1466,6 +1508,10 @@
             <div class="work-header" onclick="toggleWork('${cardId}', ${work.id})">
               <img src="/api/works/${work.id}/cover" onerror="this.style.display='none'"
                 style="width:48px; height:64px; border-radius:4px; object-fit:cover; flex-shrink:0; background:var(--border);">
+              ${work.has_audio ? `
+                <button class="work-play-btn" id="play-btn-${work.id}"
+                  onclick="event.stopPropagation(); resumeOrPlay(${work.id})"
+                  title="Resume / pause">&#9654;</button>` : ''}
               <div class="work-title-block">
                 <div class="work-title">${escapeHtml(work.title)}</div>
                 <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}</div>
@@ -1875,15 +1921,22 @@
     // Renders chapter content in the reader pane. Uses sanitized HTML when
     // available (EPUB sources), falls back to plaintext for transcripts.
     function renderChapterContent(reader, cached) {
+      // Wrap plain-text content in <p> elements so the `.reader-content > *`
+      // max-width rule applies — otherwise the text fills the full pane
+      // width (no max-width on bare text nodes).
+      const wrapPlain = (text) => {
+        const paras = (text || '').split(/\n\n+/).filter(p => p.trim());
+        if (paras.length === 0) return '';
+        return paras.map(p => '<p>' + escapeHtml(p).replace(/\n/g, '<br>') + '</p>').join('');
+      };
       if (typeof cached === 'string') {
-        // Legacy cache entry (plain string) — backward compatibility.
-        reader.textContent = cached;
+        reader.innerHTML = wrapPlain(cached);
         return;
       }
       if (cached.html) {
         reader.innerHTML = cached.html;
       } else {
-        reader.textContent = cached.text || '';
+        reader.innerHTML = wrapPlain(cached.text || '');
       }
     }
 
@@ -2022,7 +2075,8 @@
     // sync, always the first audio book of the work.
     let currentSyncBookId = null;
 
-    async function playAudio(bookId, audioIndex, workId, title, workTitle, startSec) {
+    async function playAudio(bookId, audioIndex, workId, title, workTitle, startSec, opts) {
+      opts = opts || {};
       document.querySelectorAll('.chapter-row.playing').forEach(el => el.classList.remove('playing'));
 
       const player = document.getElementById('audio-player');
@@ -2038,7 +2092,10 @@
           player.addEventListener('loadedmetadata', () => { player.currentTime = seekTo; }, { once: true });
         }
       }
-      player.play();
+      // opts.startPaused: load audio + populate the bar but don't auto-play.
+      // Used when opening the reader overlay so the user gets transport
+      // controls + waveform + position without forcing playback.
+      if (!opts.startPaused) player.play();
 
       // Highlight the correct row — detected chapters use audio-ch-{bookId}-{index},
       // single-file fallback uses audio-ch-{bookId}.
@@ -2647,13 +2704,20 @@
       else { p.pause(); btn.innerHTML = '&#9654;'; }
     }
 
-    // Update play/pause icon when state changes externally.
-    document.getElementById('audio-player').addEventListener('play', () => {
-      document.getElementById('play-pause-btn').innerHTML = '&#9646;&#9646;';
-    });
-    document.getElementById('audio-player').addEventListener('pause', () => {
-      document.getElementById('play-pause-btn').innerHTML = '&#9654;';
-    });
+    // Update play/pause icons when state changes externally. The big bar
+    // button always reflects state; the work-card button only when this
+    // work is the active one.
+    function syncPlayGlyphs(playing) {
+      const main = document.getElementById('play-pause-btn');
+      if (main) main.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+      document.querySelectorAll('.work-play-btn').forEach(el => el.innerHTML = '&#9654;');
+      if (currentWorkId != null) {
+        const cardBtn = document.getElementById('play-btn-' + currentWorkId);
+        if (cardBtn) cardBtn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+      }
+    }
+    document.getElementById('audio-player').addEventListener('play',  () => syncPlayGlyphs(true));
+    document.getElementById('audio-player').addEventListener('pause', () => syncPlayGlyphs(false));
 
     // === Now-playing ebook overlay ===========================================
     // The reader lives inside a resizable overlay docked above the playback
@@ -2674,10 +2738,15 @@
       const h = parseInt(localStorage.getItem('npOverlayHeight') || '', 10);
       return (Number.isFinite(h) && h >= 140 && h <= 2000) ? h : 360;
     })();
+    let npTocWidth = (() => {
+      const w = parseInt(localStorage.getItem('npTocWidth') || '', 10);
+      return (Number.isFinite(w) && w >= 160 && w <= 600) ? w : 280;
+    })();
 
     (function hydrateOverlay() {
       const ov = document.getElementById('np-overlay');
       if (ov) ov.style.height = npOverlayHeight + 'px';
+      document.documentElement.style.setProperty('--np-toc-width', npTocWidth + 'px');
       const drawer = document.getElementById('np-toc-drawer');
       if (drawer && npTocOpen) drawer.classList.add('open');
       const maxBtn = document.getElementById('np-max-btn');
@@ -2736,27 +2805,60 @@
       if (npTocOpen) renderNpToc();
     }
     function renderNpToc() {
-      const drawer = document.getElementById('np-toc-drawer');
-      if (!drawer) return;
+      const content = document.getElementById('np-toc-content');
+      if (!content) return;
       if (!currentReaderWorkId) {
-        drawer.innerHTML = '<div class="np-toc-section">No work loaded</div>';
+        content.innerHTML = '<div class="np-toc-section">No work loaded</div>';
         return;
       }
       const work = allWorks.find(w => w.id === currentReaderWorkId);
-      if (!work) return;
+      if (!work) {
+        content.innerHTML = '';
+        return;
+      }
       const textBook = (work.text_files || []).find(t => t.chapter_count > 0);
       if (!textBook) {
-        drawer.innerHTML = '<div class="np-toc-section">No text chapters</div>';
+        content.innerHTML = '<div class="np-toc-section">No text chapters</div>';
         return;
       }
       const chapters = chapterCache[textBook.id]?.chapters || [];
-      drawer.innerHTML =
+      const player = document.getElementById('audio-player');
+      const absTime = (player?.currentTime || 0) + currentAudioOffset;
+      content.innerHTML =
         '<div class="np-toc-section">' + escapeHtml(work.title || 'Chapters') + '</div>' +
-        chapters.map(c =>
-          `<div class="chapter-row" onclick="loadChapter(${textBook.id}, ${c.index}, ${work.id})">
+        chapters.map(c => {
+          const isActive = absTime >= (c.start_sec || 0) && absTime < (c.end_sec || 1e12);
+          return `<div class="chapter-row${isActive ? ' active' : ''}"
+            data-ch-idx="${c.index}"
+            onclick="loadChapter(${textBook.id}, ${c.index}, ${work.id})">
              <span class="chapter-name">${escapeHtml(c.title || ('Chapter ' + (c.index+1)))}</span>
-           </div>`
-        ).join('');
+           </div>`;
+        }).join('');
+    }
+
+    // Cheap active-row update — runs on every timeupdate. Doesn't re-render
+    // the drawer, just toggles .active on existing rows by data-ch-idx.
+    function updateNpTocActive() {
+      const drawer = document.getElementById('np-toc-drawer');
+      if (!drawer || !drawer.classList.contains('open')) return;
+      if (!currentReaderWorkId) return;
+      const work = allWorks.find(w => w.id === currentReaderWorkId);
+      if (!work) return;
+      const textBook = (work.text_files || []).find(t => t.chapter_count > 0);
+      if (!textBook) return;
+      const chapters = chapterCache[textBook.id]?.chapters || [];
+      const player = document.getElementById('audio-player');
+      const absTime = (player?.currentTime || 0) + currentAudioOffset;
+      let activeIdx = -1;
+      for (const c of chapters) {
+        if (absTime >= (c.start_sec || 0) && absTime < (c.end_sec || 1e12)) {
+          activeIdx = c.index;
+          break;
+        }
+      }
+      drawer.querySelectorAll('.chapter-row[data-ch-idx]').forEach(row => {
+        row.classList.toggle('active', parseInt(row.dataset.chIdx, 10) === activeIdx);
+      });
     }
 
     // Promote the overlay reader to a given work. Sets reader id, populates
@@ -2850,6 +2952,42 @@
       });
     })();
 
+    // Drag-to-resize on the TOC drawer's right edge. Persists width.
+    (function wireNpTocResizer() {
+      const handle = document.getElementById('np-toc-resizer');
+      const drawer = document.getElementById('np-toc-drawer');
+      if (!handle || !drawer) return;
+      let startX = 0, startW = 0, dragging = false;
+      const begin = (clientX) => {
+        if (!drawer.classList.contains('open')) return;
+        dragging = true;
+        startX = clientX;
+        startW = drawer.getBoundingClientRect().width;
+        drawer.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+      };
+      const move = (clientX) => {
+        if (!dragging) return;
+        const dx = clientX - startX;
+        const newW = Math.max(160, Math.min(600, startW + dx));
+        document.documentElement.style.setProperty('--np-toc-width', newW + 'px');
+        npTocWidth = newW;
+      };
+      const end = () => {
+        if (!dragging) return;
+        dragging = false;
+        drawer.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        localStorage.setItem('npTocWidth', String(Math.round(npTocWidth)));
+      };
+      handle.addEventListener('mousedown', (e) => { begin(e.clientX); e.preventDefault(); });
+      window.addEventListener('mousemove', (e) => move(e.clientX));
+      window.addEventListener('mouseup', end);
+      handle.addEventListener('touchstart', (e) => begin(e.touches[0].clientX), { passive: true });
+      window.addEventListener('touchmove', (e) => { if (dragging) { move(e.touches[0].clientX); e.preventDefault(); } }, { passive: false });
+      window.addEventListener('touchend', end);
+    })();
+
     // Keep the --np-height CSS variable matched to the actual bar height,
     // so the overlay's `bottom: var(--np-height)` follows wrap/responsive
     // changes (two-row → three-row on phones, etc.).
@@ -2874,24 +3012,85 @@
       sync();
     })();
 
-    // Open the overlay onto a work that isn't currently playing (called by
-    // the work-card "Open reader" hint). Loads the chapter list first if
-    // needed, then renders the first chapter into the overlay.
+    // Fetch the work's saved playback position. Returns { bookId, fileIdx,
+    // posSec } resolved against the work's audio_files, or nulls if there
+    // is no saved position (or no audio).
+    async function fetchResumePosition(work) {
+      let bookId = null, fileIdx = 0, posSec = 0;
+      try {
+        const res = await fetch(`/api/works/${work.id}/position`);
+        if (res.ok) {
+          const pos = await res.json();
+          if (pos && pos.book_id) {
+            bookId = pos.book_id;
+            fileIdx = pos.file_index || 0;
+            posSec = pos.position_secs || 0;
+          }
+        }
+      } catch {}
+      const files = work.audio_files || [];
+      if (!bookId || !files.some(f => f.id === bookId)) {
+        bookId = files[0]?.id || null;
+        fileIdx = 0;
+        posSec = 0;
+      }
+      return { bookId, fileIdx, posSec };
+    }
+
+    // Resume button on a work card: load the work's audio at its saved
+    // position (or start of file 0) and start playing. If the user clicks
+    // the button while this same work is already loaded, just toggle.
+    async function resumeOrPlay(workId) {
+      const work = allWorks.find(w => w.id === workId);
+      if (!work || !work.has_audio) return;
+      if (currentWorkId === workId && document.getElementById('audio-player').src) {
+        togglePlayPause();
+        return;
+      }
+      const { bookId, fileIdx, posSec } = await fetchResumePosition(work);
+      const file = (work.audio_files || []).find(f => f.id === bookId);
+      if (!file) return;
+      await playAudio(file.id, fileIdx, workId, file.title || file.filename, work.title, posSec);
+    }
+
+    // Open the overlay onto a work that isn't currently playing. If the
+    // work has audio, also load the audio in paused state at its saved
+    // resume position — this makes the now-playing bar appear with full
+    // transport controls so the user can play from there.
     async function openOverlayFromWork(workId) {
       const work = allWorks.find(w => w.id === workId);
       if (!work) return;
       const textBook = (work.text_files || []).find(t => t.chapter_count > 0);
-      if (!textBook) return;
-      if (!chapterCache[textBook.id]?.chapters) {
-        await loadChapterList(textBook.id, workId);
+
+      // Load audio (paused) so the playback bar shows up with this work's
+      // state. playAudio handles all the bar UI + sync data wiring; we
+      // just suppress the player.play() call.
+      if (work.has_audio && currentWorkId !== workId) {
+        const { bookId, fileIdx, posSec } = await fetchResumePosition(work);
+        const file = (work.audio_files || []).find(f => f.id === bookId);
+        if (file) {
+          await playAudio(file.id, fileIdx, workId, file.title || file.filename,
+            work.title, posSec, { startPaused: true });
+        }
       }
+
+      // Make sure the overlay is open and the reader is mounted for this work.
       ensureActiveReader(workId);
       openNpOverlay();
-      const reader = document.getElementById('reader-' + workId);
-      if (reader && reader.querySelector('.placeholder')) {
-        const chapters = chapterCache[textBook.id]?.chapters;
-        if (chapters && chapters.length) {
-          loadChapter(textBook.id, chapters[0].index, workId, { skipAudioSeek: true });
+
+      // For text-only works (or audio works whose sync didn't find a
+      // matching chapter), load the first chapter manually so the reader
+      // isn't empty.
+      if (textBook) {
+        if (!chapterCache[textBook.id]?.chapters) {
+          await loadChapterList(textBook.id, workId);
+        }
+        const reader = document.getElementById('reader-' + workId);
+        if (reader && reader.querySelector('.placeholder')) {
+          const chapters = chapterCache[textBook.id]?.chapters;
+          if (chapters && chapters.length) {
+            loadChapter(textBook.id, chapters[0].index, workId, { skipAudioSeek: true });
+          }
         }
       }
     }
@@ -2918,6 +3117,7 @@
           updateChapterProgress(tf.id, bookSec, totalSec);
         });
       }
+      updateNpTocActive();
     });
     document.getElementById('audio-player').addEventListener('loadedmetadata', () => {
       const p = document.getElementById('audio-player');
