@@ -76,6 +76,16 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
+	// LLM fallback: ask the configured provider to label any
+	// "Chapter N" rows the narrator didn't title. No-op when no LLM
+	// is configured.
+	if s.RAG != nil && s.RAG.Client() != nil {
+		if err := library.LabelMissingChapterTitles(s.store, s.RAG.Client(), id); err != nil {
+			// Non-fatal — chapters keep their bare titles, reprocess
+			// still succeeds.
+			s.Events.Broadcast(Event{Type: "library_updated"})
+		}
+	}
 	// Tell connected clients to refresh their library view so chapters
 	// + sync get reloaded from the new DB rows.
 	s.Events.Broadcast(Event{Type: "library_updated"})

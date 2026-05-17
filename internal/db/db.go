@@ -916,6 +916,15 @@ func (s *Store) DeleteChaptersByBook(bookID int64) error {
 	return err
 }
 
+// UpdateChapterTitle replaces just the title for an existing chapter row.
+// Used by the LLM-fallback labeler to fill in bare "Chapter N" titles
+// without touching the chapter's content or timestamps.
+func (s *Store) UpdateChapterTitle(bookID int64, index int, title string) error {
+	_, err := s.db.Exec(`UPDATE chapters SET title = ? WHERE book_id = ? AND index_num = ?`,
+		title, bookID, index)
+	return err
+}
+
 // HasChaptersMissingHTML returns true if any chapter for this book has
 // empty content_html. Used on boot to detect pre-#102 data that needs
 // re-extraction from the source EPUB.
