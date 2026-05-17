@@ -36,13 +36,16 @@ func TestDetectChaptersFromPauses(t *testing.T) {
 
 // detectParagraphsFromPauses splits a [start,end) range by medium gaps.
 func TestDetectParagraphsFromPauses(t *testing.T) {
-	// words: "a b" [0.8s gap] "c d" [0.8s gap] "e"
+	// words: "Hello world." [0.8s gap] "Next sentence." [0.8s gap] "End."
+	// Periods on the boundary words signal sentence-end, so the gaps
+	// become real paragraph breaks. (Same shape as before; just real
+	// punctuation instead of single letters.)
 	words := []sttWord{
-		{Start: 0, End: 0.5, Word: "a"},
-		{Start: 0.5, End: 1.0, Word: " b"},
-		{Start: 1.8, End: 2.3, Word: "c"}, // 0.8s gap
-		{Start: 2.3, End: 2.8, Word: " d"},
-		{Start: 3.6, End: 4.1, Word: "e"}, // 0.8s gap
+		{Start: 0, End: 0.5, Word: "Hello"},
+		{Start: 0.5, End: 1.0, Word: " world."},
+		{Start: 1.8, End: 2.3, Word: "Next"}, // 0.8s gap, prev ends in "."
+		{Start: 2.3, End: 2.8, Word: " sentence."},
+		{Start: 3.6, End: 4.1, Word: "End."}, // 0.8s gap, prev ends in "."
 	}
 	paras := detectParagraphsFromPauses(words, 0, len(words))
 	if len(paras) != 3 {
@@ -441,14 +444,16 @@ func TestDetectChaptersFromSilences_V2(t *testing.T) {
 // v2 paragraph detection returns chapter-local word-index ranges bounded
 // by paragraph-grade silence events.
 func TestDetectParagraphsFromSilences_V2(t *testing.T) {
+	// Punctuation-gated: the word before each silence must end with .!?
+	// for the break to take. "two." and "four." carry the terminator.
 	words := []sttWord{
-		{Start: 0.0, End: 0.3, Word: "one"},
-		{Start: 0.3, End: 0.6, Word: " two"},
-		// paragraph silence 0.6-1.4 (0.8s)
-		{Start: 1.4, End: 1.7, Word: " three"},
-		{Start: 1.7, End: 2.0, Word: " four"},
-		// paragraph silence 2.0-3.0 (1.0s)
-		{Start: 3.0, End: 3.3, Word: " five"},
+		{Start: 0.0, End: 0.3, Word: "One"},
+		{Start: 0.3, End: 0.6, Word: " two."},
+		// paragraph silence 0.6-1.4 (0.8s) — "two." ends a sentence
+		{Start: 1.4, End: 1.7, Word: " Three"},
+		{Start: 1.7, End: 2.0, Word: " four."},
+		// paragraph silence 2.0-3.0 (1.0s) — "four." ends a sentence
+		{Start: 3.0, End: 3.3, Word: " Five"},
 	}
 	sc := &sttSidecar{
 		Version: 2,
@@ -475,41 +480,104 @@ func TestDetectParagraphsFromSilences_V2(t *testing.T) {
 func TestBuildChapterContentV2_UsesSilences(t *testing.T) {
 	// Words with ZERO gaps (simulating Whisper within-segment interpolation).
 	// v1 would miss the paragraph break; v2 catches it via the silence event.
+	// "world." carries a period — the punctuation gate accepts the break.
 	words := []sttWord{
-		{Start: 0.0, End: 0.3, Word: "hello"},
-		{Start: 0.3, End: 0.6, Word: " world"},
-		{Start: 0.6, End: 0.9, Word: " next"}, // Whisper says no gap, but silence event says 0.7s pause
-		{Start: 0.9, End: 1.2, Word: " sentence"},
+		{Start: 0.0, End: 0.3, Word: "Hello"},
+		{Start: 0.3, End: 0.6, Word: " world."},
+		{Start: 0.6, End: 0.9, Word: " Next"}, // Whisper says no gap, but silence event says 0.7s pause
+		{Start: 0.9, End: 1.2, Word: " sentence."},
 	}
 	silences := []sttSilence{
 		{Start: 0.55, End: 0.85, Duration: 0.30, Kind: "sentence"},
 		{Start: 0.55, End: 0.85, Duration: 0.70, Kind: "paragraph"}, // the real one
 	}
-	// v2 path: paragraph break after "world" (word 1, before word 2).
+	// v2 path: paragraph break after "world." (word 1, before word 2).
 	got := buildChapterContentByIdxWithSilences(words, silences, 0, 4)
-	want := "hello world\n\nnext sentence"
+	want := "Hello world.\n\nNext sentence."
 	if got != want {
 		t.Errorf("v2 builder: got %q, want %q", got, want)
 	}
 	// v1 path: no silences → word-gap math → no break (all 0s gaps).
 	gotV1 := buildChapterContentByIdxWithSilences(words, nil, 0, 4)
-	wantV1 := "hello world next sentence"
+	wantV1 := "Hello world. Next sentence."
 	if gotV1 != wantV1 {
 		t.Errorf("v1 builder: got %q, want %q", gotV1, wantV1)
+	}
+}
+
+// Regression: Norm Macdonald ch21 had paragraph-grade silences sitting
+// inside the chapter title region ("Chapter 21 [0.66s] The Lost Days I
+// [2.2s] awaken..."), producing reader text like
+//   Chapter 21 The
+//
+//   Lost Days I
+//
+//   awaken from my blackout...
+// The punctuation gate on detectParagraphsFromSilences and
+// buildChapterContentByIdxWithSilences kills those breaks because "The"
+// and "I" don't end in .!? — the only break that survives is the real
+// one at "hangover." → "As always..." (where the word ends in a period).
+func TestSilenceParagraphBreaksRequireSentenceEnd(t *testing.T) {
+	words := []sttWord{
+		{Start: 0.00, End: 0.32, Word: " Chapter"},
+		{Start: 0.32, End: 0.74, Word: " 21"},
+		// silence 1: 0.74-1.40 (paragraph kind) — sits between "21" and "The".
+		// "21" has no terminator → should NOT cause a paragraph break.
+		{Start: 1.40, End: 1.62, Word: " The"},
+		{Start: 1.62, End: 1.92, Word: " Lost"},
+		{Start: 1.92, End: 2.24, Word: " Days"},
+		{Start: 2.24, End: 2.54, Word: " I"},
+		// silence 2: 2.54-4.84 (paragraph kind, real title-to-body pause).
+		// "I" has no terminator → should NOT cause a paragraph break either
+		// (the title-end silence is consumed by the title extractor, not the
+		// paragraph splitter).
+		{Start: 4.84, End: 5.10, Word: " awaken"},
+		{Start: 5.10, End: 5.30, Word: " from"},
+		{Start: 5.30, End: 5.50, Word: " my"},
+		{Start: 5.50, End: 5.90, Word: " blackout"},
+		{Start: 5.90, End: 6.10, Word: " without"},
+		{Start: 6.10, End: 6.62, Word: " hangover."},
+		// silence 3: 6.62-7.30 (paragraph kind, real body sentence break).
+		// "hangover." ends a sentence → SHOULD cause a paragraph break.
+		{Start: 7.30, End: 7.50, Word: " As"},
+		{Start: 7.50, End: 7.80, Word: " always."},
+	}
+	sils := []sttSilence{
+		{Start: 0.74, End: 1.40, Duration: 0.66, Kind: "paragraph"},
+		{Start: 2.54, End: 4.84, Duration: 2.30, Kind: "paragraph"},
+		{Start: 6.62, End: 7.30, Duration: 0.68, Kind: "paragraph"},
+	}
+	got := buildChapterContentByIdxWithSilences(words, sils, 0, len(words))
+	want := "Chapter 21 The Lost Days I awaken from my blackout without hangover.\n\nAs always."
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+
+	sc := &sttSidecar{Version: 2, Words: words, Silences: sils}
+	paras := detectParagraphsFromSilences(sc, 0, len(words))
+	if len(paras) != 2 {
+		t.Fatalf("want 2 paragraphs, got %d: %+v", len(paras), paras)
+	}
+	// Both paragraphs are chapter-local word-index ranges. The break lands
+	// at the first word AFTER the silence ("As" at index 12).
+	if paras[0].start != 0 || paras[0].end != 12 || paras[1].start != 12 || paras[1].end != 14 {
+		t.Errorf("para boundaries wrong: got %+v", paras)
 	}
 }
 
 // Content builder should insert \n\n at pause boundaries so the FE can
 // split on double-newline.
 func TestBuildChapterContentByIdx_InsertsParagraphBreaks(t *testing.T) {
+	// "world." carries a period — the v1 word-gap path's punctuation
+	// gate accepts the break.
 	words := []sttWord{
-		{Start: 0, End: 0.5, Word: "hello"},
-		{Start: 0.5, End: 1.0, Word: " world"},
-		{Start: 1.8, End: 2.3, Word: "next"}, // 0.8s gap → paragraph break
-		{Start: 2.3, End: 2.8, Word: " sentence"},
+		{Start: 0, End: 0.5, Word: "Hello"},
+		{Start: 0.5, End: 1.0, Word: " world."},
+		{Start: 1.8, End: 2.3, Word: "Next"}, // 0.8s gap → paragraph break
+		{Start: 2.3, End: 2.8, Word: " sentence."},
 	}
 	content := buildChapterContentByIdx(words, 0, len(words))
-	want := "hello world\n\nnext sentence"
+	want := "Hello world.\n\nNext sentence."
 	if content != want {
 		t.Errorf("want %q, got %q", want, content)
 	}

@@ -668,6 +668,13 @@ func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 // events directly and returns idxRange entries for each text chunk between
 // consecutive paragraph silences. Much cleaner than v1's word-gap math,
 // and uses acoustic ground truth rather than Whisper interpolation.
+//
+// A silence ONLY breaks paragraphs when the word before it ends with a
+// sentence-terminating punctuation mark. Narrators pause mid-title and
+// mid-sentence for emphasis, and Whisper drift can place a real
+// title-to-body silence inside the title's reported word range. Gating on
+// punctuation kills false breaks like "Chapter 21 The | Lost Days I |
+// awaken from my blackout" — the words "The" and "I" don't end on .!?.
 func detectParagraphsFromSilences(sc *sttSidecar, chapStart, chapEnd int) []idxRange {
 	if !sc.isV2() || chapEnd <= chapStart {
 		return nil
@@ -680,11 +687,26 @@ func detectParagraphsFromSilences(sc *sttSidecar, chapStart, chapEnd int) []idxR
 		if sil.Kind != "paragraph" && sil.Kind != "chapter" {
 			continue
 		}
-		wi := wordAtOrAfter(sc.Words, sil.End)
-		if wi > chapStart && wi < chapEnd {
-			if len(boundaries) == 0 || wi > boundaries[len(boundaries)-1] {
-				boundaries = append(boundaries, wi)
+		// Use sil.Start (not End) to find the speaking word: Whisper often
+		// drifts the next word's Start into the silence's End range
+		// ("hangover." [silence] " As" where " As" Start sits inside the
+		// silence), so wordAtOrAfter(End) would skip past the real
+		// preceding word and check the wrong punctuation. Mirror the
+		// content builder: locate j where words[j+1].Start >= sil.Start.
+		wi := -1
+		for j := chapStart; j < chapEnd-1; j++ {
+			if sc.Words[j+1].Start >= sil.Start {
+				if sc.Words[j].Start < sil.Start && endsAtSentence(sc.Words[j].Word) {
+					wi = j + 1
+				}
+				break
 			}
+		}
+		if wi <= chapStart || wi >= chapEnd {
+			continue
+		}
+		if len(boundaries) == 0 || wi > boundaries[len(boundaries)-1] {
+			boundaries = append(boundaries, wi)
 		}
 	}
 	boundaries = append(boundaries, chapEnd)
@@ -698,6 +720,26 @@ func detectParagraphsFromSilences(sc *sttSidecar, chapStart, chapEnd int) []idxR
 		})
 	}
 	return out
+}
+
+// endsAtSentence reports whether `word` ends with sentence-terminating
+// punctuation — the signal that a paragraph break following it is safe.
+// Handles trailing close-quotes/parens too: "Hello." → true, "Hello.'" →
+// true. Used by paragraph detection to suppress breaks that would land
+// mid-sentence (narrator pauses, Whisper drift inside chapter titles).
+func endsAtSentence(word string) bool {
+	w := strings.TrimSpace(word)
+	if w == "" {
+		return false
+	}
+	// Strip trailing close-quote / close-paren characters so "Hello.'"
+	// and "Hello.)" still count as sentence-end on the period inside.
+	w = strings.TrimRight(w, "\"')”’")
+	if w == "" {
+		return false
+	}
+	last := w[len(w)-1]
+	return last == '.' || last == '!' || last == '?'
 }
 
 // wordAtOrAfter returns the index of the first word whose start time is
@@ -1175,7 +1217,7 @@ func detectParagraphsFromPauses(words []sttWord, start, end int) []idxRange {
 	paraStart := start
 	for i := start; i < end-1; i++ {
 		gap := words[i+1].Start - words[i].End
-		if gap >= PARAGRAPH_PAUSE_SECS {
+		if gap >= PARAGRAPH_PAUSE_SECS && endsAtSentence(words[i].Word) {
 			paras = append(paras, idxRange{paraStart - start, i + 1 - start})
 			paraStart = i + 1
 		}
@@ -1512,7 +1554,7 @@ func buildChapterContentByIdxWithSilences(words []sttWord, silences []sttSilence
 			// last word whose Start < silence.Start.
 			for j := start; j < end-1; j++ {
 				if words[j+1].Start >= sil.Start {
-					if words[j].Start < sil.Start {
+					if words[j].Start < sil.Start && endsAtSentence(words[j].Word) {
 						paraBreakAfter[j] = true
 					}
 					break
@@ -1540,9 +1582,9 @@ func buildChapterContentByIdxWithSilences(words []sttWord, silences []sttSilence
 		if paraBreakAfter != nil {
 			insertBreak = paraBreakAfter[i]
 		} else {
-			// v1 fallback: word-gap math.
+			// v1 fallback: word-gap math. Same sentence-end guard.
 			gap := words[i+1].Start - words[i].End
-			insertBreak = gap >= PARAGRAPH_PAUSE_SECS
+			insertBreak = gap >= PARAGRAPH_PAUSE_SECS && endsAtSentence(words[i].Word)
 		}
 		if insertBreak {
 			b.WriteString("\n\n")
