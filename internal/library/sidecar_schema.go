@@ -47,9 +47,9 @@ type SidecarV3 struct {
 // SidecarSource describes one file in a multi-file audiobook timeline.
 // OffsetSecs is where this file's audio begins in the concatenated stream.
 type SidecarSource struct {
-	File         string  `json:"file"`
-	OffsetSecs   float64 `json:"offset_secs"`
-	DurationSecs float64 `json:"duration_secs"`
+	Filename string  `json:"filename"`
+	StartSec float64 `json:"start_sec"`
+	Duration float64 `json:"duration"`
 }
 
 // SidecarWord is a single timestamped token from Whisper.

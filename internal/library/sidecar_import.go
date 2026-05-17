@@ -62,10 +62,14 @@ type sttChapter struct {
 	Src       string  `json:"src,omitempty"` // "part" | "chapter" (empty = chapter by default)
 }
 
+// sttSource matches what stt-cli actually emits (cmd/stt-cli/main.go
+// sourceInfo): filename + start_sec on the concatenated timeline +
+// per-file duration. Previously these tags read "file"/"offset_secs"/
+// "duration_secs" and parsed as zero values from real sidecars.
 type sttSource struct {
-	File       string  `json:"file"`
-	OffsetSecs float64 `json:"offset_secs"`
-	Duration   float64 `json:"duration_secs"`
+	Filename string  `json:"filename"`
+	StartSec float64 `json:"start_sec"`
+	Duration float64 `json:"duration"`
 }
 
 // isV2 reports whether the sidecar uses the v2 schema (with silence events).
@@ -275,6 +279,14 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 	// 438 Days has after the normal STT → transcript-split pipeline.
 	if err := ensureTranscriptBook(store, workID, audioBookID, &sc); err != nil {
 		log.Printf("sidecar-import: transcript book creation failed: %v", err)
+	}
+
+	// Detect spans where Whisper produced nothing despite audio being
+	// present — chunked-STT failures leave silent holes that otherwise
+	// only surface as bare chapter titles + empty content. Persist on
+	// the audio book row for the UI / retry endpoint to consume.
+	if err := PersistTranscriptionGaps(store, audioBookID, &sc); err != nil {
+		log.Printf("sidecar-import: transcription gap analysis failed: %v", err)
 	}
 
 	log.Printf("sidecar-import: work=%d book=%d words=%d chapters=%d (%s)",

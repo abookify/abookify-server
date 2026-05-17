@@ -71,7 +71,7 @@ func TestUpgradeFromV2(t *testing.T) {
 	if len(v3.Silences) != 1 || v3.Silences[0].Kind != "chapter" {
 		t.Errorf("silences not preserved: %+v", v3.Silences)
 	}
-	if len(v3.Sources) != 1 || v3.Sources[0].File != "audio.mp3" {
+	if len(v3.Sources) != 1 || v3.Sources[0].Filename != "audio.mp3" {
 		t.Errorf("sources not preserved: %+v", v3.Sources)
 	}
 	// v2 sample had no chapters so metadata.chapters stays nil

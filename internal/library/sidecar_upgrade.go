@@ -110,9 +110,9 @@ func UpgradeToV3(data []byte) (*SidecarV3, error) {
 	v3.Sources = make([]SidecarSource, len(legacy.Sources))
 	for i, src := range legacy.Sources {
 		v3.Sources[i] = SidecarSource{
-			File:         src.File,
-			OffsetSecs:   src.OffsetSecs,
-			DurationSecs: src.DurationSecs,
+			Filename: src.File,
+			StartSec: src.OffsetSecs,
+			Duration: src.DurationSecs,
 		}
 	}
 

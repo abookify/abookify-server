@@ -401,6 +401,11 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE books ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
+		// JSON list of transcription gap spans (silently-skipped Whisper
+		// chunks). Empty string = no gap analysis done yet; "[]" = analyzed,
+		// none found. Populated by library.DetectTranscriptionGaps during
+		// sidecar import.
+		`ALTER TABLE books ADD COLUMN transcription_gaps TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -923,6 +928,26 @@ func (s *Store) UpdateChapterTitle(bookID int64, index int, title string) error 
 	_, err := s.db.Exec(`UPDATE chapters SET title = ? WHERE book_id = ? AND index_num = ?`,
 		title, bookID, index)
 	return err
+}
+
+// SaveTranscriptionGaps persists the JSON-encoded list of audio spans
+// where Whisper produced no transcribed output. Empty list ("[]") is a
+// valid value — it means analysis ran and found no gaps.
+func (s *Store) SaveTranscriptionGaps(bookID int64, gapsJSON string) error {
+	_, err := s.db.Exec(`UPDATE books SET transcription_gaps = ? WHERE id = ?`,
+		gapsJSON, bookID)
+	return err
+}
+
+// GetTranscriptionGaps returns the JSON string previously persisted by
+// SaveTranscriptionGaps. Empty string means "not analyzed yet".
+func (s *Store) GetTranscriptionGaps(bookID int64) (string, error) {
+	var out string
+	err := s.db.QueryRow(`SELECT transcription_gaps FROM books WHERE id = ?`, bookID).Scan(&out)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return out, err
 }
 
 // HasChaptersMissingHTML returns true if any chapter for this book has

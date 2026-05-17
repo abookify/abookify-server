@@ -96,6 +96,46 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/works/{id}/transcription-gaps — list audio spans where
+// Whisper produced no output. Empty list = analyzed cleanly; missing
+// = pre-gap-detection sidecar import, reprocess the work to populate.
+func (s *Server) handleTranscriptionGaps(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid work id", http.StatusBadRequest)
+		return
+	}
+	work, err := s.store.GetWork(id)
+	if err != nil || work == nil {
+		http.Error(w, "work not found", http.StatusNotFound)
+		return
+	}
+	type bookGaps struct {
+		BookID   int64           `json:"book_id"`
+		Filename string          `json:"filename"`
+		Analyzed bool            `json:"analyzed"`
+		Gaps     json.RawMessage `json:"gaps"`
+	}
+	var out []bookGaps
+	for _, b := range work.AudioFiles {
+		raw, err := s.store.GetTranscriptionGaps(b.ID)
+		if err != nil {
+			continue
+		}
+		entry := bookGaps{BookID: b.ID, Filename: b.Filename}
+		if raw == "" {
+			entry.Analyzed = false
+			entry.Gaps = json.RawMessage("[]")
+		} else {
+			entry.Analyzed = true
+			entry.Gaps = json.RawMessage(raw)
+		}
+		out = append(out, entry)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 // POST /api/books/{id}/embed — backfill chunk embeddings for one book.
 // Idempotent (skips chunks that already have embeddings). Returns counts.
 func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {
