@@ -30,6 +30,7 @@ func main() {
 	whisperURL := flag.String("whisper", "http://localhost:5200", "Whisper STT service URL")
 	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
+	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
 	flag.Parse()
 
 	if *audioPath == "" {
@@ -81,6 +82,21 @@ func main() {
 		for i, f := range files {
 			log.Printf("  %d. %s (%.1f min)", i+1, filepath.Base(f), durations[i]/60)
 		}
+	}
+
+	// Selective retry: only retranscribe the files named in --redo-files,
+	// merging their fresh words+silences over the existing sidecar's
+	// entries for those file ranges.
+	if *redoFiles != "" {
+		if *output == "" {
+			log.Fatalf("--redo-files requires --output (or default sidecar path) — must point to an existing sidecar to merge into")
+		}
+		redoStart := time.Now()
+		if err := retranscribeAndMerge(client, files, durations, *output, *redoFiles); err != nil {
+			log.Fatalf("redo: %v", err)
+		}
+		log.Printf("Total: redo run finished in %s", time.Since(redoStart).Truncate(time.Second))
+		return
 	}
 
 	start := time.Now()
