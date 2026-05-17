@@ -891,12 +891,66 @@ func extractChapterTitle(words []sttWord, silences []sttSilence, rawTokens, disp
 	if subtitle == "" {
 		return base
 	}
+	// If the loop terminated on a silence (not a punctuation mark) and the
+	// last word is a short body-starter ("The", "It", "Kramer was..."), it
+	// almost certainly bled in from the first sentence of the chapter body.
+	// Drop it before casing so we don't lock weird artifacts into the TOC.
+	if !subtitleEndsOnPunctuation(subTokens) {
+		subtitle = trimTrailingBleedIn(subtitle)
+	}
 	subtitle = normalizeTitleCase(subtitle)
 	full := base + ": " + subtitle
 	if len(full) > 80 {
 		full = full[:80] + "…"
 	}
 	return full
+}
+
+// bleedInStarters are short tokens that, when they appear as the LAST word of
+// a title extracted by silence (not punctuation), almost always belong to the
+// first sentence of the chapter body. They're either pronouns or determiners
+// that start a sentence — chapter titles rarely END on these words.
+var bleedInStarters = map[string]bool{
+	"the": true, "a": true, "an": true,
+	"it": true, "he": true, "she": true, "they": true, "we": true, "you": true,
+	"his": true, "her": true, "their": true, "there": true, "this": true,
+	"that": true, "these": true, "those": true,
+	"then": true, "and": true, "but": true, "or": true, "so": true, "as": true,
+	"in": true, "on": true, "at": true, "to": true, "by": true, "for": true,
+	"of": true, "with": true, "from": true, "now": true,
+}
+
+// trimTrailingBleedIn removes a single trailing word from a candidate
+// subtitle if it looks like a sentence-starter from the chapter body.
+// Conservative: only one trailing token, only from a short allowlist of
+// common pronouns/determiners/conjunctions — so legitimate titles like
+// "A Study in Scarlet" survive (those have the word in the middle, not at
+// the end). We only trim if the result is still a non-empty title.
+func trimTrailingBleedIn(subtitle string) string {
+	fields := strings.Fields(subtitle)
+	if len(fields) < 2 {
+		return subtitle
+	}
+	last := strings.ToLower(strings.TrimRight(fields[len(fields)-1], ".,!?:;"))
+	if !bleedInStarters[last] {
+		return subtitle
+	}
+	return strings.TrimSpace(strings.Join(fields[:len(fields)-1], " "))
+}
+
+// subtitleEndsOnPunctuation reports whether the title-end signal was a
+// sentence-terminating punctuation mark on the last token. Used to decide
+// whether the last word might be bled-in body content.
+func subtitleEndsOnPunctuation(subTokens []string) bool {
+	if len(subTokens) == 0 {
+		return false
+	}
+	last := strings.TrimSpace(subTokens[len(subTokens)-1])
+	if last == "" {
+		return false
+	}
+	ch := last[len(last)-1]
+	return ch == '.' || ch == '!' || ch == '?'
 }
 
 // normalizeTitleCase smooths over case-inconsistencies in titles transcribed
@@ -909,21 +963,25 @@ func normalizeTitleCase(s string) string {
 	if s == "" {
 		return s
 	}
-	// Heuristic: if the string contains BOTH uppercase and lowercase letters
-	// already, leave it alone (it's intentionally mixed — proper nouns,
-	// acronyms, or just normal narration). If it's ALL caps or ALL lowercase,
-	// re-case it as Title Case for consistency in the TOC.
-	hasUpper := false
-	hasLower := false
+	// Count case letter ratios. "Intentionally mixed case" (proper nouns,
+	// acronyms) leaves us alone, but a string that's >70% uppercase is
+	// emphatic narration ("CHAPTER SEVEN: CATCHING THE FISH The") where a
+	// single bled-in or function word makes it look mixed — recase those.
+	upper, lower := 0, 0
 	for _, r := range s {
 		if r >= 'A' && r <= 'Z' {
-			hasUpper = true
+			upper++
 		} else if r >= 'a' && r <= 'z' {
-			hasLower = true
+			lower++
 		}
-		if hasUpper && hasLower {
+	}
+	if upper > 0 && lower > 0 {
+		total := upper + lower
+		// Only bail when truly mixed — keep "iPhone", "DNA", "Title Case".
+		if upper*10 < total*7 {
 			return s
 		}
+		// >=70% uppercase falls through to recasing.
 	}
 	// All same case — re-case as Title Case. Small connecting words stay
 	// lowercase in the middle but the first/last word always capitalizes.

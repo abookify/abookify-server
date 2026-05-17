@@ -316,6 +316,69 @@ func TestInferChapterTitle(t *testing.T) {
 		}
 	})
 
+	// Bonfire ch26 pattern: narrator runs a single body pronoun ("It") into
+	// the title without a real pause, then a body pause after. Without the
+	// trim we'd ship "Death, New York Style It" in the TOC. The trim
+	// removes the trailing bleed because the title ended on a silence, not
+	// a punctuation mark, and "It" is a sentence-starter.
+	t.Run("bonfire ch26 trailing It bled in from body", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 400.0, End: 400.4, Word: " Chapter"},
+			{Start: 400.4, End: 400.8, Word: " 26."},
+			{Start: 401.4, End: 401.7, Word: " Death,"},
+			{Start: 401.7, End: 402.0, Word: " New"},
+			{Start: 402.0, End: 402.2, Word: " York"},
+			{Start: 402.2, End: 402.6, Word: " Style"},
+			{Start: 402.6, End: 402.8, Word: " It"},
+			{Start: 403.5, End: 403.8, Word: " happened"},
+		}
+		got := inferChapterTitle(ws, 0, 26)
+		want := "Chapter 26: Death, New York Style"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Bonfire ch7 pattern: all-caps narrator delivery — "CATCHING THE FISH"
+	// — with a trailing "The" bled in. Trim the bleed first, then the
+	// recased-from-all-caps subtitle becomes "Catching the Fish".
+	t.Run("bonfire ch7 all-caps title with bled-in The", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 500.0, End: 500.4, Word: " CHAPTER"},
+			{Start: 500.4, End: 500.8, Word: " SEVEN."},
+			{Start: 501.4, End: 501.7, Word: " CATCHING"},
+			{Start: 501.7, End: 502.0, Word: " THE"},
+			{Start: 502.0, End: 502.3, Word: " FISH"},
+			{Start: 502.3, End: 502.5, Word: " The"},
+			{Start: 503.4, End: 503.7, Word: " day"},
+		}
+		got := inferChapterTitle(ws, 0, 7)
+		want := "Chapter 7: Catching the Fish"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	// Trim must NOT misfire when the title legitimately ends with a content
+	// word — "Chapter 5: A Study in Scarlet" should keep "Scarlet" because
+	// it's not in the bleedInStarters allowlist.
+	t.Run("legit title ending on content word is preserved", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 600.0, End: 600.4, Word: " Chapter"},
+			{Start: 600.4, End: 600.8, Word: " 5."},
+			{Start: 601.4, End: 601.6, Word: " A"},
+			{Start: 601.6, End: 602.0, Word: " Study"},
+			{Start: 602.0, End: 602.2, Word: " in"},
+			{Start: 602.2, End: 602.6, Word: " Scarlet"},
+			{Start: 603.4, End: 603.7, Word: " The"}, // body pause + body
+		}
+		got := inferChapterTitle(ws, 0, 5)
+		want := "Chapter 5: A Study in Scarlet"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
 	// Retired: the legacy "cut at first big pause anywhere" rule used to
 	// accept tight-read titles that then paused before body. That rule gave
 	// lots of false positives where mid-body pauses got treated as title

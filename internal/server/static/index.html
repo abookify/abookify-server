@@ -367,7 +367,7 @@
       background: #f5f0e8;
       word-wrap: break-word;
       border-top: 1px solid var(--border);
-      hyphens: auto;
+      hyphens: manual;
     }
     /* Wrap child content in a max-width column so lines don't run the full
        pane width. Applies in both embedded and fullscreen modes. */
@@ -1889,6 +1889,7 @@
       let currentIdx = 0;
       let realChapterCounter = 0;
       let currentRealChapter = 1;
+      let activeRow = null;
       rows.forEach((row, i) => {
         if (row.classList.contains('chapter-row-part')) return;
         realChapterCounter++;
@@ -1904,9 +1905,13 @@
         } else {
           pct = ((currentBookSec - start) / (end - start)) * 100;
           currentRealChapter = realChapterCounter;
+          activeRow = row;
         }
         fill.style.width = pct + '%';
       });
+      // Highlight the chapter you're currently in so the TOC shows "where I
+      // was" alongside the per-chapter progress fills.
+      rows.forEach(r => r.classList.toggle('active', r === activeRow));
       // Update summary
       const curEl = document.getElementById('toc-current-' + bookId);
       const pctEl = document.getElementById('toc-pct-' + bookId);
@@ -2437,9 +2442,20 @@
     // elements, and caches that we've done so. Previously-visited
     // paragraphs stay wrapped (cheap to keep; unwrap adds complexity).
     function renderParagraphedTranscript(reader, timestamps) {
-      const raw = reader.textContent || '';
-      // Split on paragraph markers. Importer inserts "\n\n" at pauses.
-      const paraTexts = raw.split(/\n\n+/).filter(p => p.trim().length > 0);
+      // Prefer existing <p> structure (renderChapterContent wraps plain-text
+      // transcripts in <p> by paragraph). textContent strips <p> boundaries
+      // with no separator, so reading raw text fuses paragraphs into one
+      // blob — kills karaoke + makes the reader look like "...hangover.As".
+      let paraTexts;
+      const existingPs = reader.querySelectorAll('p');
+      if (existingPs.length > 0) {
+        paraTexts = Array.from(existingPs)
+          .map(p => p.textContent.trim())
+          .filter(p => p.length > 0);
+      } else {
+        const raw = reader.textContent || '';
+        paraTexts = raw.split(/\n\n+/).filter(p => p.trim().length > 0);
+      }
       if (paraTexts.length === 0) {
         karaokeHighlightSafe = false;
         return;
