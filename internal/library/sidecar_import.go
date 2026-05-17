@@ -406,11 +406,24 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 			if title == "" {
 				title = fmt.Sprintf("Chapter %d", i+1)
 			}
+			// Advance the chapter's start past the narrator's title
+			// announcement so the body text doesn't lead with
+			// "Chapter 21 The Lost Days I awaken from my blackout...".
+			// Parts (section headers) have no body so leave them alone.
+			startWord := ch.WordIdx
+			startSec := ch.Start
+			if ch.Src != "part" {
+				skip := titleAnnouncementLength(sc.Words, sc.Silences, startWord)
+				if skip > 0 && startWord+skip < len(sc.Words) {
+					startWord += skip
+					startSec = sc.Words[startWord].Start
+				}
+			}
 			ranges = append(ranges, sttChapter{
 				Title:     title,
-				Start:     ch.Start,
+				Start:     startSec,
 				End:       end,
-				WordIdx:   ch.WordIdx,
+				WordIdx:   startWord,
 				WordCount: ch.WordCount,
 				Src:       ch.Src, // propagate "part" tag through the pipeline
 			})
@@ -1060,6 +1073,76 @@ var sectionPrefixes = []string{
 // again between the title and the first sentence of body text. 0.6s matches
 // the paragraph-break threshold which is roughly the same acoustic signature.
 const TITLE_PAUSE_SECS = 0.6
+
+// titleAnnouncementLength returns the number of words at `start` that
+// constitute the narrator's title announcement ("Chapter 21. The Lost
+// Days." / "Prologue."), or 0 when no announcement pattern is found.
+//
+// Mirrors the title-end logic in extractChapterTitle: walks tokens
+// starting at start, breaking on the first sentence terminator (.!?)
+// OR a silence-aware gap >= TITLE_END_PAUSE. Returns the count of words
+// consumed (start..start+count-1 = title region; start+count = body
+// start). Caller can then narrow the chapter's word range so the body
+// text excludes the spoken title.
+//
+// Returns 0 for chapters that don't begin with a recognized section
+// prefix — the content range stays as-is for "Prelude" (synthetic) and
+// for chapters where narrator-pattern detection didn't pick up a real
+// announcement.
+func titleAnnouncementLength(words []sttWord, silences []sttSilence, start int) int {
+	const peek = 20
+	if start < 0 || start >= len(words) {
+		return 0
+	}
+	end := start + peek
+	if end > len(words) {
+		end = len(words)
+	}
+	if start+1 >= end {
+		return 0
+	}
+	first := strings.ToLower(strings.TrimRight(strings.TrimSpace(words[start].Word), ".,!?:;"))
+	// Single-word section markers ("Prologue", "Foreword", ...): the
+	// announcement is just that one word. Body starts at start+1.
+	for _, p := range sectionPrefixes {
+		if first == p && p != "chapter" && p != "part" && p != "book" {
+			return 1
+		}
+	}
+	// "Chapter|Part|Book N [subtitle]" — body starts after the last title
+	// word. Walk forward until we hit a sentence terminator OR a real
+	// pause (matching TITLE_END_PAUSE = 0.6s used by extractChapterTitle).
+	isCh := false
+	for _, p := range []string{"chapter", "part", "book"} {
+		if first == p {
+			isCh = true
+			break
+		}
+	}
+	if !isCh {
+		return 0
+	}
+	const titleEndPause = 0.6
+	for j := start + 2; j < end; j++ {
+		tok := strings.TrimSpace(words[j].Word)
+		if tok != "" {
+			last := tok[len(tok)-1]
+			if last == '.' || last == '!' || last == '?' {
+				return j - start + 1
+			}
+		}
+		if j+1 < end {
+			gap := gapBetweenWords(words, silences, j, j+1)
+			if gap >= titleEndPause {
+				return j - start + 1
+			}
+		}
+	}
+	// No reliable title-end signal in the peek window — narrator may
+	// have run straight into body. Trim only the prefix + number so we
+	// at least drop "Chapter 21".
+	return 2
+}
 
 // inferChapterTitle reads the first ~15 words starting at `start` and
 // returns a human-sounding chapter title. Detection priority:
