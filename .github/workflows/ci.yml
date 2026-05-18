@@ -7,25 +7,45 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
+  go:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-
-      - name: Build server
-        run: go build -buildvcs=false ./cmd/abookify
-
-      - name: Build CLI tools
-        run: |
-          CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o bin/stt-cli ./cmd/stt-cli
-          CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o bin/tts-cli ./cmd/tts-cli
-
-      - name: Run tests
-        run: go test -buildvcs=false ./internal/... -v -count=1
+          # setup-go caches GOPATH/pkg/mod by go.sum; cuts ~20s off
+          # subsequent runs (matters here because the sqlite test files
+          # alone take 25s — most of which is sqlite Open per test).
+          cache: true
 
       - name: Vet
         run: go vet ./...
+
+      - name: Build all binaries
+        run: go build -buildvcs=false ./...
+
+      - name: Run Go tests
+        run: go test -buildvcs=false ./... -count=1
+
+  shared-js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No package.json — the shared modules are dep-free ES modules
+      # tested under Node's built-in test runner. So `npm ci` would be
+      # a no-op; we skip it. If we add a dev dep later (jsdom,
+      # vitest), insert it here behind a hashFiles cache key.
+      - name: Run shared module tests
+        run: |
+          node --test \
+            internal/server/static/shared/karaoke.test.js \
+            internal/server/static/shared/reader.test.js
