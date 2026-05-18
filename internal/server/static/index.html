@@ -1177,7 +1177,8 @@
   <script type="module">
     import * as karaoke from '/shared/karaoke.js';
     import * as fmt from '/shared/format.js';
-    window.shared = { ...karaoke, ...fmt };
+    import * as reader from '/shared/reader.js';
+    window.shared = { ...karaoke, ...fmt, ...reader };
     // Signal to anyone waiting on the bridge that it's ready.
     window.dispatchEvent(new Event('shared-ready'));
   </script>
@@ -2056,22 +2057,20 @@
     // Renders chapter content in the reader pane. Uses sanitized HTML when
     // available (EPUB sources), falls back to plaintext for transcripts.
     function renderChapterContent(reader, cached) {
-      // Wrap plain-text content in <p> elements so the `.reader-content > *`
-      // max-width rule applies — otherwise the text fills the full pane
-      // width (no max-width on bare text nodes).
-      const wrapPlain = (text) => {
-        const paras = (text || '').split(/\n\n+/).filter(p => p.trim());
-        if (paras.length === 0) return '';
-        return paras.map(p => '<p>' + escapeHtml(p).replace(/\n/g, '<br>') + '</p>').join('');
-      };
+      // Plain-text → <p> wrapping is in shared/reader.js (tested) so the
+      // same logic can be reused by mobile and exercised under node:test.
+      const toHTML = window.shared && window.shared.htmlForPlainText
+        ? window.shared.htmlForPlainText
+        : (text) => (text || '').split(/\n\n+/).filter(p => p.trim())
+            .map(p => '<p>' + escapeHtml(p).replace(/\n/g, '<br>') + '</p>').join('');
       if (typeof cached === 'string') {
-        reader.innerHTML = wrapPlain(cached);
+        reader.innerHTML = toHTML(cached);
         return;
       }
       if (cached.html) {
         reader.innerHTML = cached.html;
       } else {
-        reader.innerHTML = wrapPlain(cached.text || '');
+        reader.innerHTML = toHTML(cached.text || '');
       }
     }
 
@@ -2572,54 +2571,35 @@
     // elements, and caches that we've done so. Previously-visited
     // paragraphs stay wrapped (cheap to keep; unwrap adds complexity).
     function renderParagraphedTranscript(reader, timestamps) {
-      // Prefer existing <p> structure (renderChapterContent wraps plain-text
-      // transcripts in <p> by paragraph). textContent strips <p> boundaries
-      // with no separator, so reading raw text fuses paragraphs into one
-      // blob — kills karaoke + makes the reader look like "...hangover.As".
-      let paraTexts;
-      const existingPs = reader.querySelectorAll('p');
-      if (existingPs.length > 0) {
-        paraTexts = Array.from(existingPs)
-          .map(p => p.textContent.trim())
-          .filter(p => p.length > 0);
-      } else {
-        const raw = reader.textContent || '';
-        paraTexts = raw.split(/\n\n+/).filter(p => p.trim().length > 0);
-      }
+      // Both pieces — DOM read + sync-anchored HTML build — live in
+      // shared/reader.js so they're covered by node:test. Inline fallback
+      // is kept in case the shared module hasn't loaded yet (unlikely
+      // since 'shared-ready' fires before this runs, but cheap insurance).
+      const sh = window.shared;
+      const paraTexts = sh && sh.extractReaderParagraphs
+        ? sh.extractReaderParagraphs(reader)
+        : Array.from(reader.querySelectorAll('p'))
+            .map(p => p.textContent.trim()).filter(p => p.length > 0);
       if (paraTexts.length === 0) {
         karaokeHighlightSafe = false;
         return;
       }
-
-      // Walk each paragraph's words and attribute them to sync timestamps
-      // by count. Words in the paragraph text and words in the timestamps
-      // list should be 1:1 for transcript content.
-      const paras = [];
-      let widx = 0;
-      for (const pt of paraTexts) {
-        const wordsInPara = pt.trim().split(/\s+/).length;
-        paras.push({
-          text: pt.trim(),
-          widxStart: widx,
-          widxEnd: widx + wordsInPara,
-        });
-        widx += wordsInPara;
+      const built = sh && sh.transcriptParagraphsHTML
+        ? sh.transcriptParagraphsHTML(paraTexts, timestamps)
+        : null;
+      if (!built) {
+        karaokeHighlightSafe = false;
+        return;
       }
-
-      // Guard: word-count mismatch against timestamps means our paragraph
-      // word counts have drifted. Log and fall back to non-sync rendering.
-      if (Math.abs(widx - timestamps.length) > timestamps.length * 0.05) {
-        console.warn(`Sync: paragraph word count ${widx} diverges from sync ${timestamps.length}; karaoke disabled for this chapter.`);
+      if (!built.karaokeSafe) {
+        console.warn(`Sync: paragraph word count ${built.totalWords} diverges from sync ${timestamps.length}; karaoke disabled for this chapter.`);
         karaokeHighlightSafe = false;
         reader.innerHTML = paraTexts.map(p => `<p>${escapeHtml(p)}</p>`).join('');
         return;
       }
-
-      reader.innerHTML = paras.map(p => (
-        `<p class="sync-para" data-widx-start="${p.widxStart}" data-widx-end="${p.widxEnd}">${escapeHtml(p.text)}</p>`
-      )).join('');
+      reader.innerHTML = built.html;
       karaokeHighlightSafe = true;
-      console.log(`Sync: transcript rendered as ${paras.length} paragraphs, ${widx} words total`);
+      console.log(`Sync: transcript rendered as ${built.paragraphCount} paragraphs, ${built.totalWords} words total`);
     }
 
     // Wrap a single paragraph's words into sync-span elements. Idempotent:
