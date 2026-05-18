@@ -88,6 +88,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/books/{id}/embed", s.handleEmbedBook)
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
+	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)

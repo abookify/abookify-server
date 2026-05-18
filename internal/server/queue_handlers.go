@@ -136,6 +136,63 @@ func (s *Server) handleTranscriptionGaps(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(out)
 }
 
+// GET /api/transcription-gaps/summary — one-shot rollup for the library
+// page: returns one entry per work that has at least one detected gap,
+// with the total missing time and a list of source files. The UI uses
+// this to decorate work cards with a warning badge without N+1
+// requests against the per-work endpoint.
+func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type summaryEntry struct {
+		WorkID         int64    `json:"work_id"`
+		TotalMissingS  float64  `json:"total_missing_sec"`
+		SegmentCount   int      `json:"segment_count"`
+		SourceFiles    []string `json:"source_files,omitempty"`
+	}
+	type gapShape struct {
+		StartSec    float64 `json:"start_sec"`
+		EndSec      float64 `json:"end_sec"`
+		DurationSec float64 `json:"duration_sec"`
+		SourceFile  string  `json:"source_file"`
+	}
+	var out []summaryEntry
+	for _, wk := range works {
+		var entry summaryEntry
+		seen := map[string]bool{}
+		for _, b := range wk.AudioFiles {
+			raw, err := s.store.GetTranscriptionGaps(b.ID)
+			if err != nil || raw == "" || raw == "[]" {
+				continue
+			}
+			var gaps []gapShape
+			if err := json.Unmarshal([]byte(raw), &gaps); err != nil {
+				continue
+			}
+			for _, g := range gaps {
+				entry.TotalMissingS += g.DurationSec
+				entry.SegmentCount++
+				if g.SourceFile != "" && !seen[g.SourceFile] {
+					entry.SourceFiles = append(entry.SourceFiles, g.SourceFile)
+					seen[g.SourceFile] = true
+				}
+			}
+		}
+		if entry.SegmentCount > 0 {
+			entry.WorkID = wk.ID
+			out = append(out, entry)
+		}
+	}
+	if out == nil {
+		out = []summaryEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 // POST /api/books/{id}/embed — backfill chunk embeddings for one book.
 // Idempotent (skips chunks that already have embeddings). Returns counts.
 func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {

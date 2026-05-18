@@ -126,6 +126,34 @@
     .media-pill.audio { background: rgba(233,69,96,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
+    .media-pill.gap-warn {
+      background: rgba(240, 165, 0, 0.15);
+      color: #b67400;
+      border: 1px solid rgba(240, 165, 0, 0.4);
+      cursor: pointer;
+    }
+    .media-pill.gap-warn:hover { background: rgba(240, 165, 0, 0.25); }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 500;
+    }
+    .modal {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.5rem; max-width: 560px; width: 92%;
+      max-height: 80vh; overflow-y: auto;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    }
+    .gap-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .gap-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); font-weight: 600; }
+    .gap-table td { padding: 4px 8px; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+    .gap-cmd {
+      background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 6px;
+      font-size: 0.78rem; overflow-x: auto; user-select: all;
+      border: 1px solid var(--border);
+    }
 
     /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
        author. Filled by hydrateWorkProgress() once positions arrive. */
@@ -1177,11 +1205,29 @@
       }
     }
 
+    // work_id → {total_missing_sec, segment_count, source_files[]}
+    // Populated by loadTranscriptionGapSummary; consumed by render() to
+    // decorate work cards with a warning pill.
+    let transcriptionGapsByWork = {};
+
+    async function loadTranscriptionGapSummary() {
+      try {
+        const res = await fetch('/api/transcription-gaps/summary');
+        const list = await res.json();
+        const map = {};
+        for (const entry of list) map[entry.work_id] = entry;
+        transcriptionGapsByWork = map;
+      } catch {
+        transcriptionGapsByWork = {};
+      }
+    }
+
     async function loadWorks() {
       try {
         const [worksRes] = await Promise.all([
           fetch('/api/works'),
           loadLLMConfig(),
+          loadTranscriptionGapSummary(),
         ]);
         allWorks = await worksRes.json();
         const totalFiles = allWorks.reduce((s, w) =>
@@ -1524,6 +1570,7 @@
                 ${work.has_text
                   ? `<span class="media-pill text">${textFiles.length} text</span>`
                   : `<span class="media-pill missing">no text</span>`}
+                ${renderGapBadge(work.id)}
               </div>
               <button class="work-menu-btn" id="menu-btn-${work.id}"
                 onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
@@ -1755,6 +1802,89 @@
 
     function escapeJs(str) {
       return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // Compact "2h 5m" / "32m" / "45s" formatting for gap durations.
+    function formatGapDuration(secs) {
+      const s = Math.round(secs);
+      if (s < 60) return s + 's';
+      const m = Math.round(s / 60);
+      if (m < 60) return m + 'm';
+      const h = Math.floor(m / 60);
+      const rem = m % 60;
+      return rem === 0 ? `${h}h` : `${h}h ${rem}m`;
+    }
+
+    // Pill markup for the work header — empty string when this work has
+    // no detected gaps. Click → showGapDetails modal.
+    function renderGapBadge(workId) {
+      const entry = transcriptionGapsByWork[workId];
+      if (!entry || !entry.segment_count) return '';
+      const label = `⚠ ${formatGapDuration(entry.total_missing_sec)} missing`;
+      return `<span class="media-pill gap-warn"
+        onclick="event.stopPropagation(); showGapDetails(${workId})"
+        title="Whisper produced no output for part of this book. Click for details.">${label}</span>`;
+    }
+
+    async function showGapDetails(workId) {
+      const work = allWorks.find(w => w.id === workId);
+      const title = work ? work.title : `Work ${workId}`;
+      let detail;
+      try {
+        const res = await fetch(`/api/works/${workId}/transcription-gaps`);
+        detail = await res.json();
+      } catch (e) {
+        alert('Could not load gap details: ' + e);
+        return;
+      }
+      const gaps = [];
+      for (const book of (detail || [])) {
+        for (const g of (book.gaps || [])) gaps.push(g);
+      }
+      if (!gaps.length) {
+        alert(`No gaps recorded for ${title}.`);
+        return;
+      }
+      const fileSet = new Set(gaps.map(g => g.source_file).filter(Boolean));
+      const fileList = Array.from(fileSet);
+      const rows = gaps.map(g =>
+        `<tr><td>${g.source_file || '(unknown)'}</td>` +
+        `<td>${fmtPlayerTime(g.start_sec)} – ${fmtPlayerTime(g.end_sec)}</td>` +
+        `<td>${formatGapDuration(g.duration_sec)}</td></tr>`
+      ).join('');
+      const cmd = fileList.length
+        ? `stt-cli --audio &lt;path-to-book&gt; --redo-files ${fileList.join(',')}`
+        : '';
+      const html = `
+        <div class="modal-backdrop" onclick="closeGapModal(event)">
+          <div class="modal" onclick="event.stopPropagation()">
+            <h2 style="margin-top:0">Transcription gaps</h2>
+            <p style="color:var(--text-muted)">${escapeHtml(title)}</p>
+            <table class="gap-table">
+              <thead><tr><th>File</th><th>Span</th><th>Length</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+            ${cmd ? `
+            <p style="margin-top:1rem">Fix by re-running Whisper on the affected files:</p>
+            <pre class="gap-cmd">${cmd}</pre>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.5rem">
+              After it finishes, hit Reprocess on this work to import the updated transcript.
+            </p>` : ''}
+            <div style="text-align:right;margin-top:1rem">
+              <button onclick="closeGapModal()">Close</button>
+            </div>
+          </div>
+        </div>`;
+      const host = document.createElement('div');
+      host.id = 'gap-modal-host';
+      host.innerHTML = html;
+      document.body.appendChild(host);
+    }
+
+    function closeGapModal(e) {
+      if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
+      const host = document.getElementById('gap-modal-host');
+      if (host) host.remove();
     }
 
     async function toggleWork(cardId, workId) {
