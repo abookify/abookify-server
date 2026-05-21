@@ -40,13 +40,22 @@ type Generator struct {
 	ttsClient    *tts.Client
 	sttClient    *stt.Client
 	generatedDir string
-	onUpdate     func(JobStatus)
+	// libraryRoot is where sidecars live next to their audiobook
+	// directories — needed by the redo-STT path so it can locate the
+	// existing sidecar and write it back atomically.
+	libraryRoot string
+	onUpdate    func(JobStatus)
 
 	mu      sync.Mutex
 	running map[string]bool
 
 	queue chan queuedJob
 }
+
+// SetLibraryRoot lets the server inject the library root after the
+// Generator is constructed. Optional — only needed for the redo-STT
+// path; other jobs don't touch sidecar files on disk.
+func (g *Generator) SetLibraryRoot(p string) { g.libraryRoot = p }
 
 func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client, generatedDir string, onUpdate func(JobStatus)) *Generator {
 	os.MkdirAll(generatedDir, 0755)
@@ -780,5 +789,68 @@ func estimateETA(startedAt time.Time, completed, total int) string {
 		return fmt.Sprintf("~%dm remaining", int(remaining.Minutes()))
 	}
 	return fmt.Sprintf("~%dh %dm remaining", int(remaining.Hours()), int(remaining.Minutes())%60)
+}
+
+// RetryTranscriptionForFiles enqueues a redo-STT job: re-transcribes
+// the named files, merges into the sidecar, then triggers reimport.
+// Used by the gap-detection modal in the UI.
+//
+// Returns (jobID, started). When started==false the work already has
+// an STT job in flight; the UI should refresh its job-progress view
+// instead of erroring.
+func (g *Generator) RetryTranscriptionForFiles(workID int64, filenames []string) (string, bool) {
+	jobID := fmt.Sprintf("stt-redo-%d", workID)
+	if g.isRunning(jobID) {
+		return jobID, false
+	}
+	if existing, _ := g.store.GetJob(jobID); existing != nil && (existing.Status == "running" || existing.Status == "queued") {
+		return jobID, false
+	}
+	if g.libraryRoot == "" {
+		return "", false
+	}
+	job := &JobStatus{
+		ID:          jobID,
+		WorkID:      workID,
+		Type:        "stt-redo",
+		Status:      "queued",
+		CurrentStep: fmt.Sprintf("Waiting to retry %d file(s)...", len(filenames)),
+	}
+	g.updateJob(job)
+	g.queue <- queuedJob{
+		job: job,
+		run: func() { g.runRedoSTT(job, workID, filenames) },
+	}
+	return jobID, true
+}
+
+func (g *Generator) runRedoSTT(job *JobStatus, workID int64, filenames []string) {
+	job.startedAt = time.Now()
+	progress := func(fileIdx, fileCount int, fileName string, segIdx, totalSegs int) {
+		segFraction := float64(0)
+		if totalSegs > 0 {
+			segFraction = float64(segIdx) / float64(totalSegs)
+		}
+		job.Progress = (float64(fileIdx) + segFraction) / float64(fileCount)
+		job.CurrentStep = fmt.Sprintf("Re-transcribing %d/%d: %s (segment %d/%d)",
+			fileIdx+1, fileCount, fileName, segIdx+1, totalSegs)
+		if segIdx > 0 || fileIdx > 0 {
+			step := fileIdx*100 + segIdx
+			total := fileCount * 100
+			job.ETA = estimateETA(job.startedAt, step, total)
+		}
+		g.updateJob(job)
+	}
+	n, err := redoTranscriptionForFiles(g.store, g.sttClient, g.libraryRoot, workID, filenames, progress)
+	if err != nil {
+		job.Status = "failed"
+		job.Error = err.Error()
+		g.updateJob(job)
+		return
+	}
+	job.Status = "completed"
+	job.Progress = 1.0
+	job.CurrentStep = fmt.Sprintf("Re-transcribed %d file(s); transcript updated", n)
+	g.updateJob(job)
 }
 

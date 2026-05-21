@@ -92,6 +92,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
 	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
+	mux.HandleFunc("POST /api/works/{id}/retry-stt", s.handleRetryTranscription)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
@@ -436,6 +437,41 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobID, started := s.Generator.TranscribeAudio(workID)
+	if !started {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
+}
+
+// POST /api/works/{id}/retry-stt — re-transcribe specific files (by
+// basename) and merge into the existing sidecar. Used by the
+// gap-detection UI to fix Whisper failures without leaving the page.
+//
+// Body: {"filenames": ["07.mp3", "13.mp3"]}
+// Returns 202 with job_id, or 409 if a redo is already running.
+func (s *Server) handleRetryTranscription(w http.ResponseWriter, r *http.Request) {
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "STT service not configured"})
+		return
+	}
+	workID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var body struct {
+		Filenames []string `json:"filenames"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if len(body.Filenames) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "filenames required"})
+		return
+	}
+	jobID, started := s.Generator.RetryTranscriptionForFiles(workID, body.Filenames)
 	if !started {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
 		return

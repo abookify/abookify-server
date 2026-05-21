@@ -154,6 +154,13 @@
       font-size: 0.78rem; overflow-x: auto; user-select: all;
       border: 1px solid var(--border);
     }
+    .primary-btn {
+      background: var(--generate); color: #fff; border: none;
+      border-radius: 6px; padding: 0.55rem 1rem; font-weight: 600;
+      cursor: pointer; font-size: 0.85rem;
+    }
+    .primary-btn:hover:not(:disabled) { filter: brightness(1.1); }
+    .primary-btn:disabled { opacity: 0.6; cursor: default; }
 
     /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
        author. Filled by hydrateWorkProgress() once positions arrive. */
@@ -1865,12 +1872,22 @@
               <thead><tr><th>File</th><th>Span</th><th>Length</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
-            ${cmd ? `
-            <p style="margin-top:1rem">Fix by re-running Whisper on the affected files:</p>
-            <pre class="gap-cmd">${cmd}</pre>
-            <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.5rem">
-              After it finishes, hit Reprocess on this work to import the updated transcript.
-            </p>` : ''}
+            ${fileList.length ? `
+            <div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
+              <button class="primary-btn" id="gap-retry-btn"
+                onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">
+                Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}
+              </button>
+              <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">
+                Sends the gap files back to Whisper, merges the result, then reimports.
+              </span>
+            </div>
+            <details style="margin-top:0.75rem">
+              <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">
+                Or fix from the command line (for remote GPU runs)
+              </summary>
+              <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
+            </details>` : ''}
             <div style="text-align:right;margin-top:1rem">
               <button onclick="closeGapModal()">Close</button>
             </div>
@@ -1880,6 +1897,31 @@
       host.id = 'gap-modal-host';
       host.innerHTML = html;
       document.body.appendChild(host);
+    }
+
+    async function retryTranscriptionGaps(workId, filenames) {
+      const btn = document.getElementById('gap-retry-btn');
+      const status = document.getElementById('gap-retry-status');
+      if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+      try {
+        const res = await fetch(`/api/works/${workId}/retry-stt`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({filenames}),
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          throw new Error(body || res.statusText);
+        }
+        if (status) status.textContent = 'Queued — watch the Jobs bar for progress. Modal can be closed.';
+        if (btn) btn.textContent = 'Queued ✓';
+      } catch (e) {
+        if (status) {
+          status.style.color = 'var(--accent)';
+          status.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
+        }
+        if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+      }
     }
 
     function closeGapModal(e) {

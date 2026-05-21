@@ -222,6 +222,7 @@ func main() {
 		srv.Generator = library.NewGenerator(store, ttsClient, sttClient, *generatedPath, func(job library.JobStatus) {
 			srv.Events.Broadcast(server.Event{Type: "job_update", Data: job})
 		})
+		srv.Generator.SetLibraryRoot(*libraryPath)
 		log.Printf("generation engine ready (TTS: %v, STT: %v)", ttsClient != nil, sttClient != nil)
 	}
 
