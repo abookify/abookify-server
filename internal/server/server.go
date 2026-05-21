@@ -1201,23 +1201,38 @@ func isSecretSettingKey(k string) bool {
 	return false
 }
 
-// maskSecret returns a masked rendering of a secret string that
-// preserves the last 4 characters so users can recognize which key is
-// installed without exposing the full value.
-//   "sk-proj-IsAbCdEf...XyzLa8A" -> "****La8A"
+// maskSecret returns a masked rendering of a secret that exposes
+// enough prefix and suffix for the user to identify which key is
+// installed (different OpenAI projects share the "sk-proj-" prefix
+// but diverge in the random middle, so showing the first ~8 and the
+// last 4 makes "sk-proj-IsAbC…La8A" easy to recognize without
+// revealing the rotatable middle).
+//
+//   "sk-proj-IsAbCdEf...XyzLa8A" -> "sk-proj-…La8A"
+//   "sk-ant-IsAb...xyzLa8A"      -> "sk-ant-Is…La8A"
 //   "shortkey"                   -> "****"
+//
+// Format chosen so isMaskedSecret can detect the placeholder
+// unambiguously (presence of the unicode ellipsis '…' which a real
+// key would never contain).
 func maskSecret(v string) string {
-	if len(v) <= 4 {
+	if len(v) < 12 {
 		return "****"
 	}
-	return "****" + v[len(v)-4:]
+	prefixLen := 8
+	// For non sk-proj/sk-ant style keys (no '-' inside the first 8),
+	// 4 chars of prefix is enough.
+	if !strings.ContainsAny(v[:prefixLen], "-_") {
+		prefixLen = 4
+	}
+	return v[:prefixLen] + "…" + v[len(v)-4:]
 }
 
 // isMaskedSecret returns true for the placeholder shape produced by
-// maskSecret. Used by handleSaveSettings to skip "save" when the user
-// hasn't touched a masked field.
+// maskSecret. The unicode ellipsis character is the marker; real keys
+// are URL-safe and won't contain it.
 func isMaskedSecret(v string) bool {
-	return strings.HasPrefix(v, "****")
+	return strings.Contains(v, "…")
 }
 
 // handleListLLMModels returns curated model lists per provider for the

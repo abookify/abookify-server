@@ -41,13 +41,25 @@
       color: var(--text-muted); margin-bottom: 0.35rem; text-transform: uppercase;
       letter-spacing: 0.03em;
     }
-    .field select, .field input[type="text"] {
+    .field select,
+    .field input[type="text"],
+    .field input[type="password"],
+    .field input[type="number"] {
       width: 100%; background: var(--bg); border: 1px solid var(--border);
       border-radius: 6px; padding: 0.5rem 0.75rem; color: var(--text);
       font-size: 0.9rem;
+      font-family: inherit; box-sizing: border-box;
     }
     .field select:focus, .field input:focus { outline: none; border-color: var(--accent); }
     .field .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+    .field .saved-key {
+      font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    .field .saved-key code {
+      color: var(--text); background: rgba(255,255,255,0.04);
+      padding: 1px 6px; border-radius: 4px; font-size: 0.78rem;
+    }
 
     .status-row {
       display: flex; align-items: center; gap: 0.5rem;
@@ -199,7 +211,10 @@
       </div>
       <div class="field">
         <label>API Key</label>
-        <input type="password" id="llm-api-key" autocomplete="off" placeholder="sk-... or leave blank for Ollama">
+        <input type="password" id="llm-api-key" autocomplete="off" placeholder="sk-… (paste to replace, leave empty to keep)">
+        <div class="saved-key" id="llm-api-key-saved" style="display:none;">
+          Saved key: <code id="llm-api-key-mask"></code>
+        </div>
       </div>
       <div class="field">
         <label>Model</label>
@@ -228,7 +243,10 @@
       </div>
       <div class="field">
         <label>API Key</label>
-        <input type="password" id="voice-api-key" autocomplete="off" placeholder="API key for voice chat provider">
+        <input type="password" id="voice-api-key" autocomplete="off" placeholder="paste to replace, leave empty to keep">
+        <div class="saved-key" id="voice-api-key-saved" style="display:none;">
+          Saved key: <code id="voice-api-key-mask"></code>
+        </div>
       </div>
       <div class="hint">Voice chat is a premium feature that uses real-time speech-to-speech AI. Your audio is sent to the selected provider for processing.</div>
     </div>
@@ -322,6 +340,33 @@
       }
     }
 
+    // Track which secret fields were populated at load time so saveSettings
+    // can decide whether an empty input means "keep" (no change) vs "clear"
+    // (user wants to remove the key).
+    const _savedMasks = {};
+
+    function showSavedKey(inputId, mask) {
+      _savedMasks[inputId] = mask;
+      const row = document.getElementById(inputId + '-saved');
+      const codeEl = document.getElementById(inputId + '-mask');
+      if (row && codeEl) {
+        codeEl.textContent = mask;
+        row.style.display = '';
+      }
+    }
+
+    // Return the value to send back for a masked-secret field:
+    //   - non-empty input → use whatever the user typed (a new key)
+    //   - empty input + we know there's a saved key → echo the mask
+    //     back; the server recognises this as "keep existing"
+    //   - empty input + no saved key → send empty (clears the field)
+    function keyFieldValue(inputId) {
+      const v = document.getElementById(inputId).value;
+      if (v) return v;
+      if (_savedMasks[inputId]) return _savedMasks[inputId];
+      return '';
+    }
+
     async function loadSettings() {
       try {
         await loadModels();
@@ -331,11 +376,15 @@
         if (settings.stt_model) document.getElementById('stt-model').value = settings.stt_model;
         if (settings.stt_idle_timeout) document.getElementById('stt-idle-timeout').value = settings.stt_idle_timeout;
         if (settings.llm_provider) document.getElementById('llm-provider').value = settings.llm_provider;
-        if (settings.llm_api_key) document.getElementById('llm-api-key').value = settings.llm_api_key;
+        // Secrets arrive masked (e.g. "sk-proj-Is…La8A"). Don't put the
+        // mask into the input — it'd look like a typed key. Show it
+        // beneath the field instead, so the user can recognize which
+        // key is installed and just leave the input empty to keep it.
+        if (settings.llm_api_key) showSavedKey('llm-api-key', settings.llm_api_key);
         if (settings.llm_model) document.getElementById('llm-model').value = settings.llm_model;
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
-        if (settings.voice_api_key) document.getElementById('voice-api-key').value = settings.voice_api_key;
+        if (settings.voice_api_key) showSavedKey('voice-api-key', settings.voice_api_key);
         // Now that provider+model are loaded, populate the model <select>.
         onProviderChange();
       } catch {}
@@ -357,11 +406,11 @@
         stt_model: document.getElementById('stt-model').value,
         stt_idle_timeout: document.getElementById('stt-idle-timeout').value,
         llm_provider: document.getElementById('llm-provider').value,
-        llm_api_key: document.getElementById('llm-api-key').value,
+        llm_api_key: keyFieldValue('llm-api-key'),
         llm_model: llmModel,
         llm_base_url: document.getElementById('llm-base-url').value,
         voice_provider: document.getElementById('voice-provider').value,
-        voice_api_key: document.getElementById('voice-api-key').value,
+        voice_api_key: keyFieldValue('voice-api-key'),
       };
       try {
         await fetch('/api/settings', {
