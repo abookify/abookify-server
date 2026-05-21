@@ -1,4 +1,4 @@
-.PHONY: up down restart logs build test relay relay-down health build-cli
+.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote
 
 up:
 	docker compose up -d --build
@@ -43,3 +43,20 @@ health:
 	@curl -s http://localhost:7654/api/health && echo
 	@curl -s http://localhost:8880/v1/models > /dev/null && echo "kokoro: ok" || echo "kokoro: down"
 	@curl -s http://localhost:5200/health > /dev/null && echo "whisper: ok" || echo "whisper: down"
+
+# Show every HTTP request in the access log. WS pings + static asset
+# fetches are already filtered server-side, so this is signal-only.
+access-log:
+	@docker logs server-server-1 2>&1 | grep ' ACCESS ' | tail -100
+
+# Just the requests whose original client IP is NOT localhost or the
+# local LAN. With the nullbore tunnel in front, every request shows up
+# with the tunnel container as the immediate peer, so the meaningful
+# field is fwd= (X-Forwarded-For). Catches outside-the-house traffic
+# you didn't initiate.
+access-log-remote:
+	@docker logs server-server-1 2>&1 | grep ' ACCESS ' \
+	  | grep -v 'fwd=127\.' | grep -v 'fwd=192\.168\.' \
+	  | grep -v 'fwd=10\.' | grep -v 'fwd=172\.\(1[6-9]\|2[0-9]\|3[01]\)\.' \
+	  | grep -v 'fwd=-' \
+	  | tail -100

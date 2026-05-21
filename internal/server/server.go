@@ -1,16 +1,19 @@
 package server
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/db"
@@ -116,7 +119,7 @@ func New(store *db.Store, port string) *Server {
 
 	s.http = &http.Server{
 		Addr:    ":" + port,
-		Handler: corsMiddleware(mux),
+		Handler: accessLogMiddleware(corsMiddleware(mux)),
 	}
 
 	return s
@@ -1173,7 +1176,48 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Mask any field whose name implies it's a secret so the value can't
+	// be read off the wire by anyone who can reach /api/settings. The
+	// saved value still works — handleSaveSettings recognizes the mask
+	// and skips updating those fields, so users only need to retype a
+	// secret when actually rotating it.
+	for k, v := range settings {
+		if isSecretSettingKey(k) && v != "" {
+			settings[k] = maskSecret(v)
+		}
+	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// isSecretSettingKey matches any settings name that should never leave
+// the server in plaintext. Conservative: any "_api_key", "_secret",
+// "_token", or "_password" suffix.
+func isSecretSettingKey(k string) bool {
+	for _, suf := range []string{"_api_key", "_secret", "_token", "_password"} {
+		if strings.HasSuffix(k, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskSecret returns a masked rendering of a secret string that
+// preserves the last 4 characters so users can recognize which key is
+// installed without exposing the full value.
+//   "sk-proj-IsAbCdEf...XyzLa8A" -> "****La8A"
+//   "shortkey"                   -> "****"
+func maskSecret(v string) string {
+	if len(v) <= 4 {
+		return "****"
+	}
+	return "****" + v[len(v)-4:]
+}
+
+// isMaskedSecret returns true for the placeholder shape produced by
+// maskSecret. Used by handleSaveSettings to skip "save" when the user
+// hasn't touched a masked field.
+func isMaskedSecret(v string) bool {
+	return strings.HasPrefix(v, "****")
 }
 
 // handleListLLMModels returns curated model lists per provider for the
@@ -1229,6 +1273,12 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range body {
+		// If a secret field came back with the mask placeholder, the
+		// user didn't touch it on this save — keep the existing value
+		// instead of clobbering it with "****La8A".
+		if isSecretSettingKey(k) && isMaskedSecret(v) {
+			continue
+		}
 		if err := s.store.SetSetting(k, v); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1256,6 +1306,94 @@ func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, 
 	}
 
 	return book, nil
+}
+
+// accessLogMiddleware prints one line per HTTP request:
+//   ACCESS 2026-05-21T20:14:01 ip=10.0.0.4 fwd=1.2.3.4 GET /api/works 200 1234b 12ms
+// `ip` is the immediate peer (the nullbore tunnel container when
+// served via the relay) and `fwd` is the original client IP from
+// X-Forwarded-For (or "-" when absent). Both must be examined to
+// catch off-prem traffic — a "GET /api/settings" with fwd != 127.0.0.1
+// or the host LAN is exactly the access pattern that would have
+// exfiltrated llm_api_key before this commit.
+//
+// WebSocket pings + static asset GETs are noisy and security-uninteresting
+// once the WS upgrade and the page load are themselves logged, so they
+// are dropped from the access log to keep the signal high.
+func accessLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		if isAccessLogNoise(r) {
+			return
+		}
+		fwd := r.Header.Get("X-Forwarded-For")
+		if fwd == "" {
+			fwd = "-"
+		}
+		log.Printf("ACCESS ip=%s fwd=%s %s %s %d %db %s",
+			clientIP(r.RemoteAddr), fwd,
+			r.Method, r.URL.Path, rw.status, rw.bytes,
+			time.Since(start).Truncate(time.Millisecond))
+	})
+}
+
+// isAccessLogNoise drops repeating low-signal lines so the log can be
+// usefully grepped. We keep the WS upgrade itself (it shows the client
+// connecting) but skip subsequent ping frames; we keep page loads but
+// skip the static asset cascade (CSS, JS, images, favicon).
+func isAccessLogNoise(r *http.Request) bool {
+	p := r.URL.Path
+	if p == "/api/health" {
+		return true
+	}
+	if strings.HasPrefix(p, "/shared/") || strings.HasPrefix(p, "/static/") {
+		return true
+	}
+	switch p {
+	case "/favicon.ico", "/manifest.json", "/robots.txt":
+		return true
+	}
+	// Static asset extensions inside any path.
+	for _, ext := range []string{".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// statusRecorder captures the response status + bytes written so the
+// access log can record them. Wraps the underlying ResponseWriter
+// transparently; supports Hijack so WebSocket upgrade still works.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(s int) {
+	r.status = s
+	r.ResponseWriter.WriteHeader(s)
+}
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+func clientIP(remoteAddr string) string {
+	if i := strings.LastIndex(remoteAddr, ":"); i > 0 {
+		return remoteAddr[:i]
+	}
+	return remoteAddr
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
