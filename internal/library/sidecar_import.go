@@ -289,6 +289,29 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 		log.Printf("sidecar-import: transcription gap analysis failed: %v", err)
 	}
 
+	// Persist sidecar source offsets on each audio book row so the web
+	// player can compute karaoke offsets from ground-truth Whisper
+	// timestamps instead of summing metadata durations (which drift by
+	// milliseconds per file across an 8-hour audiobook).
+	if len(sc.Sources) > 0 {
+		work, _ := store.GetWork(workID)
+		if work != nil {
+			byBase := map[string]float64{}
+			for _, src := range sc.Sources {
+				byBase[src.Filename] = src.StartSec
+			}
+			for _, b := range work.AudioFiles {
+				start, ok := byBase[filepath.Base(b.Path)]
+				if !ok {
+					continue
+				}
+				if err := store.SetBookStartSec(b.ID, start); err != nil {
+					log.Printf("sidecar-import: set start_sec on book %d: %v", b.ID, err)
+				}
+			}
+		}
+	}
+
 	log.Printf("sidecar-import: work=%d book=%d words=%d chapters=%d (%s)",
 		workID, audioBookID, len(sc.Words), len(sc.Chapters), filepath.Base(path))
 	return nil

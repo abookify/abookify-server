@@ -116,6 +116,12 @@ type Book struct {
 	Author    string    `json:"author,omitempty"`
 	Album     string    `json:"album,omitempty"`
 	Duration     float64   `json:"duration_secs,omitempty"`
+	// StartSec is the file's start position on the concatenated book
+	// timeline (from the sidecar's sources[] when available). For
+	// single-file books this is always 0; for multi-file books it's
+	// the ground-truth offset Whisper used when transcribing, which
+	// avoids drift from summing metadata durations on the client.
+	StartSec     float64   `json:"start_sec,omitempty"`
 	ChapterCount int       `json:"chapter_count,omitempty"`
 	// Origin describes how this source material was produced. Used by the
 	// display resolver to pick the highest-authority source for the reader.
@@ -406,6 +412,12 @@ func migrate(db *sql.DB) error {
 		// none found. Populated by library.DetectTranscriptionGaps during
 		// sidecar import.
 		`ALTER TABLE books ADD COLUMN transcription_gaps TEXT NOT NULL DEFAULT ''`,
+		// Position of this audio file on the concatenated book timeline.
+		// Sourced from sidecar sources[].start_sec during import; 0 for
+		// single-file books. The client uses this to compute karaoke
+		// offsets accurately instead of summing metadata durations
+		// (which drift by milliseconds per file).
+		`ALTER TABLE books ADD COLUMN start_sec REAL NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -699,7 +711,7 @@ func (s *Store) FindWorkByAudioDir(dirPrefix string) (int64, error) {
 
 func (s *Store) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, start_sec, created_at, updated_at
 		FROM books ORDER BY title, filename
 	`)
 	if err != nil {
@@ -711,7 +723,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.StartSec, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -722,10 +734,10 @@ func (s *Store) ListBooks() ([]Book, error) {
 func (s *Store) GetBook(id int64) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, start_sec, created_at, updated_at
 		FROM books WHERE id = ?
 	`, id).Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-		&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.CreatedAt, &b.UpdatedAt)
+		&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.StartSec, &b.CreatedAt, &b.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -819,7 +831,7 @@ func (s *Store) GetWork(id int64) (*Work, error) {
 
 func (s *Store) booksByWork(workID int64) ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, start_sec, created_at, updated_at
 		FROM books WHERE work_id = ? ORDER BY filename
 	`, workID)
 	if err != nil {
@@ -831,7 +843,7 @@ func (s *Store) booksByWork(workID int64) ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.StartSec, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -886,7 +898,7 @@ func OriginAuthority(origin string) int {
 // UnassignedBooks returns books not yet linked to a work.
 func (s *Store) UnassignedBooks() ([]Book, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, created_at, updated_at
+		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, start_sec, created_at, updated_at
 		FROM books WHERE work_id = 0 ORDER BY title, filename
 	`)
 	if err != nil {
@@ -898,7 +910,7 @@ func (s *Store) UnassignedBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.SizeBytes,
-			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Title, &b.Author, &b.Album, &b.Duration, &b.Origin, &b.Visibility, &b.Edition, &b.StartSec, &b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -927,6 +939,14 @@ func (s *Store) DeleteChaptersByBook(bookID int64) error {
 func (s *Store) UpdateChapterTitle(bookID int64, index int, title string) error {
 	_, err := s.db.Exec(`UPDATE chapters SET title = ? WHERE book_id = ? AND index_num = ?`,
 		title, bookID, index)
+	return err
+}
+
+// SetBookStartSec writes the file's position on the concatenated
+// book timeline. Called during sidecar import once we know the
+// sources[] offsets — see PopulateAudioFileOffsets.
+func (s *Store) SetBookStartSec(bookID int64, startSec float64) error {
+	_, err := s.db.Exec(`UPDATE books SET start_sec = ? WHERE id = ?`, startSec, bookID)
 	return err
 }
 

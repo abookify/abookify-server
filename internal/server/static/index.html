@@ -2301,18 +2301,25 @@
       currentAudioOffset = 0;
       currentSyncBookId = bookId;
       if (currentAudioFiles.length > 1) {
-        // Is there sync data on the first book (the multi-file pattern)?
-        // Probe asynchronously — for now assume the first-book convention.
         const firstBookId = currentAudioFiles[0].id;
         if (firstBookId !== bookId) {
-          // Sum durations of files 0..audioIndex-1 to compute offset.
-          let offset = 0;
-          for (let i = 0; i < audioIndex && i < currentAudioFiles.length; i++) {
-            offset += currentAudioFiles[i].duration_secs || 0;
+          // Prefer the file's own start_sec from the sidecar's
+          // sources[] (set during import — see SetBookStartSec).
+          // That's the ground-truth offset Whisper used. Falling
+          // back to summing metadata durations only when start_sec
+          // hasn't been populated yet (pre-#178 imports).
+          const file = currentAudioFiles[audioIndex];
+          let offset = file && typeof file.start_sec === 'number' && file.start_sec > 0
+            ? file.start_sec
+            : 0;
+          if (offset === 0) {
+            for (let i = 0; i < audioIndex && i < currentAudioFiles.length; i++) {
+              offset += currentAudioFiles[i].duration_secs || 0;
+            }
           }
           currentAudioOffset = offset;
           currentSyncBookId = firstBookId;
-          console.log(`Multi-file audio: file index=${audioIndex} offset=${offset.toFixed(0)}s, sync via book ${firstBookId}`);
+          console.log(`Multi-file audio: file index=${audioIndex} offset=${offset.toFixed(3)}s (source: ${file && file.start_sec > 0 ? 'sidecar' : 'cum-duration'}), sync via book ${firstBookId}`);
         }
       }
 
