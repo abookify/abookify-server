@@ -1094,6 +1094,7 @@
       <label style="display:flex;align-items:center;gap:4px;" id="np-lead-wrap">
         Lead
         <input type="number" id="np-sync-lead" value="0" step="50"
+               style="width: 5.5rem; font-variant-numeric: tabular-nums; text-align: right;"
                onchange="setSyncLead(this.value)">
         ms
       </label>
@@ -3263,39 +3264,52 @@
       }
     }
 
-    // Scrubber: timeupdate → move fill + thumb.
+    // Total book duration (sum of every audio file in the current
+    // work). For single-file books this equals player.duration; for
+    // multi-file ones it's the only correct denominator — the user
+    // doesn't care that the audio is split across N MP3s, they want
+    // to see "5h 12m of 8h 04m" not "30m of 59m".
+    function totalBookDurationSec() {
+      if (currentWorkId == null) return 0;
+      const work = allWorks.find(w => w.id === currentWorkId);
+      if (!work) return 0;
+      return (work.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0);
+    }
+
+    // Scrubber: timeupdate → move fill + thumb. Everything below uses
+    // book-absolute time (player.currentTime + currentAudioOffset) so
+    // the player bar reflects position-in-book, not position-in-file.
     document.getElementById('audio-player').addEventListener('timeupdate', () => {
       const p = document.getElementById('audio-player');
       if (!p.duration || isNaN(p.duration)) return;
-      const pct = (p.currentTime / p.duration) * 100;
+      const bookSec = p.currentTime + (currentAudioOffset || 0);
+      const bookTotal = totalBookDurationSec() || p.duration;
+      const pct = bookTotal > 0 ? (bookSec / bookTotal) * 100 : 0;
       document.getElementById('scrub-fill').style.width = pct + '%';
       document.getElementById('scrub-thumb').style.left = pct + '%';
-      document.getElementById('player-cur').textContent = fmtPlayerTime(p.currentTime);
+      document.getElementById('player-cur').textContent = fmtPlayerTime(bookSec);
 
       // TOC progress: per-chapter fill bars + summary "Chapter X of N · Q%".
-      // currentAudioOffset is the cumulative duration of files BEFORE the
-      // currently-playing one; adding p.currentTime gives book-absolute time.
-      // Skip if there's no synced text book to render against.
+      // Re-uses the same book-absolute time we just computed.
       if (currentSyncBookId != null && currentWorkId != null) {
         const work = allWorks.find(w => w.id === currentWorkId);
-        const totalSec = (work?.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0);
-        const bookSec = p.currentTime + (currentAudioOffset || 0);
-        // Update every text-chapter list belonging to this work.
         (work?.text_files || []).forEach(tf => {
-          updateChapterProgress(tf.id, bookSec, totalSec);
+          updateChapterProgress(tf.id, bookSec, bookTotal);
         });
       }
       updateNpTocActive();
     });
     document.getElementById('audio-player').addEventListener('loadedmetadata', () => {
+      const total = totalBookDurationSec();
       const p = document.getElementById('audio-player');
-      document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
+      document.getElementById('player-dur').textContent = fmtPlayerTime(total || p.duration);
       renderChapterTicks();
       if (currentPlayingId) renderWaveform(currentPlayingId);
     });
     document.getElementById('audio-player').addEventListener('durationchange', () => {
+      const total = totalBookDurationSec();
       const p = document.getElementById('audio-player');
-      document.getElementById('player-dur').textContent = fmtPlayerTime(p.duration);
+      document.getElementById('player-dur').textContent = fmtPlayerTime(total || p.duration);
       renderChapterTicks();
     });
     // Re-render waveform when window resizes (canvas width changes).
@@ -3303,7 +3317,10 @@
       if (currentPlayingId) renderWaveform(currentPlayingId);
     });
 
-    // Scrubber: click/drag to seek.
+    // Scrubber: click/drag to seek. pct → book-absolute second →
+    // seekToAbsoluteBookTime, which switches files if needed for
+    // multi-file books. For single-file books this is the same as a
+    // direct currentTime seek.
     (function initScrubber() {
       const bar = document.getElementById('player-scrubber');
       let dragging = false;
@@ -3311,6 +3328,15 @@
         const rect = bar.getBoundingClientRect();
         const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         const p = document.getElementById('audio-player');
+        const total = totalBookDurationSec();
+        if (total > 0 && currentWorkId != null) {
+          const work = allWorks.find(w => w.id === currentWorkId);
+          if (work) {
+            seekToAbsoluteBookTime(work, pct * total);
+            return;
+          }
+        }
+        // Fallback (no work loaded): seek within the current file.
         if (p.duration) p.currentTime = pct * p.duration;
       }
       bar.addEventListener('mousedown', (e) => { dragging = true; seekTo(e); });
