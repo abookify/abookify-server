@@ -91,18 +91,20 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatMessage is the wire format for messages — adds parsed citations
-// (omitted from db.QAMessage's JSON because we store them as a string).
+// (omitted from db.QAMessage's JSON because we store them as a string)
+// and the snapshot scope for user turns.
 type chatMessage struct {
-	ID        int64          `json:"id"`
-	SessionID int64          `json:"session_id"`
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	Citations []llm.Citation `json:"citations,omitempty"`
-	CreatedAt string         `json:"created_at"`
+	ID        int64               `json:"id"`
+	SessionID int64               `json:"session_id"`
+	Role      string              `json:"role"`
+	Content   string              `json:"content"`
+	Citations []llm.Citation      `json:"citations,omitempty"`
+	Scope     *library.QueryScope `json:"scope,omitempty"`
+	CreatedAt string              `json:"created_at"`
 }
 
 func toChatMessage(m db.QAMessage) chatMessage {
-	return chatMessage{
+	cm := chatMessage{
 		ID:        m.ID,
 		SessionID: m.SessionID,
 		Role:      m.Role,
@@ -110,6 +112,13 @@ func toChatMessage(m db.QAMessage) chatMessage {
 		Citations: library.UnmarshalCitations(m.CitationsJSON),
 		CreatedAt: m.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+	if m.ScopeJSON != "" {
+		var sc library.QueryScope
+		if err := json.Unmarshal([]byte(m.ScopeJSON), &sc); err == nil && sc.Type != "" && sc.Type != "book" {
+			cm.Scope = &sc
+		}
+	}
+	return cm
 }
 
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
@@ -175,9 +184,19 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the scope on the user message so chat history can show
+	// "asked about Chapter 6" after the fact. Empty for whole-book
+	// turns (default) so we don't bloat the table with no-op blobs.
+	scopeJSON := ""
+	if req.Scope.Type != "" && req.Scope.Type != "book" {
+		if b, err := json.Marshal(req.Scope); err == nil {
+			scopeJSON = string(b)
+		}
+	}
+
 	// Persist the user message first so it shows up immediately if the
 	// LLM call fails or times out.
-	userID, err := s.store.AppendMessage(sessionID, "user", req.Content, "")
+	userID, err := s.store.AppendMessage(sessionID, "user", req.Content, "", scopeJSON)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -194,7 +213,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.
 		errMsg := "I couldn't answer that — " + err.Error()
-		assistID, _ := s.store.AppendMessage(sessionID, "assistant", errMsg, "")
+		assistID, _ := s.store.AppendMessage(sessionID, "assistant", errMsg, "", "")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user_id":   userID,
 			"assistant": chatMessage{ID: assistID, SessionID: sessionID, Role: "assistant", Content: errMsg},
@@ -203,7 +222,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	citationsJSON := library.MarshalCitations(answer.Citations)
-	assistID, err := s.store.AppendMessage(sessionID, "assistant", answer.Text, citationsJSON)
+	assistID, err := s.store.AppendMessage(sessionID, "assistant", answer.Text, citationsJSON, "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

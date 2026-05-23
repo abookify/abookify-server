@@ -897,6 +897,20 @@
     .chat-msg.assistant .chat-citation .cite-text {
       flex: 1; min-width: 0;
     }
+    /* Per-message scope badge — small chip above a user bubble that
+       shows the scope filter the question was asked under (chapter /
+       up-to-here / paragraph). Whole-book messages don't get a badge. */
+    .chat-msg.user .scope-badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1px 7px;
+      margin-bottom: 4px;
+      letter-spacing: 0.02em;
+    }
     /* Inline "Chapter N" links inside the LLM's response prose. Subtle
        so they don't break the reading flow; warm on hover. */
     .chat-msg.assistant .chapter-link {
@@ -4504,7 +4518,31 @@
       if (m.role === 'assistant' && bookId) {
         body = linkChapterMentions(body, bookId, workId);
       }
-      return `<div class="chat-msg ${cls}" style="white-space:pre-wrap;">${body}${citations}</div>`;
+      // Scope badge — only on user messages that were asked under a
+      // narrower-than-whole-book scope. Persisted per turn so the
+      // history of a conversation shows exactly what each question
+      // was anchored to.
+      let scopeBadge = '';
+      if (m.role === 'user' && m.scope) {
+        scopeBadge = `<div class="scope-badge">${escapeHtml(formatScopeLabel(m.scope))}</div>`;
+      }
+      return `<div class="chat-msg ${cls}" style="white-space:pre-wrap;">${scopeBadge}${body}${citations}</div>`;
+    }
+
+    // Human-readable label for a scope object, used for the per-message
+    // badge. Falls back to the raw type if we don't have the chapter
+    // title cached yet (rare — happens before the chapter list loads).
+    function formatScopeLabel(sc) {
+      const chIdx = sc.chapter_idx;
+      const chOneBased = (typeof chIdx === 'number') ? (chIdx + 1) : '?';
+      const ch = chapterCache[sc.book_id]?.chapters?.find(c => c.index === chIdx);
+      const chTitle = ch?.title || `Chapter ${chOneBased}`;
+      switch (sc.type) {
+        case 'chapter':       return `Scope: ${chTitle}`;
+        case 'up_to_chapter': return `Scope: up to ${chTitle}`;
+        case 'paragraph':     return `Scope: ¶${(sc.paragraph_idx ?? 0) + 1} of ${chTitle}`;
+        default:              return `Scope: ${sc.type}`;
+      }
     }
 
     // Wrap "Chapter N" mentions (and "Chapters 3-5" range mentions) in
@@ -4641,9 +4679,12 @@
       // Strip "empty" placeholder if present.
       const empty = thread.querySelector('.qa-empty');
       if (empty) empty.remove();
+      // Build the scope payload first so the optimistic bubble shows
+      // the same badge the persisted message will once it lands.
+      const scope = buildScopePayload(workId);
       // Optimistically render the user's message.
       thread.insertAdjacentHTML('beforeend',
-        renderChatMessage({role: 'user', content: text}, workId, bookId));
+        renderChatMessage({role: 'user', content: text, scope: scope || undefined}, workId, bookId));
       const userBubble = thread.lastElementChild;
       // Thinking indicator.
       const thinkingId = 'chat-thinking-' + Date.now();
@@ -4653,7 +4694,6 @@
       pinToTop(thread, userBubble);
 
       try {
-        const scope = buildScopePayload(workId);
         const body = scope ? { content: text, scope } : { content: text };
         const res = await fetch(`/api/sessions/${sessionId}/messages`, {
           method: 'POST',

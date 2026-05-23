@@ -427,6 +427,12 @@ func migrate(db *sql.DB) error {
 		// wants the transcript even though a publisher EPUB is present
 		// (e.g. comparing narration line-by-line to the printed text).
 		`ALTER TABLE works ADD COLUMN display_text_book_id INTEGER NOT NULL DEFAULT 0`,
+		// Per-message Q&A scope snapshot — the QueryScope that shaped
+		// retrieval for this turn. Empty = whole book (legacy / default).
+		// Lets the chat history show "asked about Chapter 6" badges
+		// after the fact so users can reason about answers, and lets
+		// follow-up turns inherit the prior scope as a default.
+		`ALTER TABLE qa_messages ADD COLUMN scope_json TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)

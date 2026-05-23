@@ -37,10 +37,10 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Append messages, then list.
-	if _, err := store.AppendMessage(s1, "user", "what is this about?", ""); err != nil {
+	if _, err := store.AppendMessage(s1, "user", "what is this about?", "", ""); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	if _, err := store.AppendMessage(s1, "assistant", "It's a story.", `[{"chapter_idx":0}]`); err != nil {
+	if _, err := store.AppendMessage(s1, "assistant", "It's a story.", `[{"chapter_idx":0}]`, ""); err != nil {
 		t.Fatalf("append assistant: %v", err)
 	}
 	msgs, err := store.ListMessages(s1)
@@ -67,7 +67,7 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Append to s1 — its updated_at must bump above s2's so it sorts first.
-	if _, err := store.AppendMessage(s1, "user", "follow up", ""); err != nil {
+	if _, err := store.AppendMessage(s1, "user", "follow up", "", ""); err != nil {
 		t.Fatalf("append followup: %v", err)
 	}
 	sessions, _ = store.ListSessions(workID)

@@ -20,6 +20,10 @@ type QAMessage struct {
 	Role          string    `json:"role"` // "user" | "assistant"
 	Content       string    `json:"content"`
 	CitationsJSON string    `json:"-"`
+	// ScopeJSON is the marshalled library.QueryScope that produced
+	// this turn (user messages only). Empty = whole book / default.
+	// Stored as opaque JSON so db package needn't import library.
+	ScopeJSON     string    `json:"-"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -101,16 +105,18 @@ func (s *Store) DeleteSession(id int64) error {
 }
 
 // AppendMessage adds one message to a session and bumps the session's
-// updated_at so it floats to the top of the list.
-func (s *Store) AppendMessage(sessionID int64, role, content, citationsJSON string) (int64, error) {
+// updated_at so it floats to the top of the list. scopeJSON is the
+// marshalled library.QueryScope that produced this turn (empty for
+// assistant rows or whole-book user turns).
+func (s *Store) AppendMessage(sessionID int64, role, content, citationsJSON, scopeJSON string) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 	res, err := tx.Exec(
-		`INSERT INTO qa_messages (session_id, role, content, citations_json) VALUES (?, ?, ?, ?)`,
-		sessionID, role, content, citationsJSON,
+		`INSERT INTO qa_messages (session_id, role, content, citations_json, scope_json) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, role, content, citationsJSON, scopeJSON,
 	)
 	if err != nil {
 		return 0, err
@@ -133,7 +139,7 @@ func (s *Store) AppendMessage(sessionID int64, role, content, citationsJSON stri
 
 func (s *Store) ListMessages(sessionID int64) ([]QAMessage, error) {
 	rows, err := s.db.Query(
-		`SELECT id, session_id, role, content, citations_json, created_at
+		`SELECT id, session_id, role, content, citations_json, scope_json, created_at
 		   FROM qa_messages WHERE session_id = ? ORDER BY id ASC`,
 		sessionID,
 	)
@@ -144,7 +150,7 @@ func (s *Store) ListMessages(sessionID int64) ([]QAMessage, error) {
 	var out []QAMessage
 	for rows.Next() {
 		var m QAMessage
-		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CitationsJSON, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CitationsJSON, &m.ScopeJSON, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
