@@ -897,6 +897,18 @@
     .chat-msg.assistant .chat-citation .cite-text {
       flex: 1; min-width: 0;
     }
+    /* Inline "Chapter N" links inside the LLM's response prose. Subtle
+       so they don't break the reading flow; warm on hover. */
+    .chat-msg.assistant .chapter-link {
+      color: var(--accent);
+      text-decoration: underline;
+      text-decoration-style: dotted;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+    .chat-msg.assistant .chapter-link:hover {
+      text-decoration-style: solid;
+    }
     .chat-citations-toggle {
       background: none; border: none; color: var(--text-muted);
       padding: 2px 0; cursor: pointer; font-size: 0.7rem;
@@ -4442,7 +4454,11 @@
         return;
       }
       const work = allWorks.find(w => w.id === workId);
-      const bookId = work && work.text_files && work.text_files[0] ? work.text_files[0].id : null;
+      // Prefer the resolver's pick (#100/#101) so inline chapter links
+      // land in the same edition the reader is showing.
+      const bookId = (work && work.display_text_id)
+        || (work && work.text_files && work.text_files[0] && work.text_files[0].id)
+        || null;
       thread.innerHTML = messages.map(m => renderChatMessage(m, workId, bookId)).join('');
       thread.scrollTop = thread.scrollHeight;
     }
@@ -4480,7 +4496,33 @@
       }
       // Preserve newlines from the LLM. escapeHtml prevents injection;
       // white-space: pre-wrap on .chat-msg renders the newlines visibly.
-      return `<div class="chat-msg ${cls}" style="white-space:pre-wrap;">${escapeHtml(m.content)}${citations}</div>`;
+      // For assistant turns, also link "Chapter N" mentions so the
+      // reader follows when the user clicks one — the LLM is prompted
+      // to cite by chapter name, this turns those mentions into the
+      // navigation gesture they already imply.
+      let body = escapeHtml(m.content);
+      if (m.role === 'assistant' && bookId) {
+        body = linkChapterMentions(body, bookId, workId);
+      }
+      return `<div class="chat-msg ${cls}" style="white-space:pre-wrap;">${body}${citations}</div>`;
+    }
+
+    // Wrap "Chapter N" mentions (and "Chapters 3-5" range mentions) in
+    // clickable links that load the named chapter in the reader. Acts on
+    // already-escaped HTML — only "Chapter <digits>" matches, so we
+    // can't accidentally swallow user content. 1-based in prose,
+    // 0-based in the API: subtract 1 before calling loadChapter.
+    function linkChapterMentions(html, bookId, workId) {
+      // Match "Chapter N" or "Chapters N-M" / "N–M" (en-dash). We link
+      // to the first chapter in a range; the user can navigate forward.
+      return html.replace(/\b(Chapters?)\s+(\d+)(?:\s*[–-]\s*(\d+))?\b/g,
+        (match, word, first) => {
+          const idx = parseInt(first, 10) - 1;
+          if (idx < 0) return match;
+          // Inline event handler is safe here — bookId/workId are
+          // numeric, no user-controlled values reach the JS source.
+          return `<a class="chapter-link" onclick="loadChapter(${bookId}, ${idx}, ${workId})">${match}</a>`;
+        });
     }
 
     // Sources expand/collapse — preference persisted in localStorage so
@@ -4591,7 +4633,9 @@
       input.value = '';
       input.focus();
       const work = allWorks.find(w => w.id === workId);
-      const bookId = work && work.text_files && work.text_files[0] ? work.text_files[0].id : null;
+      const bookId = (work && work.display_text_id)
+        || (work && work.text_files && work.text_files[0] && work.text_files[0].id)
+        || null;
       const thread = document.getElementById('chat-thread-' + workId);
       if (!thread) return;
       // Strip "empty" placeholder if present.
