@@ -113,6 +113,34 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRotateServerID mints a fresh server_install_id, invalidating
+// the existing tunnel slug. The caller (the settings UI) is expected
+// to follow up by restarting the nullbore container with the new
+// NULLBORE_TUNNELS slug — the server can't reach across to the relay
+// container itself, so we return the new public_url plus a hint and
+// let the user finish the rotation outside the process (#176).
+//
+// All previously paired mobile devices will need to re-pair because
+// they hold the old hostname.
+func (s *Server) handleRotateServerID(w http.ResponseWriter, r *http.Request) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rng failed"})
+		return
+	}
+	newID := hex.EncodeToString(buf)
+	if err := s.store.SetSetting(settingServerID, newID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"server_id":   newID,
+		"public_url":  s.PublicURL(r),
+		"next_step":   "restart the relay container so it picks up the new slug",
+		"command":     "cd engineering/relay && ./start.sh",
+	})
+}
+
 // PairingPayload is what the QR code encodes and what the phone parses.
 type PairingPayload struct {
 	URL   string `json:"url"`
