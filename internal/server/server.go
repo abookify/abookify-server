@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,12 @@ type Server struct {
 	Ingest     *library.IngestQueue
 	LibraryDir   string
 	GeneratedDir string
+
+	// embedding dedupe — guards against re-entry when multiple STT jobs
+	// finish back-to-back for the same work, or when ReloadLLM kicks off
+	// a backfill while a per-work embed is already running.
+	embedMu      sync.Mutex
+	embedInFlight map[int64]bool
 }
 
 // RAG returns the current LLM RAG client, or nil when no LLM is
@@ -47,7 +54,9 @@ func (s *Server) RAG() *llm.RAG { return s.rag.Load() }
 // fallbacks and swaps it into place. Called at startup and after every
 // POST /api/settings so adding/changing an API key takes effect without
 // a restart. Storing nil when no provider is configured is intentional —
-// it disables Q&A handlers cleanly.
+// it disables Q&A handlers cleanly. On the nil→client transition it also
+// kicks off a background embed backfill across all works (#159) so the
+// first Q&A after enabling an LLM isn't degraded to keyword-only search.
 func (s *Server) ReloadLLM() {
 	settings, err := s.store.GetAllSettings()
 	if err != nil {
@@ -68,8 +77,10 @@ func (s *Server) ReloadLLM() {
 		}
 	}
 
+	prev := s.rag.Load()
+
 	if provider == "" || (provider != "ollama" && apiKey == "") {
-		if s.rag.Load() != nil {
+		if prev != nil {
 			log.Printf("LLM disabled (no provider/key configured)")
 		}
 		s.rag.Store(nil)
@@ -79,10 +90,90 @@ func (s *Server) ReloadLLM() {
 	client := llm.NewClient(llm.Provider(provider), apiKey, settings["llm_model"], settings["llm_base_url"])
 	s.rag.Store(llm.NewRAG(s.store, client))
 	log.Printf("LLM Q&A ready (provider: %s, model: %s)", provider, client.Model())
+
+	if prev == nil {
+		go s.embedAllWorks()
+	}
+}
+
+// OnJobUpdate is the Generator's job-update callback. It broadcasts the
+// update to WebSocket subscribers and, on STT completion, kicks off a
+// background chunk+embed for the work (#159) so a newly transcribed
+// audiobook becomes searchable without a manual /api/works/{id}/embed.
+func (s *Server) OnJobUpdate(job library.JobStatus) {
+	s.Events.Broadcast(Event{Type: "job_update", Data: job})
+	if job.Type == "stt" && job.Status == "completed" && job.WorkID > 0 {
+		go s.EmbedWorkAsync(job.WorkID)
+	}
+}
+
+// EmbedWorkAsync chunks (idempotent) and embeds every text book in the
+// work. No-op when LLM isn't configured. Dedupes per-work so two
+// concurrent triggers (e.g. STT completion + LLM-enable backfill) don't
+// race the same chunks.
+func (s *Server) EmbedWorkAsync(workID int64) {
+	rag := s.RAG()
+	if rag == nil {
+		return
+	}
+
+	s.embedMu.Lock()
+	if s.embedInFlight[workID] {
+		s.embedMu.Unlock()
+		return
+	}
+	s.embedInFlight[workID] = true
+	s.embedMu.Unlock()
+
+	defer func() {
+		s.embedMu.Lock()
+		delete(s.embedInFlight, workID)
+		s.embedMu.Unlock()
+	}()
+
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		return
+	}
+	for _, tf := range work.TextFiles {
+		// Newly created transcript books (post-STT) won't be chunked yet.
+		// ChunkBook short-circuits when chunks already exist.
+		if err := library.ChunkBook(s.store, tf.ID); err != nil {
+			log.Printf("embed: chunk book %d (%s): %v", tf.ID, tf.Filename, err)
+			continue
+		}
+		n, err := rag.EmbedBook(tf.ID)
+		if err != nil {
+			log.Printf("embed: book %d (%s): %v", tf.ID, tf.Filename, err)
+			continue
+		}
+		if n > 0 {
+			log.Printf("embed: work %d book %d (%s): %d new chunks", workID, tf.ID, tf.Filename, n)
+		}
+	}
+}
+
+// embedAllWorks runs EmbedWorkAsync for every work in the library.
+// Fired on the LLM-enable transition so works added while no LLM was
+// configured get backfilled. Each per-work embed is a no-op when its
+// chunks already have embeddings.
+func (s *Server) embedAllWorks() {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		log.Printf("embed backfill: list works failed: %v", err)
+		return
+	}
+	for _, w := range works {
+		s.EmbedWorkAsync(w.ID)
+	}
 }
 
 func New(store *db.Store, port string) *Server {
-	s := &Server{store: store, Events: NewEventBus()}
+	s := &Server{
+		store:         store,
+		Events:        NewEventBus(),
+		embedInFlight: make(map[int64]bool),
+	}
 
 	mux := http.NewServeMux()
 
