@@ -104,6 +104,55 @@ The implementation needs to live in `cmd/stt-cli/` and `internal/stt/`, with the
 - One 10-min slice = ~13 min wall on local CPU, ~30 s estimated on atrium GPU large-v3 (currently down).
 - Iterating on different prompts at ~13 min/iter is tolerable for one passage but not for sweeping the book; need GPU before doing the full chapter.
 
+### Approach 1 on a second slice — `02.mp3` (audio minutes 60–70)
+
+Same protocol, different passage of the book. Slice covers the end of part6 (CIA — Chef Bernard / Escoffier Room) into the start of part7 (THE RETURN OF MAL CARNE — Dimitri intro). Prompt v2 (`prompt_v2_02.txt`) is tailored to EPUB parts 4–7: people (Mario, Dimitri, Bobby, Tyrone, Howard Mitcham, Chef Bernard, Hunter Thompson, Iggy Pop, …), places (Provincetown, Cape Cod, Vassar, Hyde Park, Culinary Institute of America, Khe Sanh, …), terms (Dreadnaught, Larousse Gastronomique, Escoffier Room, chaud-froid, demi-glace, sous-chef, garde-manger, Grill Bitch, Mal Carne, Tant pis).
+
+#### Wins
+
+| Audio passage | Baseline | Approach 1 | EPUB |
+|---|---|---|---|
+| pop-culture title | `night of the living dead` | `Night of the Living Dead` | Night of the Living Dead ✓ |
+| sentence verb | "and **the most** withering" | "and **unload** the most" | "unload the most" ✓ |
+| description | "shredding **the world**" | "shredding **bread**" | shredding bread ✓ |
+| Dimitri biography | "fluent in Russian **literature**, master of English and German" | "fluent in Russian and German … amazing command of English" | "fluent in Russian and German as well as having an amazing command of English" ✓ |
+| ending of preamble | "I had field experience, **a vocation**. I had **a good** vocabulary and a criminal mind" | "I had field experience, a vocabulary, and a criminal mind" | "a vocabulary and a criminal mind" ✓ |
+| dittography | "outrage. **rage**, I submitted" (dropped word and merged) | "outrage. I submitted" | "outrage. I submitted" ✓ |
+| paragraph recovery | "I'd seen a much-advocated, **highly-educated, and highly-educated, and highly-educated** chef on the stage, in the form of a" (garbled, no real content) | "I'd seen a much-admired commemorative cake, depicting Nixon painted in chalk, chocolate on a pastillage cameo, communicating by telephone with the Apollo astronauts in their space module, also chocolate on pastillage." | "much admired commemorative cake, depicting Nixon, painted in chocolate on a pastillage cameo, communicating by telephone with the Apollo astronauts in their space module, also chocolate on pastillage" — approach 1 recovered a passage baseline collapsed into nonsense |
+
+The commemorative-cake recovery is the headline result. Baseline produced text a reader couldn't make sense of. Approach 1 produced text that, with one wrong word (`chalk` vs `chocolate`), matches the book. This is the kind of error initial_prompt clearly *does* fix: when baseline's beam search runs out of plausible-text options and starts repeating, the prompt's named entities (`commemorative cake`, `Apollo`, `pastillage`) give it traction.
+
+#### Losses
+
+| Audio passage | Baseline | Approach 1 | EPUB | Notes |
+|---|---|---|---|---|
+| French reference | `Larousse gastronomique` | **`LaRouche gastronomique`** | Larousse Gastronomique | Larousse *was in the prompt* — Whisper still mis-decoded it as the US conspiracy theorist's name. Striking failure: the prompt biased toward novel-fitting, then a familiar-sounding ASR output won anyway. |
+| number | "thirty seconds into the chef's tirade" | "thirty-six. He did not let..." | "thirty seconds" ✓ | Approach 1 dropped half a sentence here |
+| informal | "Bernard's **gonna**" | "Bernard's going to" | gonna ✓ | Approach 1 formalised informal speech |
+| display cart | "voiture" | "Voiture" | voiture (lowercase) ✓ | Cosmetic, but prompt encouraged title-casing on French nouns |
+| chapter heading | `E-Room` | `e-room` (lowercased) | "'E Room'" | Both wrong; baseline closer |
+
+#### The Larousse → LaRouche failure
+
+This deserves attention. The prompt explicitly contains "Larousse Gastronomique." Whisper still picked "LaRouche" — almost certainly because the audio realisation of `/læˈruːs/` sits closer in feature space to "LaRouche" for a US-tuned acoustic model. Putting the right word in the prompt biases the *language model* component, but doesn't override the *acoustic* mismatch when the right word is acoustically distant from the model's nearest English neighbour. This is exactly the failure mode where approach 3 (post-pass fuzz-correction against a vocabulary built from the EPUB) would win: edit-distance from "LaRouche" to "Larousse" is small enough that a constrained dictionary substitution catches it cleanly.
+
+#### Same patterns as 01.mp3
+
+- Prompted proper nouns mostly land (commemorative cake, Apollo, Night of the Living Dead, Bernard, Dimitri, Tyrone all correct in approach 1).
+- Dittographies in baseline get cleaned up by approach 1 ("highly-educated, and highly-educated" → real text; "outrage. rage," → "outrage. I").
+- Approach 1 sometimes formalises informal speech ("gonna" → "going to") or loses a few words to paraphrase.
+- Audio-ambiguous words (baking class vs baking glass — both transcripts heard glass) are *not* fixed by either approach. Wisdom: initial_prompt only fixes language-model errors, not acoustic-frontend errors.
+
+#### Score (this slice)
+
+| Category | Count |
+|---|---|
+| Clear wins for approach 1 | 7 |
+| Clear losses for approach 1 | 5 |
+| Mixed / draws | ~6 |
+
+Same shape as 01.mp3: net positive, same kinds of wins, same kinds of losses, plus a new failure mode (acoustic-distant prompt entry not honoured).
+
 ## Approach 2 — post-STT alignment to EPUB (not started)
 
 After STT, align the resulting word sequence to EPUB prose using edit-distance / needle-in-haystack matching, and substitute the EPUB spelling where alignment is locally confident. This is exactly the "Phase 1 sync differentiator" pipeline that PROJECT_STATUS.md flags as the next big thing — so approach 2 isn't experimental orthogonal-work, it's the production path. The transcript-correction angle is a side-benefit of an alignment we want to build anyway.
@@ -118,17 +167,18 @@ Could be layered with approach 1 — use the prompt to bias Whisper, then a fuzz
 
 ## Files
 
-- Test slice: `/tmp/kc-experiment/runs/slice_01_0-600.mp3`
-- Baseline transcript: `/tmp/kc-experiment/runs/baseline_01_0-600.json` and `.../baseline.txt`
-- Approach 1 transcript: `/tmp/kc-experiment/runs/approach1_01_0-600.json` and `.../approach1.txt`
-- EPUB-extracted prose: `/tmp/kc-experiment/text/part*.txt`
-- Prompt used: `/tmp/kc-experiment/prompt_v1.txt`
+All under `engineering/server/testdata/transcription-experiments/kitchen-confidential/`:
 
-These are under `/tmp` and will not survive a reboot. If we want to keep them, move under `engineering/server/testdata/transcription-experiments/`.
+- Test slices: `runs/slice_01_0-600.mp3`, `runs/slice_02_0-600.mp3` (mp3 + epub-text are gitignored — derivable from the user's own files)
+- Baseline transcripts: `runs/baseline_01_0-600.json`, `runs/baseline.txt`; `runs/baseline_02_0-600.json`, `runs/baseline_02.txt`
+- Approach 1 transcripts: `runs/approach1_01_0-600.json`, `runs/approach1.txt`; `runs/approach1_02_0-600.json`, `runs/approach1_02.txt`
+- EPUB-extracted prose: `epub-text/part*.txt`
+- Prompts: `prompt_v1.txt` (parts 2-3 region, used on 01.mp3), `prompt_v2_02.txt` (parts 4-7 region, used on 02.mp3)
 
 ## Next
 
-1. Move the experiment artefacts out of `/tmp` into `testdata/`.
-2. Once atrium GPU is back: rerun both on GPU to confirm the wins/losses reproduce (large-v3 + same settings should be deterministic, but worth a sanity check).
-3. Write the EPUB → prompt extractor (Go, under `internal/library/epub_prompt.go`) so prompts are automatic per chunk.
-4. Start approach 2 on the same slice — measure incremental gain on top of approach 1.
+1. ~~Move the experiment artefacts out of `/tmp` into `testdata/`.~~ Done.
+2. Once atrium GPU is back: rerun both slices on GPU to confirm the wins/losses reproduce (large-v3 + same settings should be deterministic, but worth a sanity check), then run a full chapter to widen the comparison.
+3. Write the EPUB → prompt extractor (Go, under `internal/library/epub_prompt.go`) so prompts are automatic per chunk. Two slices is enough signal to design the harvester — multi-cap nouns + hyphenated compounds + non-ASCII tokens cover most wins; a small curated culinary lexicon supplements.
+4. **Approach 3 (vocab fuzz-correction) moves up in priority.** The 02.mp3 results show prompted-but-not-honoured failures like Larousse → LaRouche. Fuzz-correction against an EPUB-derived vocabulary would catch exactly these. Should be tested on the same two slices before approach 2.
+5. Start approach 2 on the same slices — measure incremental gain on top of approaches 1+3.
