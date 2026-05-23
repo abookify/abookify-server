@@ -41,6 +41,10 @@ def transcribe():
     audio_file = request.files["file"]
     language = request.form.get("language")
     word_timestamps = request.form.get("word_timestamps", "true").lower() == "true"
+    # initial_prompt seeds Whisper's decoder with vocabulary/spelling hints
+    # (proper nouns, foreign terms) so they're more likely to be emitted
+    # verbatim. Whisper truncates internally to the last 224 BPE tokens.
+    initial_prompt = request.form.get("initial_prompt") or None
 
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
@@ -53,6 +57,7 @@ def transcribe():
             language=language if language else None,
             word_timestamps=word_timestamps,
             vad_filter=True,
+            initial_prompt=initial_prompt,
         )
 
         result_segments = []
