@@ -1,0 +1,4 @@
+# Source material — derivable from the user's own EPUB + audio; not stored in git.
+**/runs/*.mp3
+**/runs/*.wav
+**/epub-text/
