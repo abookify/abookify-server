@@ -217,4 +217,26 @@ The escape hatch is `.stt.json.redo` — dropping that marker forces re-import e
 
 Path 2 is the right architectural fix if we want incremental transcription to be a first-class workflow. It also unblocks the same workflow on GPU later (interruptible across a power-cycle). Path 1 is the right move if we want field-tested alignment data this week.
 
-The next session should pick one before running any more STT.
+### Resolution: path 2 implemented (2026-05-23)
+
+`stt-cli --bootstrap-sidecar` (commit `15939f9`) writes a stub sidecar with the sources list + total duration but no words. `--redo-files <chapter>` then fills the stub one file at a time, merging into whatever's already there. Workflow:
+
+```bash
+stt-cli --audio ./audiobook-dir --bootstrap-sidecar
+stt-cli --audio ./audiobook-dir --redo-files chapter-007.mp3   # ~40 min CPU per file
+stt-cli --audio ./audiobook-dir --redo-files chapter-008.mp3   # etc.
+touch ./audiobook-dir.stt.json.redo                            # force re-import
+curl -X POST http://localhost:7654/api/works/{id}/align         # produce alignment
+```
+
+The watcher rejects empty-words sidecars on import, so the stub itself doesn't touch the DB. Re-import happens via the `.redo` marker after enough words have landed.
+
+### First field-test result on Frankenstein
+
+- chapter-015.mp3 (13 min audio) redo finished in 30 min wall (2.3× realtime on `large-v3 int8` CPU).
+- Watcher imported the sidecar via the redo marker: created the `whisper_transcript` book (id 24795 in the local DB) with 2142 words attached.
+- `POST /api/works/1/align` returned `{"chapters_aligned":1, "average_confidence":0.282}`. **First row ever in the `alignments` table.** 21 paragraph pairs serialised, ~1.5 KB.
+- Semantic caveat: the alignment ran on chapter pair (0,0) — but the transcript for "chapter 0" of the transcript book is actually chapter-015 audio, because we only filled one file and chapter detection found no narrator markers in a single-file transcript. So the alignment is structurally valid but semantically mismatched. Will resolve as more chapters fill in and chapter-detect produces a real chapter sequence.
+- Wall-time projection for the rest of Frankenstein's 9 testdata files: ~6 hours sequential. The full library (~7 h audio total in testdata) is the test-bed; full Frankenstein on disk has more files outside testdata.
+
+The pipeline is end-to-end working. The next steps are content, not code: keep filling chunks, watch alignment confidence climb as the transcript gets denser and chapter-detect can sequence the audio.
