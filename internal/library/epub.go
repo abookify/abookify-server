@@ -219,7 +219,7 @@ var brRe = regexp.MustCompile(`(?i)<br\s*/?\s*>`)
 // safeTagRe matches opening and closing tags we want to KEEP in sanitized HTML.
 // Everything not matched gets stripped. We keep: h1-h6, p, em, strong, i, b,
 // blockquote, ul, ol, li, br, sup, sub, span (for karaoke word wrapping later).
-var safeTagRe = regexp.MustCompile(`(?i)<(/?)(h[1-6]|p|em|strong|i|b|blockquote|ul|ol|li|br|sup|sub|span)(\s[^>]*)?>`)
+var safeTagRe = regexp.MustCompile(`(?i)<(/?)(h[1-6]|p|em|strong|i|b|blockquote|ul|ol|li|br|hr|sup|sub|span)(\s[^>]*)?>`)
 
 // sanitizeHTML strips unsafe tags from EPUB XHTML while keeping structural
 // markup (headings, paragraphs, emphasis, lists). Removes all attributes
@@ -264,8 +264,9 @@ func sanitizeHTML(raw string) string {
 			if m != nil {
 				slash := m[1]
 				name := strings.ToLower(m[2])
-				if name == "br" {
-					out.WriteString("<br>")
+				if name == "br" || name == "hr" {
+					// Void elements — emit self-closing, ignore the slash.
+					out.WriteString("<" + name + ">")
 				} else {
 					out.WriteString("<" + slash + name + ">")
 				}

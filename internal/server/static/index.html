@@ -412,6 +412,52 @@
       margin-right: auto;
     }
 
+    /* Restore typography for the rich EPUB HTML rendered into the reader
+       (#102). The global `* { margin: 0; padding: 0 }` reset at the top of
+       the page wipes browser defaults, so without these rules headings
+       and paragraphs collapse together. Margins are em-based so they
+       scale with --reader-font-size when the user resizes. */
+    .reader-content p { margin: 0 0 1em; }
+    .reader-content p:last-child { margin-bottom: 0; }
+    .reader-content h1, .reader-content h2, .reader-content h3,
+    .reader-content h4, .reader-content h5, .reader-content h6 {
+      font-family: var(--reader-font);
+      font-weight: 700;
+      line-height: 1.25;
+      margin: 1.6em 0 0.6em;
+    }
+    .reader-content > h1:first-child, .reader-content > h2:first-child,
+    .reader-content > h3:first-child, .reader-content > h4:first-child {
+      margin-top: 0;
+    }
+    .reader-content h1 { font-size: 1.6em; }
+    .reader-content h2 { font-size: 1.35em; }
+    .reader-content h3 { font-size: 1.15em; }
+    .reader-content h4, .reader-content h5, .reader-content h6 { font-size: 1em; }
+    .reader-content em, .reader-content i { font-style: italic; }
+    .reader-content strong, .reader-content b { font-weight: 700; }
+    .reader-content blockquote {
+      margin: 1em 1.5em;
+      padding: 0.2em 0 0.2em 1em;
+      border-left: 3px solid #c0b8a8;
+      color: #3a3a3a;
+      font-style: italic;
+    }
+    .reader-content ul, .reader-content ol {
+      margin: 0 0 1em 1.5em;
+      padding-left: 1em;
+    }
+    .reader-content li { margin: 0.25em 0; }
+    .reader-content sup, .reader-content sub { font-size: 0.75em; }
+    /* Soft separator inside the reading column for explicit hr or
+       between EPUB sub-files when the source uses them. */
+    .reader-content hr {
+      border: none;
+      border-top: 1px solid #c0b8a8;
+      margin: 1.5em auto;
+      width: 60%;
+    }
+
     /* Full-screen reader: same element, position:fixed, wider whitespace,
        bottom padding reserved for the now-playing bar. Karaoke state
        survives transition because the DOM node is not replaced — only its
