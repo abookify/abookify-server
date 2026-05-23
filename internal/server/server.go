@@ -1414,11 +1414,11 @@ func isSecretSettingKey(k string) bool {
 // enough prefix and suffix for the user to identify which key is
 // installed (different OpenAI projects share the "sk-proj-" prefix
 // but diverge in the random middle, so showing the first ~8 and the
-// last 4 makes "sk-proj-IsAbC…La8A" easy to recognize without
+// last 4 makes "sk-proj-IsAbC…Xy9z" easy to recognize without
 // revealing the rotatable middle).
 //
-//   "sk-proj-IsAbCdEf...XyzLa8A" -> "sk-proj-…La8A"
-//   "sk-ant-IsAb...xyzLa8A"      -> "sk-ant-Is…La8A"
+//   "sk-proj-IsAbCdEf...XyzXy9z" -> "sk-proj-…Xy9z"
+//   "sk-ant-IsAb...xyzXy9z"      -> "sk-ant-Is…Xy9z"
 //   "shortkey"                   -> "****"
 //
 // Format chosen so isMaskedSecret can detect the placeholder
@@ -1500,7 +1500,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	for k, v := range body {
 		// If a secret field came back with the mask placeholder, the
 		// user didn't touch it on this save — keep the existing value
-		// instead of clobbering it with "****La8A".
+		// instead of clobbering it with "****Xy9z".
 		if isSecretSettingKey(k) && isMaskedSecret(v) {
 			continue
 		}

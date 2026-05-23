@@ -1,6 +1,8 @@
-# Server Application
+# abookify Server
 
 The core of abookify. Runs on the user's desktop, NAS, or home server as a single Go binary with embedded assets.
+
+**License:** [AGPL-3.0](LICENSE). Free for personal and commercial use; modifications and network-deployed forks must publish source. Mobile and desktop client apps are distributed separately under their own licenses.
 
 ## Components
 
