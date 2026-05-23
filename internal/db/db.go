@@ -25,6 +25,9 @@ type Work struct {
 	// Empty series string = standalone work.
 	Series      string  `json:"series,omitempty"`
 	SeriesIndex float64 `json:"series_index,omitempty"` // supports fractional (e.g. 2.5 for novellas)
+	// DisplayTextBookID is the user's per-work override of the display
+	// resolver. 0 = no override (resolver picks by OriginAuthority).
+	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
 	AudioFiles   []Book         `json:"audio_files,omitempty"`
 	TextFiles    []Book         `json:"text_files,omitempty"`
 	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
@@ -418,6 +421,12 @@ func migrate(db *sql.DB) error {
 		// offsets accurately instead of summing metadata durations
 		// (which drift by milliseconds per file).
 		`ALTER TABLE books ADD COLUMN start_sec REAL NOT NULL DEFAULT 0`,
+		// Per-work display-source override (#100/#101). 0 = use authority
+		// resolver default. When set, the reader shows this text book
+		// regardless of OriginAuthority — covers cases where the user
+		// wants the transcript even though a publisher EPUB is present
+		// (e.g. comparing narration line-by-line to the printed text).
+		`ALTER TABLE works ADD COLUMN display_text_book_id INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -661,6 +670,16 @@ func (s *Store) SetSeries(id int64, series string, index float64) error {
 	return err
 }
 
+// SetDisplayTextBook records the user's per-work choice of which text
+// source the reader should show. Pass 0 to clear the override and let
+// the authority resolver decide. The caller is responsible for
+// verifying the book actually belongs to this work + has visibility
+// != "internal"; SQL doesn't enforce that.
+func (s *Store) SetDisplayTextBook(workID, bookID int64) error {
+	_, err := s.db.Exec(`UPDATE works SET display_text_book_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, bookID, workID)
+	return err
+}
+
 // UpdateWork updates the title and author of a work. Empty strings are
 // treated as "no change" (keeps existing value).
 func (s *Store) UpdateWork(id int64, title, author string) error {
@@ -749,7 +768,7 @@ func (s *Store) GetBook(id int64) (*Book, error) {
 
 func (s *Store) ListWorks() ([]Work, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, author, series, series_index, created_at, updated_at
+		SELECT id, title, author, series, series_index, display_text_book_id, created_at, updated_at
 		FROM works ORDER BY series, series_index, title
 	`)
 	if err != nil {
@@ -760,7 +779,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -797,8 +816,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, series, series_index, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, display_text_book_id, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

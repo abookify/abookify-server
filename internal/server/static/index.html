@@ -2024,6 +2024,8 @@
     }
 
     // Switch to a different text edition when the user picks from the dropdown.
+    // Persists the choice on the work so subsequent reloads (and other
+    // clients on the same library) see the same edition.
     async function switchTextEdition(workId, bookId) {
       bookId = parseInt(bookId);
       // Reload the chapter list for the new book.
@@ -2033,6 +2035,23 @@
       const chapters = chapterCache[bookId]?.chapters;
       if (chapters && chapters.length > 0) {
         loadChapter(bookId, chapters[0].index, workId);
+      }
+      // Mirror the local in-memory state so a re-render picks the same
+      // book without waiting for the server round-trip.
+      const work = allWorks.find(w => w.id === workId);
+      if (work) work.display_text_id = bookId;
+      // Persist. Best-effort — if it fails the user still sees their
+      // pick this session; next reload will revert to the authority
+      // default. We surface a console warning rather than blocking the
+      // UI so a slow network doesn't make the picker feel sluggish.
+      try {
+        await fetch(`/api/works/${workId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ display_text_book_id: bookId }),
+        });
+      } catch (e) {
+        console.warn('Failed to persist text-edition override:', e);
       }
     }
 

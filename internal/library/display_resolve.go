@@ -17,7 +17,21 @@ import (
 // work, or nil if none exists. Prefers publisher EPUB > MOBI > PDF > user
 // upload > transcript. Pipeline intermediates (visibility="internal") are
 // excluded.
+//
+// When the user has pinned a specific text book via the edition picker
+// (Work.DisplayTextBookID != 0) and that book is still visible on the
+// work, the override wins regardless of authority. Stale overrides
+// (the chosen book was deleted, marked internal, or moved off the
+// work) silently fall through to the authority pick.
 func ResolveDisplayText(work *db.Work) *db.Book {
+	if work.DisplayTextBookID != 0 {
+		for i := range work.TextFiles {
+			b := &work.TextFiles[i]
+			if b.ID == work.DisplayTextBookID && b.Visibility != "internal" {
+				return b
+			}
+		}
+	}
 	return resolveByAuthority(work.TextFiles)
 }
 

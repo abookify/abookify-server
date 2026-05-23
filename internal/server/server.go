@@ -892,17 +892,50 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
+	// All three fields are optional. *int64 lets the client send
+	// display_text_book_id:0 to clear the override (a plain int64
+	// couldn't distinguish "clear" from "field absent").
 	var req struct {
-		Title  string `json:"title"`
-		Author string `json:"author"`
+		Title             string `json:"title"`
+		Author            string `json:"author"`
+		DisplayTextBookID *int64 `json:"display_text_book_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.store.UpdateWork(workID, req.Title, req.Author); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	if req.Title != "" || req.Author != "" {
+		if err := s.store.UpdateWork(workID, req.Title, req.Author); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.DisplayTextBookID != nil {
+		bookID := *req.DisplayTextBookID
+		// Verify the book actually belongs to this work and isn't an
+		// internal pipeline source. 0 always allowed (clears override).
+		if bookID != 0 {
+			work, err := s.store.GetWork(workID)
+			if err != nil || work == nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+				return
+			}
+			ok := false
+			for _, tf := range work.TextFiles {
+				if tf.ID == bookID && tf.Visibility != "internal" {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "book is not a visible text source on this work"})
+				return
+			}
+		}
+		if err := s.store.SetDisplayTextBook(workID, bookID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
