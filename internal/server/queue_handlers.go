@@ -79,8 +79,8 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 	// LLM fallback: ask the configured provider to label any
 	// "Chapter N" rows the narrator didn't title. No-op when no LLM
 	// is configured.
-	if s.RAG != nil && s.RAG.Client() != nil {
-		if err := library.LabelMissingChapterTitles(s.store, s.RAG.Client(), id); err != nil {
+	if rag := s.RAG(); rag != nil && rag.Client() != nil {
+		if err := library.LabelMissingChapterTitles(s.store, rag.Client(), id); err != nil {
 			// Non-fatal — chapters keep their bare titles, reprocess
 			// still succeeds.
 			s.Events.Broadcast(Event{Type: "library_updated"})
@@ -196,7 +196,8 @@ func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.R
 // POST /api/books/{id}/embed — backfill chunk embeddings for one book.
 // Idempotent (skips chunks that already have embeddings). Returns counts.
 func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {
-	if s.RAG == nil {
+	rag := s.RAG()
+	if rag == nil {
 		http.Error(w, "RAG not configured (no LLM provider set)", http.StatusServiceUnavailable)
 		return
 	}
@@ -205,7 +206,7 @@ func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid book id", http.StatusBadRequest)
 		return
 	}
-	embedded, err := s.RAG.EmbedBook(id)
+	embedded, err := rag.EmbedBook(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

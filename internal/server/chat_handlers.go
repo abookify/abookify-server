@@ -135,7 +135,8 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 // stores the assistant reply, and returns the assistant's chatMessage so
 // the client can append it to the visible thread.
 func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
-	if s.RAG == nil {
+	rag := s.RAG()
+	if rag == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "No LLM configured. Add an API key in Settings.",
 		})
@@ -187,7 +188,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	answer, err := library.AskInSession(s.store, s.RAG, sess.WorkID, history, req.Content)
+	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.

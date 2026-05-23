@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pj/abookify/internal/abook"
@@ -30,10 +31,54 @@ type Server struct {
 	http       *http.Server
 	Events     *EventBus
 	Generator  *library.Generator
-	RAG        *llm.RAG
+	rag        atomic.Pointer[llm.RAG]
 	Ingest     *library.IngestQueue
 	LibraryDir   string
 	GeneratedDir string
+}
+
+// RAG returns the current LLM RAG client, or nil when no LLM is
+// configured. Safe for concurrent use; ReloadLLM swaps the pointer
+// atomically so callers see either the old or the new client, never
+// a torn read.
+func (s *Server) RAG() *llm.RAG { return s.rag.Load() }
+
+// ReloadLLM rebuilds the RAG client from the current settings + env
+// fallbacks and swaps it into place. Called at startup and after every
+// POST /api/settings so adding/changing an API key takes effect without
+// a restart. Storing nil when no provider is configured is intentional —
+// it disables Q&A handlers cleanly.
+func (s *Server) ReloadLLM() {
+	settings, err := s.store.GetAllSettings()
+	if err != nil {
+		log.Printf("LLM reload: read settings failed: %v", err)
+		return
+	}
+
+	provider := settings["llm_provider"]
+	apiKey := settings["llm_api_key"]
+
+	if provider == "" {
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			provider = "anthropic"
+			apiKey = os.Getenv("ANTHROPIC_API_KEY")
+		} else if os.Getenv("OPENAI_API_KEY") != "" {
+			provider = "openai"
+			apiKey = os.Getenv("OPENAI_API_KEY")
+		}
+	}
+
+	if provider == "" || (provider != "ollama" && apiKey == "") {
+		if s.rag.Load() != nil {
+			log.Printf("LLM disabled (no provider/key configured)")
+		}
+		s.rag.Store(nil)
+		return
+	}
+
+	client := llm.NewClient(llm.Provider(provider), apiKey, settings["llm_model"], settings["llm_base_url"])
+	s.rag.Store(llm.NewRAG(s.store, client))
+	log.Printf("LLM Q&A ready (provider: %s, model: %s)", provider, client.Model())
 }
 
 func New(store *db.Store, port string) *Server {
@@ -594,7 +639,8 @@ func (s *Server) handleFetchCover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
-	if s.RAG == nil {
+	rag := s.RAG()
+	if rag == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "No LLM configured. Add an API key in Settings.",
 		})
@@ -629,10 +675,10 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 
 	// New path: vector search + alignment-aware citations with audio times.
 	// Falls back gracefully when embeddings aren't populated.
-	answer, err := library.AskWithCitations(s.store, s.RAG, workID, req.Question)
+	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question)
 	if err != nil {
 		// Legacy fallback: keyword-only search on the first text file
-		legacy, err2 := s.RAG.Ask(work.TextFiles[0].ID, req.Question, work.Title)
+		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)
 		if err2 != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -938,7 +984,8 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "generation engine not available"})
 		return
 	}
-	if s.RAG == nil || s.RAG.Client() == nil {
+	rag := s.RAG()
+	if rag == nil || rag.Client() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "LLM not configured"})
 		return
 	}
@@ -982,7 +1029,7 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(tmpPath)
 
-	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), s.RAG, workID, tmpPath, voice)
+	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -991,7 +1038,8 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
-	if s.RAG == nil || s.RAG.Client() == nil {
+	rag := s.RAG()
+	if rag == nil || rag.Client() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "LLM not configured — add OpenAI API key in Settings"})
 		return
 	}
@@ -1007,7 +1055,7 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 	totalEmbedded := 0
 	for _, tf := range work.TextFiles {
-		n, err := library.EmbedChunksForBook(s.store, s.RAG.Client(), tf.ID)
+		n, err := library.EmbedChunksForBook(s.store, rag.Client(), tf.ID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1323,6 +1371,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
+	llmTouched := false
 	for k, v := range body {
 		// If a secret field came back with the mask placeholder, the
 		// user didn't touch it on this save — keep the existing value
@@ -1334,6 +1383,15 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		if strings.HasPrefix(k, "llm_") {
+			llmTouched = true
+		}
+	}
+	// Rebuild the LLM client when any llm_* key changed so the next
+	// /api/works/{id}/ask call uses the freshly-saved key/model without
+	// a server restart (#160).
+	if llmTouched {
+		s.ReloadLLM()
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

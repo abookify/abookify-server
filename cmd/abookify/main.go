@@ -7,7 +7,6 @@ import (
 
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
-	"github.com/pj/abookify/internal/llm"
 	"github.com/pj/abookify/internal/scanner"
 	"github.com/pj/abookify/internal/server"
 	"github.com/pj/abookify/internal/stt"
@@ -232,8 +231,10 @@ func main() {
 		library.ExtractCoversForWork(store, &works[i], coversDir)
 	}
 
-	// Set up LLM for Q&A (reads API keys from settings)
-	setupLLM(store, srv)
+	// Set up LLM for Q&A (reads API keys from settings + env fallbacks).
+	// handleSaveSettings calls the same ReloadLLM so adding a key in the UI
+	// takes effect without a restart.
+	srv.ReloadLLM()
 
 	// Start file watcher for live library updates
 	watcher, err := library.NewWatcher(store, *libraryPath, func() {
@@ -266,40 +267,6 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
-}
-
-func setupLLM(store *db.Store, srv *server.Server) {
-	settings, err := store.GetAllSettings()
-	if err != nil {
-		return
-	}
-
-	provider := settings["llm_provider"]
-	apiKey := settings["llm_api_key"]
-
-	// Also check environment variables as fallback
-	if provider == "" {
-		if os.Getenv("ANTHROPIC_API_KEY") != "" {
-			provider = "anthropic"
-			apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		} else if os.Getenv("OPENAI_API_KEY") != "" {
-			provider = "openai"
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-	}
-
-	if provider == "" || (provider != "ollama" && apiKey == "") {
-		log.Printf("LLM not configured (set API key in Settings or via environment)")
-		return
-	}
-
-	model := settings["llm_model"]
-	baseURL := settings["llm_base_url"]
-
-	client := llm.NewClient(llm.Provider(provider), apiKey, model, baseURL)
-	srv.RAG = llm.NewRAG(store, client)
-
-	log.Printf("LLM Q&A ready (provider: %s, model: %s)", provider, client.Model())
 }
 
 func envOrDefault(key, fallback string) string {
