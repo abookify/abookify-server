@@ -64,8 +64,9 @@ func Converse(
 		return nil, fmt.Errorf("couldn't understand the question (empty transcription)")
 	}
 
-	// 2. Run RAG.
-	answer, err := AskWithCitations(store, rag, workID, question)
+	// 2. Run RAG. Voice converse is always whole-book — there's no UI
+	// affordance for scope selection here.
+	answer, err := AskWithCitations(store, rag, workID, question, QueryScope{})
 	if err != nil {
 		return nil, fmt.Errorf("ask: %w", err)
 	}

@@ -17,9 +17,12 @@ import (
 // the new question gets appended internally. Citations are computed for the
 // most recent retrieval pass only — historical messages don't get re-cited.
 //
+// scope mirrors AskWithCitations — pass the zero value for whole-work,
+// or constrain to a chapter/up-to-here/paragraph.
+//
 // Returns the assistant's reply augmented with citations. Caller is
 // responsible for persisting the user message + this reply to qa_messages.
-func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string) (*llm.Answer, error) {
+func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string, scope QueryScope) (*llm.Answer, error) {
 	if rag == nil || rag.Client() == nil {
 		return nil, fmt.Errorf("LLM not configured")
 	}
@@ -32,21 +35,9 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 		return nil, fmt.Errorf("no text content for this work")
 	}
 
-	// Retrieve passages relevant to the *new* question. We don't accumulate
-	// retrieval across turns — each follow-up is fresh — to avoid context
-	// bloat and to keep retrieval focused on what's being asked right now.
-	var retrieved []db.Chunk
-	hits, err := VectorSearchChunks(store, rag.Client(), workID, question, 8)
-	if err == nil && len(hits) > 0 {
-		for _, h := range hits {
-			retrieved = append(retrieved, h.Chunk)
-		}
-	} else {
-		kw := extractKeyword(question)
-		retrieved, _ = store.SearchChunks(target.ID, kw)
-		if len(retrieved) > 8 {
-			retrieved = retrieved[:8]
-		}
+	retrieved, err := retrievePassages(store, rag, work, target, question, scope)
+	if err != nil {
+		return nil, err
 	}
 
 	// Chapter-reference boost: if the question explicitly names a
@@ -54,18 +45,22 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 	// that chapter alongside the vector hits. Pure semantic similarity
 	// often misses named chapters because the question's wording
 	// doesn't resemble the chapter's prose. Dedup against vector hits
-	// so we don't repeat chunks.
+	// so we don't repeat chunks. Skip when the user already pinned
+	// scope to a single chapter — re-adding it is redundant.
 	chapters, _ := store.ListChapters(target.ID)
-	if refs := ParseChapterRefs(question, chapters); len(refs) > 0 {
-		boost, _ := FetchChapterChunks(store, target.ID, refs)
-		seen := map[int64]bool{}
-		for _, c := range retrieved {
-			seen[c.ID] = true
-		}
-		for _, c := range boost {
-			if !seen[c.ID] {
-				retrieved = append(retrieved, c)
+	if scope.Type != "chapter" && scope.Type != "paragraph" {
+		if refs := ParseChapterRefs(question, chapters); len(refs) > 0 {
+			boost, _ := FetchChapterChunks(store, target.ID, refs)
+			boost = scope.FilterChunks(store, boost)
+			seen := map[int64]bool{}
+			for _, c := range retrieved {
 				seen[c.ID] = true
+			}
+			for _, c := range boost {
+				if !seen[c.ID] {
+					retrieved = append(retrieved, c)
+					seen[c.ID] = true
+				}
 			}
 		}
 	}

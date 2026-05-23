@@ -748,7 +748,8 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Question string `json:"question"`
+		Question string              `json:"question"`
+		Scope    library.QueryScope `json:"scope,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Question == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing question"})
@@ -768,7 +769,7 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 
 	// New path: vector search + alignment-aware citations with audio times.
 	// Falls back gracefully when embeddings aren't populated.
-	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question)
+	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope)
 	if err != nil {
 		// Legacy fallback: keyword-only search on the first text file
 		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)

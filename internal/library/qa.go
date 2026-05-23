@@ -14,10 +14,103 @@ import (
 	"github.com/pj/abookify/internal/llm"
 )
 
+// QueryScope narrows chunk retrieval before the LLM context is built so
+// the reader can ask about "just this chapter" or avoid spoilers with
+// "up to here". Zero value (Type == "" or "book") = whole work, which
+// preserves prior behavior for callers that don't pass a scope.
+//
+// BookID identifies which text book the scope applies to — required for
+// any non-book scope because a work can host multiple text sources
+// (e.g. EPUB + whisper transcript). ChapterIdx + ParagraphIdx are
+// 0-based and only consulted when the Type requires them.
+type QueryScope struct {
+	Type         string `json:"type,omitempty"`
+	BookID       int64  `json:"book_id,omitempty"`
+	ChapterIdx   int    `json:"chapter_idx,omitempty"`
+	ParagraphIdx int    `json:"paragraph_idx,omitempty"`
+}
+
+// isWholeBook is the explicit no-op test — separate from the zero
+// value so a future "book" type still reads cleanly at call sites.
+func (s QueryScope) isWholeBook() bool {
+	return s.Type == "" || s.Type == "book"
+}
+
+// FilterChunks returns the subset of chunks that fall inside the scope.
+// Whole-book scopes are pass-through. Paragraph scope resolves the
+// paragraph's word range from the paragraphs table; if that lookup
+// fails the scope degrades to chapter so the user still gets *some*
+// answer instead of an empty hit list.
+func (s QueryScope) FilterChunks(store *db.Store, chunks []db.Chunk) []db.Chunk {
+	if s.isWholeBook() || len(chunks) == 0 {
+		return chunks
+	}
+	switch s.Type {
+	case "chapter":
+		return filterChunks(chunks, func(c db.Chunk) bool {
+			return c.BookID == s.BookID && c.ChapterIdx == s.ChapterIdx
+		})
+	case "up_to_chapter":
+		return filterChunks(chunks, func(c db.Chunk) bool {
+			return c.BookID == s.BookID && c.ChapterIdx <= s.ChapterIdx
+		})
+	case "paragraph":
+		paras, _ := store.ListParagraphs(s.BookID, s.ChapterIdx)
+		var p *db.Paragraph
+		for i := range paras {
+			if paras[i].ParagraphIdx == s.ParagraphIdx {
+				p = &paras[i]
+				break
+			}
+		}
+		if p == nil {
+			// Degrade to chapter — the paragraph row is missing
+			// (book may not be paragraph-populated yet, #91).
+			return filterChunks(chunks, func(c db.Chunk) bool {
+				return c.BookID == s.BookID && c.ChapterIdx == s.ChapterIdx
+			})
+		}
+		return filterChunks(chunks, func(c db.Chunk) bool {
+			if c.BookID != s.BookID || c.ChapterIdx != s.ChapterIdx {
+				return false
+			}
+			// half-open word ranges; reject when disjoint.
+			return c.EndWord > p.WordStart && c.StartWord < p.WordEnd
+		})
+	}
+	return chunks
+}
+
+func filterChunks(in []db.Chunk, keep func(db.Chunk) bool) []db.Chunk {
+	out := in[:0:0]
+	for _, c := range in {
+		if keep(c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// fetchChunksInScope returns every chunk inside the scope without
+// vector/keyword ranking — used as a fallback when retrieval comes
+// back empty after scoping, and as the primary path for paragraph
+// scope where the candidate set is already small enough for the LLM
+// to digest directly.
+func fetchChunksInScope(store *db.Store, scope QueryScope) []db.Chunk {
+	if scope.isWholeBook() || scope.BookID == 0 {
+		return nil
+	}
+	all, _ := store.ListChunks(scope.BookID)
+	return scope.FilterChunks(store, all)
+}
+
 // AskWithCitations answers a question against a work using all its text
 // sources, preferring vector search when embeddings exist. Citations
 // include audio time ranges when forced alignment is available.
-func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string) (*llm.Answer, error) {
+//
+// scope narrows retrieval to a single chapter, "up to here" (spoiler
+// avoidance), or a paragraph. Pass the zero value for whole-work.
+func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string, scope QueryScope) (*llm.Answer, error) {
 	if rag == nil || rag.Client() == nil {
 		return nil, fmt.Errorf("LLM not configured")
 	}
@@ -32,23 +125,9 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 		return nil, fmt.Errorf("no text content for this work")
 	}
 
-	// Try vector search first (requires embeddings).
-	var retrieved []db.Chunk
-	hits, err := VectorSearchChunks(store, rag.Client(), workID, question, 8)
-	if err == nil && len(hits) > 0 {
-		for _, h := range hits {
-			retrieved = append(retrieved, h.Chunk)
-		}
-		log.Printf("qa: vector search returned %d chunks for work %d", len(retrieved), workID)
-	} else {
-		// Fallback: keyword search on the target book.
-		kw := extractKeyword(question)
-		retrieved, _ = store.SearchChunks(target.ID, kw)
-		if len(retrieved) > 8 {
-			retrieved = retrieved[:8]
-		}
-		log.Printf("qa: keyword fallback returned %d chunks for work %d (query: %q)",
-			len(retrieved), workID, kw)
+	retrieved, err := retrievePassages(store, rag, work, target, question, scope)
+	if err != nil {
+		return nil, err
 	}
 	if len(retrieved) == 0 {
 		return &llm.Answer{
@@ -143,6 +222,64 @@ Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
 		Model:     resp.Model,
 		Chunks:    len(retrieved),
 	}, nil
+}
+
+// retrievePassages runs the vector → keyword → chapter-fallback ladder
+// shared by AskWithCitations and AskInSession. Scoping is applied
+// after retrieval so the ranker sees the full embedding space; if
+// scoping leaves zero candidates we backstop by loading every chunk
+// inside the scope so a narrow ask never returns empty.
+//
+// Paragraph scope skips the ranker entirely — the candidate set is
+// already small, and the user explicitly told us where they're
+// pointing.
+func retrievePassages(store *db.Store, rag *llm.RAG, work *db.Work, target *db.Book, question string, scope QueryScope) ([]db.Chunk, error) {
+	if scope.Type == "paragraph" {
+		return fetchChunksInScope(store, scope), nil
+	}
+
+	// Widen vector topK when scoping so post-filter still has room.
+	topK := 8
+	if !scope.isWholeBook() {
+		topK = 24
+	}
+
+	var retrieved []db.Chunk
+	hits, err := VectorSearchChunks(store, rag.Client(), work.ID, question, topK)
+	if err == nil && len(hits) > 0 {
+		for _, h := range hits {
+			retrieved = append(retrieved, h.Chunk)
+		}
+		log.Printf("qa: vector search returned %d chunks for work %d (scope=%q)",
+			len(retrieved), work.ID, scope.Type)
+	} else {
+		// Keyword fallback. When scope names a book, search that book
+		// instead of the auto-resolved target so a transcript-vs-EPUB
+		// pick can't override the user's explicit choice.
+		searchBookID := target.ID
+		if scope.BookID > 0 {
+			searchBookID = scope.BookID
+		}
+		kw := extractKeyword(question)
+		retrieved, _ = store.SearchChunks(searchBookID, kw)
+		log.Printf("qa: keyword fallback returned %d chunks for work %d (scope=%q, query=%q)",
+			len(retrieved), work.ID, scope.Type, kw)
+	}
+
+	retrieved = scope.FilterChunks(store, retrieved)
+
+	// Empty after filter on a narrow scope → fall back to the in-scope
+	// chunk list. The user picked a specific chapter; better to feed
+	// the LLM the whole chapter than to claim there's no answer.
+	if len(retrieved) == 0 && !scope.isWholeBook() {
+		retrieved = fetchChunksInScope(store, scope)
+	}
+
+	const limit = 8
+	if len(retrieved) > limit {
+		retrieved = retrieved[:limit]
+	}
+	return retrieved, nil
 }
 
 // extractKeyword pulls the most specific (longest) non-stopword from a

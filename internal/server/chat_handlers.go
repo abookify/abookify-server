@@ -154,7 +154,8 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content string `json:"content"`
+		Content string              `json:"content"`
+		Scope   library.QueryScope `json:"scope,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -188,7 +189,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content)
+	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, req.Scope)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.

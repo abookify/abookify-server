@@ -689,6 +689,17 @@
       font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.05em; color: #f0a500; margin-bottom: 0.75rem;
     }
+    .qa-scope-row {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.72rem; color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+    .qa-scope-row select {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text);
+      font-size: 0.72rem; padding: 2px 4px;
+    }
+    .qa-scope-row select:focus { outline: none; border-color: #f0a500; }
     .qa-input-row {
       display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
     }
@@ -1611,6 +1622,15 @@
                 <div class="chat-thread" id="chat-thread-${work.id}">
                   <div class="qa-empty">Pick a chat or start a new one to begin.</div>
                 </div>
+                <div class="qa-scope-row">
+                  <span>Scope:</span>
+                  <select id="qa-scope-${work.id}" onchange="onScopeChange(${work.id})" title="What part of the book the LLM may use to answer">
+                    <option value="book">Whole book</option>
+                    <option value="up_to_chapter">Up to here (no spoilers)</option>
+                    <option value="chapter">This chapter only</option>
+                  </select>
+                  <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
+                </div>
                 <div class="qa-input-row">
                   <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
                     data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
@@ -2130,6 +2150,16 @@
       const readerId = 'reader-' + workId;
       const reader = document.getElementById(readerId);
       if (!reader) return;
+
+      // Track for the Q&A scope selector so "This chapter" / "Up to here"
+      // know what the user is looking at right now.
+      const chMeta = chapterCache[bookId]?.chapters?.find(c => c.index === index);
+      currentReaderChapter[workId] = {
+        bookId,
+        index,
+        title: chMeta?.title || '',
+      };
+      refreshScopeUI(workId);
 
       // Highlight active chapter
       const listEl = document.getElementById('text-chapters-' + bookId);
@@ -4165,9 +4195,71 @@
     // re-rendered from scratch on every fetch — small enough to be cheap.
     const activeChatSessionId = {};
 
+    // Tracks the currently-open text chapter per work — updated from
+    // loadChapter(). Used by the Q&A scope selector so "This chapter"
+    // and "Up to here" resolve to the chapter the user has visible.
+    const currentReaderChapter = {}; // workId -> {bookId, index, title}
+
+    // Update scope-selector defaults + hint text whenever the
+    // visible chapter changes or a work card is rendered fresh.
+    function refreshScopeUI(workId) {
+      const sel = document.getElementById('qa-scope-' + workId);
+      const hint = document.getElementById('qa-scope-hint-' + workId);
+      if (!sel) return;
+      const cur = currentReaderChapter[workId];
+      const opts = sel.querySelectorAll('option');
+      opts.forEach(o => {
+        if (o.value === 'chapter' || o.value === 'up_to_chapter') {
+          o.disabled = !cur;
+        }
+      });
+      // First-time setup: choose "Up to here" if a chapter is open,
+      // otherwise whole book. Persisted choice (qa-scope-${workId})
+      // wins on subsequent visits.
+      const stored = localStorage.getItem('qa-scope-' + workId);
+      if (stored && [...sel.options].some(o => o.value === stored && !o.disabled)) {
+        sel.value = stored;
+      } else if (cur) {
+        sel.value = 'up_to_chapter';
+      } else {
+        sel.value = 'book';
+      }
+      if (hint) {
+        if (sel.value === 'book' || !cur) {
+          hint.textContent = '';
+        } else {
+          hint.textContent = '— ' + (cur.title || 'Chapter ' + (cur.index + 1));
+        }
+      }
+    }
+
+    function onScopeChange(workId) {
+      const sel = document.getElementById('qa-scope-' + workId);
+      if (!sel) return;
+      localStorage.setItem('qa-scope-' + workId, sel.value);
+      refreshScopeUI(workId);
+    }
+
+    // Build the scope payload from the selector + tracked chapter.
+    // Returns null for whole-book (handler omits the field).
+    function buildScopePayload(workId) {
+      const sel = document.getElementById('qa-scope-' + workId);
+      if (!sel || sel.value === 'book') return null;
+      const cur = currentReaderChapter[workId];
+      if (!cur) return null; // selector should be disabled, but guard
+      return {
+        type: sel.value,
+        book_id: cur.bookId,
+        chapter_idx: cur.index,
+      };
+    }
+
     async function loadChatSessions(workId) {
       const tabsEl = document.getElementById('chat-tabs-' + workId);
       if (!tabsEl) return;
+      // First-time render: prime the scope selector from localStorage +
+      // any chapter already open in this work.
+      refreshScopeUI(workId);
       try {
         const res = await fetch(`/api/works/${workId}/sessions`);
         const sessions = res.ok ? await res.json() : [];
@@ -4407,10 +4499,12 @@
       pinToTop(thread, userBubble);
 
       try {
+        const scope = buildScopePayload(workId);
+        const body = scope ? { content: text, scope } : { content: text };
         const res = await fetch(`/api/sessions/${sessionId}/messages`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ content: text }),
+          body: JSON.stringify(body),
         });
         document.getElementById(thinkingId)?.remove();
         if (!res.ok) {
