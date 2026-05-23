@@ -63,3 +63,52 @@ func TestInAnyRange(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteBootstrapSidecar_ProducesReadableV3(t *testing.T) {
+	dir := t.TempDir()
+	out := dir + "/audio.stt.json"
+	files := []string{
+		"/some/path/chapter-007.mp3",
+		"/some/path/chapter-008.mp3",
+		"/some/path/chapter-009.mp3",
+	}
+	durations := []float64{600.5, 720.25, 480.0}
+	total := 600.5 + 720.25 + 480.0
+	if err := writeBootstrapSidecar(out, files, durations, total); err != nil {
+		t.Fatalf("writeBootstrapSidecar: %v", err)
+	}
+	// readSidecar is the same parser the --redo-files path uses, so a stub
+	// that round-trips here is guaranteed schema-compatible with the redo
+	// merge logic.
+	sc, err := readSidecar(out)
+	if err != nil {
+		t.Fatalf("readSidecar: %v", err)
+	}
+	if sc.Version != 3 {
+		t.Errorf("Version=%d want 3", sc.Version)
+	}
+	if sc.Schema != "abookify-sidecar/v3" {
+		t.Errorf("Schema=%q", sc.Schema)
+	}
+	if sc.Duration != total {
+		t.Errorf("Duration=%v want %v", sc.Duration, total)
+	}
+	if len(sc.Sources) != 3 {
+		t.Fatalf("len(Sources)=%d want 3", len(sc.Sources))
+	}
+	if sc.Sources[0].StartSec != 0 {
+		t.Errorf("Sources[0].StartSec=%v want 0", sc.Sources[0].StartSec)
+	}
+	if sc.Sources[1].StartSec != 600.5 {
+		t.Errorf("Sources[1].StartSec=%v want 600.5", sc.Sources[1].StartSec)
+	}
+	if sc.Sources[2].StartSec != 600.5+720.25 {
+		t.Errorf("Sources[2].StartSec=%v", sc.Sources[2].StartSec)
+	}
+	if sc.Sources[0].Filename != "chapter-007.mp3" {
+		t.Errorf("Sources[0].Filename=%q", sc.Sources[0].Filename)
+	}
+	if len(sc.Words) != 0 {
+		t.Errorf("stub should have no words, got %d", len(sc.Words))
+	}
+}

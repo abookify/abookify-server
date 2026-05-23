@@ -31,6 +31,7 @@ func main() {
 	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
+	bootstrapSidecar := flag.Bool("bootstrap-sidecar", false, "Write a stub sidecar (sources + durations only, no words) and exit. --audio must point to a directory. The stub can then be filled chapter-by-chapter via --redo-files across multiple sessions.")
 	flag.Parse()
 
 	if *audioPath == "" {
@@ -63,11 +64,6 @@ func main() {
 		log.Fatalf("No audio files found in %s", *audioPath)
 	}
 
-	client := stt.NewClient(*whisperURL)
-	if err := client.Health(); err != nil {
-		log.Fatalf("Whisper not reachable at %s: %v", *whisperURL, err)
-	}
-
 	// Pre-probe all durations so we can show accurate overall progress / ETA.
 	durations := make([]float64, len(files))
 	var totalDur float64
@@ -82,6 +78,34 @@ func main() {
 		for i, f := range files {
 			log.Printf("  %d. %s (%.1f min)", i+1, filepath.Base(f), durations[i]/60)
 		}
+	}
+
+	// Bootstrap mode: write a stub sidecar (sources + duration, no words)
+	// and exit. Subsequent --redo-files runs fill it chapter by chapter.
+	// Only meaningful for directory input — single-file mode has nothing to
+	// chunk.
+	if *bootstrapSidecar {
+		if len(files) < 2 {
+			log.Fatalf("--bootstrap-sidecar requires --audio to be a directory of 2+ files (got %d)", len(files))
+		}
+		if *output == "" {
+			log.Fatalf("--bootstrap-sidecar needs a sidecar path (--output or directory default)")
+		}
+		if _, err := os.Stat(*output); err == nil {
+			log.Fatalf("--bootstrap-sidecar refuses to overwrite existing sidecar at %s", *output)
+		}
+		if err := writeBootstrapSidecar(*output, files, durations, totalDur); err != nil {
+			log.Fatalf("bootstrap: %v", err)
+		}
+		log.Printf("Wrote stub sidecar %s (%d sources, %.1f min total, no words yet)",
+			*output, len(files), totalDur/60)
+		log.Printf("Fill it chapter by chapter with: stt-cli --audio %s --redo-files <filename>", *audioPath)
+		return
+	}
+
+	client := stt.NewClient(*whisperURL)
+	if err := client.Health(); err != nil {
+		log.Fatalf("Whisper not reachable at %s: %v", *whisperURL, err)
 	}
 
 	// Selective retry: only retranscribe the files named in --redo-files,
@@ -360,6 +384,48 @@ type sourceInfo struct {
 	Filename string  `json:"filename"`
 	StartSec float64 `json:"start_sec"`
 	Duration float64 `json:"duration"`
+}
+
+// writeBootstrapSidecar writes a stub v3 sidecar with the sources list
+// and total duration populated, but no words/silences. The result is a
+// schema-valid sidecar that --redo-files can subsequently merge per-file
+// transcriptions into. The watcher will not import it as-is (sidecar
+// import requires non-empty words), so the database state is unchanged
+// until a redo run populates it and the user explicitly drops a .redo
+// marker.
+func writeBootstrapSidecar(outputPath string, files []string, durations []float64, totalDur float64) error {
+	var sources []sourceInfo
+	var acc float64
+	for i, f := range files {
+		sources = append(sources, sourceInfo{
+			Filename: filepath.Base(f),
+			StartSec: acc,
+			Duration: durations[i],
+		})
+		acc += durations[i]
+	}
+
+	stub := struct {
+		Version  int            `json:"version"`
+		Schema   string         `json:"schema"`
+		Duration float64        `json:"duration"`
+		Sources  []sourceInfo   `json:"sources,omitempty"`
+		Words    []wordTS       `json:"words"`
+		Silences []silenceEvent `json:"silences,omitempty"`
+		Metadata struct{}       `json:"metadata"`
+	}{
+		Version:  3,
+		Schema:   "abookify-sidecar/v3",
+		Duration: totalDur,
+		Sources:  sources,
+		Words:    []wordTS{},
+	}
+
+	data, err := json.MarshalIndent(stub, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return os.WriteFile(outputPath, data, 0o644)
 }
 
 // Narrator-pattern chapter detection moved to the server's post-processing
