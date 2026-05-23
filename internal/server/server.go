@@ -195,6 +195,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
 	mux.HandleFunc("GET /api/works/{id}/search", s.handleSearchWork)
 	mux.HandleFunc("GET /api/books/{id}/waveform", s.handleWaveform)
+	mux.HandleFunc("GET /api/works/{id}/waveform", s.handleWorkWaveform)
 	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
 	mux.HandleFunc("GET /api/works/{id}/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/works/{id}/sessions", s.handleCreateSession)
@@ -952,6 +953,37 @@ func (s *Server) handleWaveform(w http.ResponseWriter, r *http.Request) {
 		genDir = "/generated"
 	}
 	wf, err := library.GenerateWaveform(*book, genDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, wf)
+}
+
+// handleWorkWaveform returns one waveform spanning every audio file in
+// the work, re-bucketed onto a single timeline. Lets the mobile mini
+// player and full-screen scrubber render a peak shape that matches the
+// book-global time text instead of the current track's local time (#180).
+func (s *Server) handleWorkWaveform(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+	if !work.HasAudio {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "work has no audio"})
+		return
+	}
+	genDir := s.GeneratedDir
+	if genDir == "" {
+		genDir = "/generated"
+	}
+	wf, err := library.GenerateWorkWaveform(*work, genDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
