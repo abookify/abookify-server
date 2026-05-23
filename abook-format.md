@@ -1,5 +1,8 @@
 # .abook Format Specification (Draft)
 
+> **The canonical spec now lives at https://github.com/abookify/abook-format.**
+> This file is a vendored copy kept alongside the reference implementation. For the latest version, contributing, JSON Schemas, and version tags, see the spec repo.
+
 A lightweight, open container format that bundles an audiobook with its ebook counterpart and word-level synchronization data. Designed to be simple, portable, and tooling-friendly.
 
 ## Container
