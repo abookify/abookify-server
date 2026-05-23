@@ -8,7 +8,7 @@
     :root {
       --bg: #1a1a2e; --surface: #16213e; --surface-hover: #1a2744;
       --border: #2a3a5c; --text: #e0e0e0; --text-muted: #8892a8;
-      --accent: #e94560; --epub: #4ecca3; --mp3: #e94560; --generate: #7b68ee;
+      --accent: #1D4ED8; --danger: #e94560; --epub: #4ecca3; --mp3: #f0a500; --generate: #7b68ee;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -510,7 +510,7 @@
         await refreshPairing();
       } catch (e) {
         msg.style.display = 'block';
-        msg.style.borderLeftColor = '#e94560';
+        msg.style.borderLeftColor = 'var(--danger)';
         msg.textContent = 'Rotation failed: ' + e.message;
       } finally {
         btn.disabled = false;

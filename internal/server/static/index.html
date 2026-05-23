@@ -32,7 +32,8 @@
             border:       '#2a3a5c',
             text:         '#e0e0e0',
             'text-muted': '#8892a8',
-            accent:       '#e94560',
+            accent:       '#1D4ED8', // brand blue (STYLE_GUIDE.md)
+            danger:       '#e94560', // historical coral, kept for danger-state CTAs
             mp3:          '#f0a500',
             epub:         '#4ecca3',
             generate:     '#7c4dff',
@@ -50,9 +51,13 @@
       --border: #2a3a5c;
       --text: #e0e0e0;
       --text-muted: #8892a8;
-      --accent: #e94560;
+      /* Brand blue from STYLE_GUIDE.md. Replaced historical coral
+         #e94560 — that color survives as --danger for delete buttons
+         and error states. */
+      --accent: #1D4ED8;
+      --danger: #e94560;
       --epub: #4ecca3;
-      --mp3: #e94560;
+      --mp3: #f0a500;
       --generate: #7b68ee;
     }
 
@@ -97,7 +102,7 @@
       cursor: pointer; transition: all 0.15s;
     }
     .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
-    .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(233,69,96,0.1); }
+    .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(29,78,216,0.1); }
 
     .stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); }
 
@@ -123,7 +128,7 @@
       font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
       padding: 0.2rem 0.6rem; border-radius: 10px; letter-spacing: 0.03em;
     }
-    .media-pill.audio { background: rgba(233,69,96,0.15); color: var(--mp3); }
+    .media-pill.audio { background: rgba(240,165,0,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
     .media-pill.gap-warn {
@@ -211,7 +216,7 @@
       padding: 8px 14px; font-size: 0.85rem; cursor: pointer; text-align: left;
     }
     .work-menu-item:hover { background: var(--surface-hover); }
-    .work-menu-item.danger { color: #e94560; }
+    .work-menu-item.danger { color: var(--danger); }
     .work-menu-item.danger:hover { background: rgba(233,69,96,0.1); }
     .work-menu-item .icon { width: 16px; text-align: center; opacity: 0.8; }
     .work-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
@@ -290,7 +295,7 @@
     .chapter-row:last-child { border-bottom: none; }
     .chapter-row:hover { background: var(--surface-hover); }
     .chapter-row.active { background: rgba(78,204,163,0.08); color: var(--text); }
-    .chapter-row.playing { background: rgba(233,69,96,0.1); color: var(--text); }
+    .chapter-row.playing { background: rgba(29,78,216,0.1); color: var(--text); }
     /* Per-chapter progress bar — fills left-to-right based on playback position.
        Set to 100% on chapters already finished, 0% on unstarted. The chapter
        currently playing gets the partial fill. */
@@ -843,7 +848,7 @@
       font-size: 0.8rem; cursor: pointer;
     }
     .chat-tab-popover button:hover { background: var(--surface-hover); }
-    .chat-tab-popover button.danger { color: #e94560; }
+    .chat-tab-popover button.danger { color: var(--danger); }
     .chat-tab-popover button.danger:hover { background: rgba(233,69,96,0.1); }
     .chat-new-btn {
       background: none; border: 1px dashed var(--border); color: var(--text-muted);
@@ -1984,7 +1989,7 @@
         if (btn) btn.textContent = 'Queued ✓';
       } catch (e) {
         if (status) {
-          status.style.color = 'var(--accent)';
+          status.style.color = 'var(--danger)';
           status.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
         }
         if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
@@ -4338,7 +4343,7 @@
           if (thread) thread.innerHTML = '<div class="qa-empty">Start a chat by asking a question below.</div>';
         }
       } catch (e) {
-        tabsEl.innerHTML = '<span style="color:var(--accent); font-size:0.75rem;">Failed to load chats</span>';
+        tabsEl.innerHTML = '<span style="color:var(--danger); font-size:0.75rem;">Failed to load chats</span>';
       }
     }
 
@@ -4575,7 +4580,7 @@
         if (!res.ok) {
           const err = await res.json().catch(() => ({error: 'request failed'}));
           thread.insertAdjacentHTML('beforeend',
-            `<div class="chat-msg assistant" style="border-color:var(--accent); color:var(--accent);">Error: ${escapeHtml(err.error || 'failed')}</div>`);
+            `<div class="chat-msg assistant" style="border-color:var(--danger); color:var(--danger);">Error: ${escapeHtml(err.error || 'failed')}</div>`);
           return;
         }
         const data = await res.json();
@@ -4593,7 +4598,7 @@
       } catch (e) {
         document.getElementById(thinkingId)?.remove();
         thread.insertAdjacentHTML('beforeend',
-          `<div class="chat-msg assistant" style="border-color:var(--accent); color:var(--accent);">Network error</div>`);
+          `<div class="chat-msg assistant" style="border-color:var(--danger); color:var(--danger);">Network error</div>`);
       }
     }
 
