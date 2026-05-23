@@ -881,9 +881,22 @@
       font-size: 0.75rem; color: var(--text-muted);
     }
     .chat-msg.assistant .chat-citation {
-      display: block; padding: 4px 0; cursor: pointer;
+      display: flex; gap: 6px; align-items: baseline;
+      padding: 4px 0; cursor: pointer;
     }
     .chat-msg.assistant .chat-citation:hover { color: var(--text); }
+    .chat-msg.assistant .chat-citation .cite-play {
+      flex-shrink: 0; background: none; border: 1px solid var(--border);
+      color: var(--accent); border-radius: 3px;
+      padding: 0 5px; font-size: 0.65rem; line-height: 1.4;
+      cursor: pointer; font-family: inherit;
+    }
+    .chat-msg.assistant .chat-citation .cite-play:hover {
+      background: rgba(29,78,216,0.12);
+    }
+    .chat-msg.assistant .chat-citation .cite-text {
+      flex: 1; min-width: 0;
+    }
     .chat-citations-toggle {
       background: none; border: none; color: var(--text-muted);
       padding: 2px 0; cursor: pointer; font-size: 0.7rem;
@@ -4441,9 +4454,22 @@
         const expanded = chatSourcesExpanded();
         const caret = expanded ? '▾' : '▸'; // ▾ / ▸
         const inner = m.citations.map(c => {
-          const cite = JSON.stringify({b: bookId, ch: c.chapter_idx, sw: c.start_word, ew: c.end_word, w: workId});
-          return `<a class="chat-citation"
-            onclick='jumpToCitation(${cite})'>${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)} — ${escapeHtml(c.excerpt)}</a>`;
+          // Prefer the citation's own book_id; fall back to the work's
+          // first text file for legacy server responses that didn't
+          // include book_id on every citation.
+          const citeBookId = c.book_id || bookId;
+          const cite = JSON.stringify({b: citeBookId, ch: c.chapter_idx, sw: c.start_word, ew: c.end_word, w: workId});
+          // When alignment + sync produced an audio time range for this
+          // chunk, surface a play button that seeks the audio bar to
+          // the cited passage. Composes audio_start_sec (chapter-local)
+          // with the audio book's start_sec on the work timeline so
+          // multi-file books land at the right point.
+          let playBtn = '';
+          if (c.audio_start_sec && c.audio_book_id) {
+            const cp = JSON.stringify({w: workId, abk: c.audio_book_id, sec: c.audio_start_sec, title: c.chapter_title || ''});
+            playBtn = `<button class="cite-play" onclick='event.stopPropagation(); playCitation(${cp})' title="Play from this passage">▶</button>`;
+          }
+          return `<div class="chat-citation" onclick='jumpToCitation(${cite})'>${playBtn}<span class="cite-text">${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)} — ${escapeHtml(c.excerpt)}</span></div>`;
         }).join('');
         citations = `<div class="chat-citations">
           <button class="chat-citations-toggle" onclick="toggleChatSources(this)">
@@ -4483,6 +4509,20 @@
     // data-widx="N"> when karaoke is available; we use that to anchor
     // the scroll. Falls back to chapter-top scroll if no widx span exists
     // (plain-text books, non-karaoke renderings).
+    // Play audio from a cited passage. Citations carry the chapter-local
+    // audio time and the audio book's id; we add that to the audio book's
+    // start_sec on the work timeline to get the book-global seek target
+    // that seekToAbsoluteBookTime expects (multi-file aware).
+    function playCitation(p) {
+      const work = allWorks.find(w => w.id === p.w);
+      if (!work) return;
+      const audioBook = (work.audio_files || []).find(b => b.id === p.abk);
+      const bookStart = (audioBook && audioBook.start_sec) || 0;
+      const globalSec = bookStart + (p.sec || 0);
+      const title = p.title || 'Cited passage';
+      seekToAbsoluteBookTime(work, globalSec, title);
+    }
+
     async function jumpToCitation(c) {
       await loadChapter(c.b, c.ch, c.w, { skipAudioSeek: true });
       // Wait one frame for the chapter content to render before measuring.
