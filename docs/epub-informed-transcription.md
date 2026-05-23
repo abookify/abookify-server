@@ -182,3 +182,39 @@ All under `engineering/server/testdata/transcription-experiments/kitchen-confide
 3. Write the EPUB → prompt extractor (Go, under `internal/library/epub_prompt.go`) so prompts are automatic per chunk. Two slices is enough signal to design the harvester — multi-cap nouns + hyphenated compounds + non-ASCII tokens cover most wins; a small curated culinary lexicon supplements.
 4. **Approach 3 (vocab fuzz-correction) moves up in priority.** The 02.mp3 results show prompted-but-not-honoured failures like Larousse → LaRouche. Fuzz-correction against an EPUB-derived vocabulary would catch exactly these. Should be tested on the same two slices before approach 2.
 5. Start approach 2 on the same slices — measure incremental gain on top of approaches 1+3.
+
+---
+
+## Side discovery (2026-05-23): Forced alignment can't be field-tested chunk-by-chunk
+
+While bootstrapping `whisper_transcript` peer books to enable forced alignment on Frankenstein, ran into a pipeline-shape mismatch worth recording.
+
+**Observed wall-clock cost on local CPU:** chapter-015 (13 min audio) took 31 min on `large-v3 int8` — ~2.4× realtime, not the ~1.3× I'd been estimating from the Kitchen Confidential slices. Frankenstein full run (~7 h audio) projects to **~17 h wall**, not the ~10 h I was quoting. The KC slices were probably finishing inside warm-cache windows.
+
+**Sidecar write failed (permission denied):** `testdata/library/abooks/Frankenstein.../audio/` is owned `root:root` from an older `docker compose up` run (the server container was writing into the bind mount as root). The host user (pj) can't write a sidecar there. Fixable with one docker chown.
+
+**More fundamental: the pipeline expects whole-audiobook sidecars.**
+
+`watcher.go::importSidecar` matches a sidecar to its work by:
+1. Walking `works` and taking `wk.AudioFiles[0]` (the first audio file of the work).
+2. Calling `findSidecar(af.Path)`, which checks (in order): `parent-dir.stt.json` (whole-audiobook), `<audioBase>.stt.json` (per-file), `<audioBase>.mp3.stt.json` (full-name).
+3. Comparing the candidate path to the observed sidecar — must match exactly.
+4. **Skipping the work if `sync_data` is already non-empty.**
+
+For Frankenstein:
+- A sidecar at `audio/chapter-015.stt.json` wouldn't match — only `audio/chapter-007.stt.json` (or whichever sorts first as AudioFiles[0]) would. So per-chapter sidecars don't reach `importOneSidecar`.
+- Even a dir-level `audio.stt.json` would be skipped because Frankenstein already has `sync_data` from the early STT runs.
+
+The escape hatch is `.stt.json.redo` — dropping that marker forces re-import even with existing sync_data. But it requires a completed `.stt.json` next to it.
+
+`cmd/stt-cli/redo.go` explicitly documents: *"Sidecar must already exist at the output path. We don't fabricate a new sidecar from a partial run — call the normal mode first."* So `--redo-files` cannot bootstrap an incremental sidecar — it only patches an existing complete one.
+
+**Three real paths forward:**
+
+1. **Full Frankenstein STT in one ~17 h CPU run.** Produces a proper directory-mode sidecar that the watcher imports cleanly (plus an `.stt.json.redo` to force re-import over existing sync_data). Aligns with the existing pipeline. Slow.
+2. **~50 lines of Go in `cmd/stt-cli/`: a `--bootstrap-sidecar` flag** that synthesises a minimal stub sidecar from the audio dir's file list (sources + zero-length words + duration), so `--redo-files` can subsequently fill it chapter-by-chapter. This makes "slow path, chunk by chunk" actually work, and the work persists across sessions.
+3. **Different book.** None of the test books are both small and EPUB-paired. The Moral Landscape (4 mp3s = 6.8 h audio + EPUB) is similar size to Frankenstein. Project Hail Mary already has a transcript but no EPUB. No quick win here.
+
+Path 2 is the right architectural fix if we want incremental transcription to be a first-class workflow. It also unblocks the same workflow on GPU later (interruptible across a power-cycle). Path 1 is the right move if we want field-tested alignment data this week.
+
+The next session should pick one before running any more STT.
