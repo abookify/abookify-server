@@ -22,7 +22,12 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Minute, // Transcription of long files can take a while
+			// Transcription of long files can take a while. faster-whisper
+			// large-v3 on CPU runs at ~0.4x realtime, so a single 10-min
+			// chunk is ~25 min — right at the edge of a 30-min timeout.
+			// Bumping to 90 min gives headroom for queued chunks plus
+			// slow runs on cold caches; GPU runs finish in seconds.
+			Timeout: 90 * time.Minute,
 		},
 	}
 }
