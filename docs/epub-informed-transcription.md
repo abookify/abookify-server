@@ -240,3 +240,13 @@ The watcher rejects empty-words sidecars on import, so the stub itself doesn't t
 - Wall-time projection for the rest of Frankenstein's 9 testdata files: ~6 hours sequential. The full library (~7 h audio total in testdata) is the test-bed; full Frankenstein on disk has more files outside testdata.
 
 The pipeline is end-to-end working. The next steps are content, not code: keep filling chunks, watch alignment confidence climb as the transcript gets denser and chapter-detect can sequence the audio.
+
+### After 2/9 chunks (chapter-015 + chapter-007)
+
+- Transcript book now has 3 chapters / 5011 words (chapter-detect found markers in the multi-file sidecar).
+- EPUB book has 31 chapters / 78230 words.
+- `chapter_links` table has 12 entries — most ebook chapters still unlinked.
+- Re-align: `{"chapters_aligned":3, "average_confidence":0.166}`. Pairs JSON grew 7× (1577 → 10647 bytes).
+- **Confidence DROPPED** (0.282 → 0.166) despite more data. Expected at low fill rates: with only 2/9 audio files, the linker can only pair up a handful of chapters, and the chapter-detect output for the transcript book doesn't yet correspond to the EPUB's chapter numbering. So most aligned pairs are between mismatched chapters — DP finds a "best" alignment between mismatched content, but the score is low. This will resolve as fill rate climbs and the linker has enough data to assemble a coherent narrative sequence.
+
+This is a useful early signal that **`average_confidence` is not monotonic in fill rate**. At low fill rates it can drop because more partial-content chapters mean more low-quality alignments. The right metric to watch over the rest of this experiment is per-chapter-pair confidence on chapters where both sides are complete.
