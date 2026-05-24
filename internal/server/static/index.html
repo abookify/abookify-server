@@ -96,6 +96,37 @@
     .toolbar input::placeholder { color: var(--text-muted); }
     .toolbar input:focus { outline: none; border-color: var(--accent); }
 
+    /* Library-wide search results panel — appears above the works grid
+       when a 2+ char query has full-text matches. Hidden when empty. */
+    .library-search-panel {
+      margin: 0 2rem 1rem; padding: 0.75rem 1rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .library-search-panel .lsp-header {
+      font-size: 0.75rem; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+    .library-search-panel .lsp-hit {
+      display: block; padding: 6px 8px; border-radius: 4px;
+      cursor: pointer; font-size: 0.85rem; color: var(--text);
+      border-bottom: 1px solid var(--border);
+    }
+    .library-search-panel .lsp-hit:last-child { border-bottom: none; }
+    .library-search-panel .lsp-hit:hover { background: var(--surface-hover); }
+    .library-search-panel .lsp-where {
+      font-size: 0.72rem; color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+    .library-search-panel .lsp-where .lsp-work {
+      color: var(--accent); font-weight: 600;
+    }
+    .library-search-panel .lsp-snippet mark {
+      background: rgba(29,78,216,0.25); color: var(--text);
+      padding: 0 2px; border-radius: 2px;
+    }
+
     .filter-btn {
       background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
       padding: 0.5rem 0.75rem; color: var(--text-muted); font-size: 0.85rem;
@@ -1164,6 +1195,7 @@
   <div id="custom-tooltip"></div>
   <div id="toast" style="display:none; position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:200; padding:10px 16px; border-radius:8px; font-size:0.85rem; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
+  <div class="library-search-panel" id="library-search-panel" style="display:none;"></div>
   <div class="works-list" id="works-list"></div>
 
   <!-- The old reader-fs-topbar + fullscreen-np elements were subsumed by
@@ -3992,7 +4024,93 @@
       });
     });
 
-    document.getElementById('search').addEventListener('input', render);
+    document.getElementById('search').addEventListener('input', () => {
+      render();
+      scheduleLibrarySearch();
+    });
+
+    // Library-wide full-text search. The toolbar input does two things:
+    // filters works by title/author (existing, instant), and runs a
+    // debounced /api/search call that shows passage hits inside the
+    // books above the works grid. The two together let "X" mean both
+    // "works named X" and "passages mentioning X".
+    let librarySearchTimer = null;
+    let librarySearchSeq = 0; // race-guard for late responses
+    function scheduleLibrarySearch() {
+      clearTimeout(librarySearchTimer);
+      const q = document.getElementById('search').value.trim();
+      const panel = document.getElementById('library-search-panel');
+      if (q.length < 2) {
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+      }
+      librarySearchTimer = setTimeout(() => runLibrarySearch(q), 250);
+    }
+    async function runLibrarySearch(q) {
+      const seq = ++librarySearchSeq;
+      const panel = document.getElementById('library-search-panel');
+      try {
+        const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&limit=25');
+        if (seq !== librarySearchSeq) return; // a newer query landed first
+        if (!res.ok) { panel.style.display = 'none'; return; }
+        const hits = await res.json();
+        if (!hits || hits.length === 0) {
+          panel.style.display = 'none';
+          panel.innerHTML = '';
+          return;
+        }
+        panel.style.display = 'block';
+        panel.innerHTML =
+          `<div class="lsp-header">Inside the books — ${hits.length} match${hits.length === 1 ? '' : 'es'}</div>` +
+          hits.map(h => {
+            const where = `<span class="lsp-work">${escapeHtml(h.work_title)}</span> &middot; ${escapeHtml(h.chapter_title || 'Chapter ' + (h.chapter_idx + 1))}`;
+            const snippet = highlightQuery(h.snippet, q);
+            const args = JSON.stringify({w: h.work_id, b: h.book_id, ch: h.chapter_idx, wp: h.word_position});
+            return `<div class="lsp-hit" onclick='openLibraryHit(${args})'>
+              <div class="lsp-where">${where}</div>
+              <div class="lsp-snippet">${snippet}</div>
+            </div>`;
+          }).join('');
+      } catch {
+        if (seq !== librarySearchSeq) return;
+        panel.style.display = 'none';
+      }
+    }
+    // Highlight every case-insensitive occurrence of `q` inside an
+    // already-escaped snippet. The replace operates on escaped text so
+    // no user content reaches HTML unsanitized.
+    function highlightQuery(snippet, q) {
+      const safe = escapeHtml(snippet || '');
+      if (!q) return safe;
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      return safe.replace(re, m => `<mark>${m}</mark>`);
+    }
+    // Click handler for a library-wide hit: opens the work card if
+    // it's collapsed, loads the chapter, and scrolls to the matching
+    // word once it's wrapped by the karaoke renderer.
+    async function openLibraryHit(h) {
+      // Soft-scroll the work card into view when it's visible; if the
+      // title-filter hid it the reader still opens in the now-playing
+      // overlay (loadChapter promotes that, no card needed).
+      const card = document.getElementById('work-' + h.w);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      await loadChapter(h.b, h.ch, h.w, { skipAudioSeek: true });
+      // After load, try to scroll the reader to the matched word. The
+      // reader wraps words lazily; if our target isn't wrapped yet, we
+      // fall back to top-of-chapter and the user can scroll.
+      requestAnimationFrame(() => {
+        const reader = document.getElementById('reader-' + h.w);
+        if (!reader) return;
+        const target = reader.querySelector(`.sync-word[data-widx="${h.wp}"]`);
+        if (!target) return;
+        const tRect = target.getBoundingClientRect();
+        const rRect = reader.getBoundingClientRect();
+        reader.scrollTop += (tRect.top - rRect.top) - 40;
+        target.classList.add('citation-flash');
+        setTimeout(() => target.classList.remove('citation-flash'), 1800);
+      });
+    }
 
     // Ctrl+K (or Cmd+K on Mac) to focus search; Escape to clear + blur.
     document.addEventListener('keydown', (e) => {
@@ -4008,6 +4126,7 @@
           searchEl.value = '';
           searchEl.blur();
           render();
+          scheduleLibrarySearch();
         }
       }
     });

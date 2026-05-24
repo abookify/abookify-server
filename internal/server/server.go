@@ -195,6 +195,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
 	mux.HandleFunc("GET /api/works/{id}/search", s.handleSearchWork)
+	mux.HandleFunc("GET /api/search", s.handleSearchLibrary)
 	mux.HandleFunc("GET /api/books/{id}/waveform", s.handleWaveform)
 	mux.HandleFunc("GET /api/works/{id}/waveform", s.handleWorkWaveform)
 	mux.HandleFunc("POST /api/works/{id}/ask", s.handleAskQuestion)
@@ -1041,6 +1042,33 @@ func (s *Server) handleSearchWork(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	writeJSON(w, http.StatusOK, hits)
+}
+
+// handleSearchLibrary searches chapter content across every work and
+// returns up to `limit` passage hits with work + chapter identity so
+// the toolbar's library-wide search can route a click to the right
+// reader + position.
+func (s *Server) handleSearchLibrary(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing q parameter"})
+		return
+	}
+	limit := 30
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	hits, err := library.SearchLibrary(s.store, query, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if hits == nil {
+		hits = []library.LibraryHit{}
 	}
 	writeJSON(w, http.StatusOK, hits)
 }

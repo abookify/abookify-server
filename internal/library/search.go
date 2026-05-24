@@ -116,3 +116,53 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 	}
 	return hits, nil
 }
+
+// LibraryHit is one passage match in the full library — same fields as
+// SearchHit plus the work identity so the client can route to the
+// right work card / reader.
+type LibraryHit struct {
+	WorkID     int64     `json:"work_id"`
+	WorkTitle  string    `json:"work_title"`
+	WorkAuthor string    `json:"work_author,omitempty"`
+	SearchHit
+}
+
+// SearchLibrary runs SearchWork against every work in the library and
+// returns up to `limit` hits across them, ordered work-by-work (the
+// same order the library list shows). Limit is shared across works —
+// once we collect `limit` hits we stop, regardless of which work we're
+// in. Tiny query strings (< 2 chars) return empty to avoid scanning
+// every chapter for single-letter matches.
+func SearchLibrary(store *db.Store, query string, limit int) ([]LibraryHit, error) {
+	query = strings.TrimSpace(query)
+	if len(query) < 2 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	works, err := store.ListWorks()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LibraryHit, 0, limit)
+	for _, w := range works {
+		remaining := limit - len(out)
+		if remaining <= 0 {
+			break
+		}
+		hits, err := SearchWork(store, w.ID, query, remaining)
+		if err != nil {
+			continue
+		}
+		for _, h := range hits {
+			out = append(out, LibraryHit{
+				WorkID:     w.ID,
+				WorkTitle:  w.Title,
+				WorkAuthor: w.Author,
+				SearchHit:  h,
+			})
+		}
+	}
+	return out, nil
+}
