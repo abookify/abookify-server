@@ -250,3 +250,32 @@ The pipeline is end-to-end working. The next steps are content, not code: keep f
 - **Confidence DROPPED** (0.282 → 0.166) despite more data. Expected at low fill rates: with only 2/9 audio files, the linker can only pair up a handful of chapters, and the chapter-detect output for the transcript book doesn't yet correspond to the EPUB's chapter numbering. So most aligned pairs are between mismatched chapters — DP finds a "best" alignment between mismatched content, but the score is low. This will resolve as fill rate climbs and the linker has enough data to assemble a coherent narrative sequence.
 
 This is a useful early signal that **`average_confidence` is not monotonic in fill rate**. At low fill rates it can drop because more partial-content chapters mean more low-quality alignments. The right metric to watch over the rest of this experiment is per-chapter-pair confidence on chapters where both sides are complete.
+
+### GPU restored — full-book transcription + the real finding (2026-05-24)
+
+atrium GPU came back (RTX 3060, 12 GB, driver 580.159). GPU whisper service (`device: cuda`, large-v3) runs at **~5× realtime** vs CPU's 0.4× — ~12× faster. Full Frankenstein (171 min audio across the 9 testdata files) transcribed in **34m40s** vs ~7 h projected on CPU. 28143 words, clean sidecar, pulled back and re-imported. Chapter-detect found 4 narrator chapters + 12 silence-based; linker connected 24/38 audio chapters to text.
+
+Ran the alignment on the complete transcript. **Average confidence stayed at 0.16 — barely different from the partial CPU fills.** The per-chapter breakdown shows why, and it's the most important result of the experiment so far:
+
+| ebook ch | conf | ebook words → transcript words | ratio |
+|---|---|---|---|
+| 0 | 0.312 | 170 → 2680 | 15.8× |
+| 1 | 0.033 | 59 → 2242 | 38× |
+| 2 | 0.252 | 1204 → 3777 | 3.1× |
+| 3 | 0.244 | 1315 → 3937 | 3.0× |
+| 5 | 0.099 | 2721 → 1561 | 0.57× |
+| 6 | 0.079 | 1764 → 552 | 0.31× |
+| 7 | 0.082 | 2210 → 642 | 0.29× |
+| 9 | 0.161 | 2539 → 3251 | 1.28× |
+| 10 | 0.169 | 2361 → 3213 | 1.36× |
+
+**The alignment DP is not the weak link — the chapter linking is.** Word-count ratios swinging from 0.29× to 38× mean ebook chapters are being paired with the wrong audio chapters. Root cause: the Frankenstein **testdata audio is a partial subset** — 9 files / 28k transcript words against the full 38-chapter / 78k-word ebook (~36% coverage, a contiguous middle slice). Most ebook chapters have no corresponding audio, so the linker forces bad pairs and the DP then "aligns" mismatched content at low score.
+
+**Implications:**
+1. Forced-alignment quality is gated by chapter-link correctness. Garbage links → garbage alignment, regardless of transcript quality. Any alignment-quality evaluation must start from a work where audio and ebook cover the *same* content with correct links.
+2. `average_confidence` over all linked pairs is a poor headline metric. A per-pair confidence + word-ratio sanity check (ratio far from ~1.0 ⇒ probable mis-link) is far more diagnostic. Worth surfacing the ratio in the divergence report.
+3. The Frankenstein testdata is not a good alignment fixture. A fully-covered audiobook+ebook is needed. **Kitchen Confidential is now the natural choice** — full author-read audio (9 files, ~8 h) + full EPUB, and GPU makes the transcription ~1 h instead of ~10 h. That also closes the loop with the approach-1 experiment (same book), letting us test EPUB-informed transcription AND alignment on one fixture.
+
+### Next
+- Transcribe full Kitchen Confidential on GPU (~1 h), import, align. Expect ratios near ~1.0 since audio and EPUB cover the same content — the real test of alignment quality.
+- Consider adding word-ratio to the divergence report as a mis-link detector.
