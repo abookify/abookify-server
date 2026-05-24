@@ -4020,13 +4020,23 @@
     });
 
     // --- Text selection → highlight ---
-    // When the user selects text in the reader pane and presses a key or
-    // clicks a floating button, create a highlight bookmark.
+    // When the user selects text in the reader pane, show a floating
+    // "🖍 Highlight" button; click → prompt for note → persist as a
+    // highlight bookmark scoped to the actual text book + chapter +
+    // word range the selection covers.
     document.addEventListener('mouseup', (e) => {
       const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || !currentWorkId) return;
+      if (!sel || sel.isCollapsed) return;
       const reader = sel.anchorNode?.parentElement?.closest?.('.reader-content');
       if (!reader) return;
+      // Resolve the work from the reader element's id (set by
+      // ensureActiveReader). Avoids relying on currentWorkId which can
+      // lag the visible reader pane.
+      const workIdMatch = reader.id.match(/^reader-(\d+)$/);
+      if (!workIdMatch) return;
+      const workId = parseInt(workIdMatch[1], 10);
+      const cur = currentReaderChapter[workId];
+      if (!cur) return;
       // Check if highlight button already exists.
       if (document.getElementById('highlight-float')) return;
       const range = sel.getRangeAt(0);
@@ -4038,22 +4048,42 @@
         background:var(--accent);color:#fff;border:none;border-radius:4px;
         padding:4px 10px;font-size:0.75rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.3);`;
       btn.onclick = async () => {
+        // Compute the word range from any sync-word spans the selection
+        // touches. For chapters that haven't been word-wrapped (no sync
+        // data loaded yet), both indices stay at -1 and the highlight
+        // becomes "chapter-only" — the snippet text still lets the user
+        // recognize it in the bookmarks panel.
+        let startWord = -1, endWord = -1;
+        for (const w of reader.querySelectorAll('.sync-word')) {
+          if (!range.intersectsNode(w)) continue;
+          const widx = parseInt(w.dataset.widx, 10);
+          if (!Number.isFinite(widx)) continue;
+          if (startWord < 0 || widx < startWord) startWord = widx;
+          if (widx > endWord) endWord = widx;
+        }
+        if (startWord < 0) startWord = 0;
+        if (endWord < 0) endWord = 0;
         const snippet = sel.toString().substring(0, 200);
         const note = prompt('Add a note (or leave blank):');
         if (note === null) { btn.remove(); return; }
         try {
-          await fetch(`/api/works/${currentWorkId}/bookmarks`, {
+          await fetch(`/api/works/${workId}/bookmarks`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-              book_id: currentPlayingId || 0,
+              book_id: cur.bookId,
               type: 'highlight',
-              chapter_idx: currentAudioIndex,
+              chapter_idx: cur.index,
+              start_word: startWord,
+              end_word: endWord,
               text_snippet: snippet,
               note: note || '',
               color: '#f0e68c',
             }),
           });
+          // Refresh the bookmarks panel if it's currently open.
+          const panel = document.getElementById('bookmarks-panel-' + workId);
+          if (panel && panel.style.display !== 'none') loadBookmarksList(workId);
         } catch {}
         btn.remove();
         sel.removeAllRanges();
@@ -4087,23 +4117,61 @@
         const res = await fetch(`/api/works/${workId}/bookmarks`);
         const bookmarks = await res.json();
         if (!bookmarks || bookmarks.length === 0) {
-          listEl.innerHTML = '<div style="color:var(--text-muted);font-style:italic;">No bookmarks yet. Click ★ while playing to add one.</div>';
+          listEl.innerHTML = '<div style="color:var(--text-muted);font-style:italic;">No bookmarks yet. Click ★ while playing, or select text to highlight.</div>';
           return;
         }
-        listEl.innerHTML = bookmarks.map(b => `
+        listEl.innerHTML = bookmarks.map(b => {
+          const isHighlight = b.type === 'highlight';
+          const icon = isHighlight ? '🖍' : '★';
+          // Highlights route to the chapter + first word; audio
+          // bookmarks route to the audio position. Build the args
+          // payload once and pick the handler by type.
+          const action = isHighlight
+            ? `jumpToHighlight(${JSON.stringify({w: workId, b: b.book_id, ch: b.chapter_idx, sw: b.start_word})})`
+            : `seekToBookmark(${b.position_secs})`;
+          const trailMeta = isHighlight
+            ? `Ch ${(b.chapter_idx ?? 0) + 1}`
+            : formatTime(b.position_secs);
+          const titleAttr = isHighlight
+            ? `Open chapter ${(b.chapter_idx ?? 0) + 1}`
+            : `Jump to ${formatTime(b.position_secs)}`;
+          const labelText = b.text_snippet || (isHighlight ? `Ch ${(b.chapter_idx ?? 0) + 1}` : formatTime(b.position_secs));
+          return `
           <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);">
-            <span style="color:${b.color || '#f0a500'};cursor:pointer;" onclick="seekToBookmark(${b.position_secs})" title="Jump to ${formatTime(b.position_secs)}">
-              ★ ${escapeHtml(b.text_snippet || formatTime(b.position_secs))}
+            <span style="color:${b.color || '#f0a500'};cursor:pointer;" onclick='${action}' title="${escapeHtml(titleAttr)}">
+              ${icon} ${escapeHtml(labelText)}
             </span>
             ${b.note ? `<span style="color:var(--text-muted);font-size:0.75rem;">${escapeHtml(b.note)}</span>` : ''}
             <span style="flex:1;"></span>
-            <span style="color:var(--text-muted);font-size:0.7rem;">${formatTime(b.position_secs)}</span>
+            <span style="color:var(--text-muted);font-size:0.7rem;">${escapeHtml(trailMeta)}</span>
             <button onclick="deleteBookmark(${b.id}, ${workId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.7rem;" title="Delete">✕</button>
-          </div>
-        `).join('');
+          </div>`;
+        }).join('');
       } catch {
         listEl.innerHTML = '<div style="color:var(--text-muted);">Failed to load bookmarks</div>';
       }
+    }
+
+    // Open the chapter that contains a saved highlight and scroll the
+    // reader to its first wrapped word. Mirrors jumpToCitation's
+    // scroll-to-word approach — the highlight's start_word will be 0
+    // for highlights captured before karaoke wrapped the chapter; in
+    // that case we just open the chapter and let the user re-find the
+    // passage.
+    async function jumpToHighlight(h) {
+      await loadChapter(h.b, h.ch, h.w, { skipAudioSeek: true });
+      requestAnimationFrame(() => {
+        const reader = document.getElementById('reader-' + h.w);
+        if (!reader) return;
+        if (!h.sw) return; // chapter-only highlight, nothing to flash
+        const target = reader.querySelector(`.sync-word[data-widx="${h.sw}"]`);
+        if (!target) return;
+        const tRect = target.getBoundingClientRect();
+        const rRect = reader.getBoundingClientRect();
+        reader.scrollTop += (tRect.top - rRect.top) - 40;
+        target.classList.add('citation-flash');
+        setTimeout(() => target.classList.remove('citation-flash'), 1800);
+      });
     }
 
     function seekToBookmark(positionSecs) {
