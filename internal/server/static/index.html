@@ -552,6 +552,20 @@
     .reader-content .sync-word.past {
       color: #b8b2a5;
     }
+    /* Paragraph anchor — tap a paragraph in the reader to set Q&A
+       scope to "this paragraph". Subtle hover hint so the gesture is
+       discoverable without shouting. */
+    .reader-content [data-para-idx] { cursor: pointer; position: relative; }
+    .reader-content [data-para-idx]:hover {
+      background: rgba(29,78,216,0.06);
+      border-radius: 3px;
+    }
+    .reader-content [data-para-idx].paragraph-anchored {
+      background: rgba(29,78,216,0.12);
+      border-left: 3px solid var(--accent);
+      padding-left: 10px;
+      margin-left: -13px;
+    }
     .reader-content .placeholder {
       color: #888;
       text-align: center;
@@ -2269,12 +2283,70 @@
             .map(p => '<p>' + escapeHtml(p).replace(/\n/g, '<br>') + '</p>').join('');
       if (typeof cached === 'string') {
         reader.innerHTML = toHTML(cached);
-        return;
-      }
-      if (cached.html) {
+      } else if (cached.html) {
         reader.innerHTML = cached.html;
       } else {
         reader.innerHTML = toHTML(cached.text || '');
+      }
+      tagParagraphAnchors(reader);
+    }
+
+    // After (re)rendering a chapter, walk top-level paragraph-bearing
+    // elements (p, h1-6, li, blockquote) and assign sequential
+    // data-para-idx + a click handler so the user can anchor the Q&A
+    // scope picker to a specific paragraph.
+    //
+    // The DB's paragraph_idx is derived from line-splitting the
+    // chapter's plain text content (one paragraph per non-empty line);
+    // for typical EPUB chapters the rendered block order matches DB
+    // order. If it doesn't, the server's paragraph-scope filter falls
+    // back to chapter scope — so a stale tag here just degrades, it
+    // doesn't strand the user.
+    function tagParagraphAnchors(reader) {
+      const blocks = reader.querySelectorAll(':scope > p, :scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6, :scope > li, :scope > blockquote');
+      blocks.forEach((el, idx) => {
+        el.dataset.paraIdx = String(idx);
+        el.addEventListener('click', onParagraphClick);
+      });
+    }
+
+    function onParagraphClick(e) {
+      // Don't hijack clicks on sync-word spans (karaoke seek), inline
+      // chapter-link anchors, or selection drags.
+      if (e.target.closest('.sync-word, .chapter-link, .citation-flash')) return;
+      if (window.getSelection && String(window.getSelection()).length > 0) return;
+      const reader = e.currentTarget.closest('.reader-content');
+      const workIdMatch = reader && reader.id.match(/^reader-(\d+)$/);
+      if (!workIdMatch) return;
+      const workId = parseInt(workIdMatch[1], 10);
+      const paraIdx = parseInt(e.currentTarget.dataset.paraIdx, 10);
+      const ch = currentReaderChapter[workId];
+      if (!ch) return;
+      anchorParagraph(workId, ch.bookId, ch.index, paraIdx, e.currentTarget);
+    }
+
+    function anchorParagraph(workId, bookId, chapterIdx, paragraphIdx, el) {
+      currentReaderParagraph[workId] = { bookId, chapterIdx, paragraphIdx };
+      // Visual: outline the chosen paragraph, clear any prior anchor.
+      const reader = document.getElementById('reader-' + workId);
+      if (reader) {
+        reader.querySelectorAll('.paragraph-anchored').forEach(p => p.classList.remove('paragraph-anchored'));
+      }
+      if (el) el.classList.add('paragraph-anchored');
+      // Auto-switch the scope picker to "This paragraph" and persist.
+      const sel = document.getElementById('qa-scope-' + workId);
+      if (sel) {
+        // Make sure the paragraph option exists + is enabled before selecting.
+        const opt = [...sel.options].find(o => o.value === 'paragraph');
+        if (!opt) {
+          const newOpt = new Option('This paragraph', 'paragraph');
+          sel.appendChild(newOpt);
+        } else {
+          opt.disabled = false;
+        }
+        sel.value = 'paragraph';
+        localStorage.setItem('qa-scope-' + workId, 'paragraph');
+        refreshScopeUI(workId);
       }
     }
 
@@ -2293,13 +2365,16 @@
       if (!reader) return;
 
       // Track for the Q&A scope selector so "This chapter" / "Up to here"
-      // know what the user is looking at right now.
+      // know what the user is looking at right now. Also drop any prior
+      // paragraph anchor — paragraphs are chapter-local, so switching
+      // chapters invalidates the anchor.
       const chMeta = chapterCache[bookId]?.chapters?.find(c => c.index === index);
       currentReaderChapter[workId] = {
         bookId,
         index,
         title: chMeta?.title || '',
       };
+      delete currentReaderParagraph[workId];
       refreshScopeUI(workId);
 
       // Highlight active chapter
@@ -4428,6 +4503,12 @@
     // and "Up to here" resolve to the chapter the user has visible.
     const currentReaderChapter = {}; // workId -> {bookId, index, title}
 
+    // Tracks the user's last-clicked paragraph per work. Set by
+    // anchorParagraph(); cleared when loadChapter swaps chapters
+    // (the anchor lives inside a specific chapter). Used by
+    // buildScopePayload to populate paragraph_idx.
+    const currentReaderParagraph = {}; // workId -> {bookId, chapterIdx, paragraphIdx}
+
     // Update scope-selector defaults + hint text whenever the
     // visible chapter changes or a work card is rendered fresh.
     function refreshScopeUI(workId) {
@@ -4435,10 +4516,19 @@
       const hint = document.getElementById('qa-scope-hint-' + workId);
       if (!sel) return;
       const cur = currentReaderChapter[workId];
+      const para = currentReaderParagraph[workId];
+      // Ensure a "This paragraph" option exists (work cards are
+      // rendered from the static HTML template with three options;
+      // we add the fourth dynamically once a paragraph is clickable).
+      if (!sel.querySelector('option[value="paragraph"]')) {
+        sel.appendChild(new Option('This paragraph', 'paragraph'));
+      }
       const opts = sel.querySelectorAll('option');
       opts.forEach(o => {
         if (o.value === 'chapter' || o.value === 'up_to_chapter') {
           o.disabled = !cur;
+        } else if (o.value === 'paragraph') {
+          o.disabled = !para;
         }
       });
       // First-time setup: choose "Up to here" if a chapter is open,
@@ -4455,6 +4545,8 @@
       if (hint) {
         if (sel.value === 'book' || !cur) {
           hint.textContent = '';
+        } else if (sel.value === 'paragraph' && para) {
+          hint.textContent = `— ¶${para.paragraphIdx + 1} of ${cur.title || 'Chapter ' + (cur.index + 1)}`;
         } else {
           hint.textContent = '— ' + (cur.title || 'Chapter ' + (cur.index + 1));
         }
@@ -4468,11 +4560,21 @@
       refreshScopeUI(workId);
     }
 
-    // Build the scope payload from the selector + tracked chapter.
-    // Returns null for whole-book (handler omits the field).
+    // Build the scope payload from the selector + tracked chapter /
+    // paragraph. Returns null for whole-book (handler omits the field).
     function buildScopePayload(workId) {
       const sel = document.getElementById('qa-scope-' + workId);
       if (!sel || sel.value === 'book') return null;
+      if (sel.value === 'paragraph') {
+        const para = currentReaderParagraph[workId];
+        if (!para) return null;
+        return {
+          type: 'paragraph',
+          book_id: para.bookId,
+          chapter_idx: para.chapterIdx,
+          paragraph_idx: para.paragraphIdx,
+        };
+      }
       const cur = currentReaderChapter[workId];
       if (!cur) return null; // selector should be disabled, but guard
       return {
