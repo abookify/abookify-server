@@ -1256,6 +1256,16 @@
         <option value="33rem" selected>Normal</option>
         <option value="40rem">Wide</option>
       </select>
+      <select id="np-font-family" onchange="setReaderFontFamily(this.value)" title="Font family">
+        <option value='"Iowan Old Style", "Charter", Georgia, ui-serif, serif' selected>Serif</option>
+        <option value='-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, ui-sans-serif, sans-serif'>Sans</option>
+        <option value='ui-monospace, "SF Mono", Menlo, Consolas, monospace'>Mono</option>
+      </select>
+      <select id="np-line-height" onchange="setReaderLineHeight(this.value)" title="Line spacing">
+        <option value="1.35">Compact</option>
+        <option value="1.55" selected>Normal</option>
+        <option value="1.8">Relaxed</option>
+      </select>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
       <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
@@ -3931,8 +3941,10 @@
     }
     function closeFullscreenNP() { closeFullscreenReader(); }
 
-    // Reader appearance — font-size + measure (line width). Writes to CSS
-    // custom properties on :root so both inline and fullscreen pick them up.
+    // Reader appearance — font-size + measure + family + line height.
+    // Writes CSS custom properties on :root so both inline and fullscreen
+    // modes pick them up. Each setter also persists to localStorage so
+    // the next page load looks the same.
     function setReaderFontSize(v) {
       document.documentElement.style.setProperty('--reader-font-size', v);
       localStorage.setItem('readerFontSize', v);
@@ -3941,12 +3953,32 @@
       document.documentElement.style.setProperty('--reader-measure', v);
       localStorage.setItem('readerMeasure', v);
     }
-    // Apply saved prefs on boot.
+    function setReaderFontFamily(v) {
+      document.documentElement.style.setProperty('--reader-font', v);
+      localStorage.setItem('readerFontFamily', v);
+    }
+    function setReaderLineHeight(v) {
+      document.documentElement.style.setProperty('--reader-line-height', v);
+      localStorage.setItem('readerLineHeight', v);
+    }
+    // Apply saved prefs on boot. Also reflect them in the dropdown UI
+    // so the visible selection matches what the page is actually using.
     (function hydrateReaderPrefs() {
-      const fs = localStorage.getItem('readerFontSize');
-      const m = localStorage.getItem('readerMeasure');
-      if (fs) document.documentElement.style.setProperty('--reader-font-size', fs);
-      if (m) document.documentElement.style.setProperty('--reader-measure', m);
+      const apply = (key, cssVar, selId) => {
+        const v = localStorage.getItem(key);
+        if (!v) return;
+        document.documentElement.style.setProperty(cssVar, v);
+        // Defer the select sync until the DOM is ready (the script runs
+        // mid-document, the <select> elements may not exist yet).
+        queueMicrotask(() => {
+          const sel = document.getElementById(selId);
+          if (sel && [...sel.options].some(o => o.value === v)) sel.value = v;
+        });
+      };
+      apply('readerFontSize',   '--reader-font-size',   'np-font-size');
+      apply('readerMeasure',    '--reader-measure',     'np-measure');
+      apply('readerFontFamily', '--reader-font',        'np-font-family');
+      apply('readerLineHeight', '--reader-line-height', 'np-line-height');
     })();
 
     // Escape: restore from maximize, or close the overlay if not maximized.
