@@ -367,3 +367,23 @@ Both books — which the chapter-link aligner could not align at all (0 usable l
 Note the end-of-Frankenstein divergence is classified `replace` rather than `ebook-only` because ~49 transcript words (the LibriVox public-domain outro) spuriously matched the license boilerplate — the front/back-matter cross-match again. **Fix #2 (strip non-content front/back-matter before alignment) would clean this up** and is the obvious next increment; the divergence is correctly *found* either way.
 
 The chapter-correspondence requirement is gone, and the result is good on real audiobooks. Remaining work: (a) strip front/back-matter; (b) wire `Align` into the alignment pipeline as an alternative to / replacement for the chapter-link path, writing the anchor chain into the `alignments` table and projecting EPUB structure onto audio timestamps via the sidecar; (c) product decision on how divergences surface in the reader.
+
+### Fixture sweep — coverage% is a one-number diagnostic across failure modes (2026-05-25)
+
+Imported and aligned three more works (GPU-transcribed). The real-data test now auto-discovers every work with both peers. Results:
+
+| Work | ebook words | transcript words | anchors | coverage | what coverage tells us |
+|---|---|---|---|---|---|
+| Kitchen Confidential | 99,768 | 101,114 | 82,495 | **95.5%** | same edition, complete |
+| Frankenstein | 78,604 | 77,597 | 67,161 | **96.4%** | same edition, complete (trailing Gutenberg license = the gap) |
+| Why We Sleep | 130,533 | 68,894 | 55,363 | **50.0%** | same edition, **partial audio** — biggest divergence is a single 63,636-word trailing ebook-only block; the audio cuts off mid-Chapter 8/9 ("…continues on the next disc", confirmed by ear). Science jargon did **not** hurt anchoring. |
+| Plato's Republic vs all-dialogues EPUB | 1,209,154 | 45,379 | **641** | **0.2%** | **different translation.** See below. |
+
+**New failure mode: translation/edition mismatch.** The Republic audiobook is a modern translation; the EPUB is Jowett's Victorian one. Opening line, audio: *"I went down to Piraeus yesterday with Glaucon, the son of Ariston, to offer a prayer to the goddess."* Jowett: *"I went down yesterday to the Piraeus with Glaucon the son of Ariston, that I might offer up my prayers to the goddess."* Same content, different words throughout → almost no 4-grams match → 641 lucky anchors (proper nouns + "I went down") → 0.2% coverage. **No lexical method (anchors or the chapter DP) can align across translations** — that needs semantic/embedding alignment, a much harder problem. For public-domain classics this is a real hazard: a free LibriVox audiobook often uses a *different* public-domain translation than your EPUB.
+
+**The headline: `Coverage` cleanly separates all the cases, so it's the diagnostic to surface.**
+- ~95% → same edition, complete (align + show)
+- ~50% → same edition, partial audio (align the covered part, flag the rest as "no audio")
+- ~0% → wrong pairing: different translation/edition, or simply not the same book. The system should **detect this and warn** ("these don't look like the same edition") rather than silently emit a broken alignment.
+
+So beyond karaoke, coverage% is the signal that drives the right UX per work — and the diff-view minimap (PJ's idea) renders it directly: KC/Frankenstein nearly all green, Why We Sleep green-then-grey, Plato almost entirely grey with a few green flecks = "we can't line these up."
