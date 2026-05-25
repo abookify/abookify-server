@@ -26,13 +26,13 @@
             // bg-surface or text-muted match what already exists. Keep
             // these in sync with the :root vars below — eventually move
             // to a shared design-tokens file.
-            bg:           '#1a1a2e',
-            surface:      '#16213e',
-            'surface-2':  '#1a2744',
-            border:       '#2a3a5c',
-            text:         '#e0e0e0',
-            'text-muted': '#8892a8',
-            accent:       '#1D4ED8', // brand blue (STYLE_GUIDE.md)
+            bg:           '#0B1020',
+            surface:      '#141a2e',
+            'surface-2':  '#1c2438',
+            border:       '#1F2937',
+            text:         '#F3F4F6',
+            'text-muted': '#9aa0b0',
+            accent:       '#3b82f6', // brand blue shifted lighter for AA on dark (#191)
             danger:       '#e94560', // historical coral, kept for danger-state CTAs
             mp3:          '#f0a500',
             epub:         '#4ecca3',
@@ -45,16 +45,22 @@
 
   <style>
     :root {
-      --bg: #1a1a2e;
-      --surface: #16213e;
-      --surface-hover: #1a2744;
-      --border: #2a3a5c;
-      --text: #e0e0e0;
-      --text-muted: #8892a8;
-      /* Brand blue from STYLE_GUIDE.md. Replaced historical coral
-         #e94560 — that color survives as --danger for delete buttons
-         and error states. */
-      --accent: #1D4ED8;
+      /* STYLE_GUIDE.md dark palette (#191). The app is dark-only (no
+         light theme), so the brand "dark mode" tokens live directly on
+         :root rather than behind prefers-color-scheme — gating would
+         leave light-preference users on the old unreadable accent,
+         since the UI stays dark for them too. Accent is #3b82f6 here,
+         not the brand #1D4ED8, because #1D4ED8 fails AA contrast on
+         the #0B1020 surface; the wordmark/.abook glyph (not used in
+         this app UI) would keep #1D4ED8. */
+      color-scheme: dark;
+      --bg: #0B1020;
+      --surface: #141a2e;
+      --surface-hover: #1c2438;
+      --border: #1F2937;
+      --text: #F3F4F6;
+      --text-muted: #9aa0b0;
+      --accent: #3b82f6;
       --danger: #e94560;
       --epub: #4ecca3;
       --mp3: #f0a500;
@@ -123,7 +129,7 @@
       color: var(--accent); font-weight: 600;
     }
     .library-search-panel .lsp-snippet mark {
-      background: rgba(29,78,216,0.25); color: var(--text);
+      background: rgba(59,130,246,0.25); color: var(--text);
       padding: 0 2px; border-radius: 2px;
     }
 
@@ -133,7 +139,7 @@
       cursor: pointer; transition: all 0.15s;
     }
     .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
-    .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(29,78,216,0.1); }
+    .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(59,130,246,0.1); }
 
     .stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); }
 
@@ -326,7 +332,7 @@
     .chapter-row:last-child { border-bottom: none; }
     .chapter-row:hover { background: var(--surface-hover); }
     .chapter-row.active { background: rgba(78,204,163,0.08); color: var(--text); }
-    .chapter-row.playing { background: rgba(29,78,216,0.1); color: var(--text); }
+    .chapter-row.playing { background: rgba(59,130,246,0.1); color: var(--text); }
     /* Per-chapter progress bar — fills left-to-right based on playback position.
        Set to 100% on chapters already finished, 0% on unstarted. The chapter
        currently playing gets the partial fill. */
@@ -557,11 +563,11 @@
        discoverable without shouting. */
     .reader-content [data-para-idx] { cursor: pointer; position: relative; }
     .reader-content [data-para-idx]:hover {
-      background: rgba(29,78,216,0.06);
+      background: rgba(59,130,246,0.06);
       border-radius: 3px;
     }
     .reader-content [data-para-idx].paragraph-anchored {
-      background: rgba(29,78,216,0.12);
+      background: rgba(59,130,246,0.12);
       border-left: 3px solid var(--accent);
       padding-left: 10px;
       margin-left: -13px;
@@ -963,7 +969,7 @@
       cursor: pointer; font-family: inherit;
     }
     .chat-msg.assistant .chat-citation .cite-play:hover {
-      background: rgba(29,78,216,0.12);
+      background: rgba(59,130,246,0.12);
     }
     .chat-msg.assistant .chat-citation .cite-text {
       flex: 1; min-width: 0;

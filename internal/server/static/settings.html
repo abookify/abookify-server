@@ -6,9 +6,12 @@
   <title>abookify - Settings</title>
   <style>
     :root {
-      --bg: #1a1a2e; --surface: #16213e; --surface-hover: #1a2744;
-      --border: #2a3a5c; --text: #e0e0e0; --text-muted: #8892a8;
-      --accent: #1D4ED8; --danger: #e94560; --epub: #4ecca3; --mp3: #f0a500; --generate: #7b68ee;
+      /* STYLE_GUIDE.md dark palette (#191) — app is dark-only; accent
+         #3b82f6 for AA contrast on #0B1020 (brand #1D4ED8 fails). */
+      color-scheme: dark;
+      --bg: #0B1020; --surface: #141a2e; --surface-hover: #1c2438;
+      --border: #1F2937; --text: #F3F4F6; --text-muted: #9aa0b0;
+      --accent: #3b82f6; --danger: #e94560; --epub: #4ecca3; --mp3: #f0a500; --generate: #7b68ee;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
