@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Inter, bundled locally — no CDN, fully offline (#205). The variable
+   font is a single file covering all weights; Georgia (reader) is a
+   system serif and needs no bundling. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+}
+
+/* Component vocabulary (#205) — border-first, low-chrome per
+   design/design-system-mock.html. Grown surface-by-surface as the app
+   migrates onto it; these are the primitives the mock defines. */
+@layer components {
+  /* Outer surfaces: the big bordered, rounded, shadowed panels. */
+  .ds-surface {
+    @apply bg-surface border border-border rounded-lg shadow-surface;
+  }
+
+  /* Inset cards (book cards, settings groups): subtler than a surface. */
+  .ds-card {
+    @apply bg-surface-2 border border-border rounded-md overflow-hidden;
+  }
+
+  /* Pill badges: accent-soft fill, accent text (audio/ebook tags). */
+  .ds-badge {
+    @apply inline-flex items-center bg-accent-soft text-accent rounded-full px-2 font-bold;
+    font-size: 11px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  /* Section header row: title + muted meta on the right. */
+  .ds-section-title {
+    @apply flex items-center justify-between;
+  }
+
+  /* Bordered list panel + its header (work-detail chapter columns). */
+  .ds-panel {
+    @apply border border-border rounded-md overflow-hidden;
+  }
+  .ds-panel-header {
+    @apply bg-surface-2 border-b border-border font-semibold;
+    padding: var(--space-3) var(--space-4);
+    font-size: 14px;
+  }
+
+  /* Chapter row + active state (accent-soft highlight). */
+  .ds-chapter {
+    @apply flex items-center justify-between border-b border-border;
+    padding: var(--space-3) var(--space-4);
+    font-size: 14px;
+  }
+  .ds-chapter:last-child { border-bottom: none; }
+  .ds-chapter--active {
+    @apply bg-accent-soft text-accent font-semibold;
+  }
+
+  /* Form input shell (settings). */
+  .ds-input {
+    @apply bg-surface-2 border border-border rounded-md;
+    padding: var(--space-3);
+    font-size: 14px;
+  }
+}

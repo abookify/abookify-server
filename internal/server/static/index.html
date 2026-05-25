@@ -6,42 +6,14 @@
   <title>abookify</title>
 
   <!--
-    Tailwind via Play CDN. Used for responsive utility classes (sm:/md:/lg:
-    breakpoints) on top of the existing custom CSS. Preflight reset is
-    DISABLED via corePlugins.preflight=false so our long-existing styles
-    aren't rewritten — Tailwind here adds, it doesn't replace. Switch to a
-    real build step when we outgrow the CDN's bundle cost.
+    Design-system stylesheet (#205 / Phase 1 #144): Tailwind v3 compiled
+    offline via `make css` (Docker, no CDN), committed + go:embed'd.
+    Carries the @font-face for locally-bundled Inter and the design-system
+    component classes. The big inline <style> below is the app's existing
+    hand-written CSS, kept as-is; utilities/components are migrated onto it
+    surface-by-surface. Preflight stays off so existing styles aren't reset.
   -->
-  <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
-  <script>
-    tailwind.config = {
-      corePlugins: { preflight: false },
-      theme: {
-        extend: {
-          screens: {
-            'xs': '480px',
-          },
-          colors: {
-            // Mirror the CSS-variable palette so Tailwind utilities like
-            // bg-surface or text-muted match what already exists. Keep
-            // these in sync with the :root vars below — eventually move
-            // to a shared design-tokens file.
-            bg:           '#0B1020',
-            surface:      '#141A2E',
-            'surface-2':  '#111827', // design-system inset (#205)
-            border:       '#1F2937',
-            text:         '#F3F4F6',
-            'text-muted': '#9AA0B0',
-            accent:       '#3b82f6', // brand blue shifted lighter for AA on dark (#191)
-            danger:       '#e94560', // historical coral, kept for danger-state CTAs
-            mp3:          '#f0a500',
-            epub:         '#4ecca3',
-            generate:     '#7c4dff',
-          },
-        },
-      },
-    };
-  </script>
+  <link rel="stylesheet" href="/app.css">
 
   <style>
     :root {

@@ -1,4 +1,29 @@
-.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote
+.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote css fonts
+
+# Regenerate the embedded design-system stylesheet (#205 / Phase 1 #144).
+# Runs Tailwind v3 standalone via an ephemeral Docker container — no host
+# toolchain, consistent with the Go-in-Docker build rule. Output is
+# committed (internal/server/static/app.css) so `go build` / go:embed
+# stays self-contained and offline. Re-run after changing markup classes,
+# tailwind.config.js, or src/app.css. (CI will diff-check this — TODO.)
+css:
+	docker run --rm -v "$$(pwd)":/app -w /app node:20-bookworm-slim \
+		npx --yes tailwindcss@3.4.17 \
+		-c ./tailwind.config.js \
+		-i ./internal/server/static/src/app.css \
+		-o ./internal/server/static/app.css --minify
+
+# One-time: fetch the Inter variable woff2 and commit it under static/fonts/.
+# Bundled locally (no runtime CDN) so the embed works fully offline. Runs
+# in Docker; the only repo artifact is the committed woff2.
+fonts:
+	docker run --rm -v "$$(pwd)":/app -w /app debian:bookworm-slim sh -c '\
+		apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null && \
+		mkdir -p internal/server/static/fonts && \
+		curl -fsSL -o /tmp/inter.zip https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip && \
+		unzip -o -q /tmp/inter.zip web/InterVariable.woff2 -d /tmp/inter && \
+		cp /tmp/inter/web/InterVariable.woff2 internal/server/static/fonts/InterVariable.woff2 && \
+		echo "fonts: bundled $$(du -h internal/server/static/fonts/InterVariable.woff2 | cut -f1) InterVariable.woff2"'
 
 up:
 	docker compose up -d --build
