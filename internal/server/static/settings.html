@@ -122,6 +122,57 @@
 
   <div class="settings">
     <div class="section">
+      <h2>Mobile App Pairing</h2>
+      <div class="pairing-row">
+        <img id="qr-img" src="/api/pair-qr" width="200" height="200" style="border-radius:8px; background:#fff;">
+        <div>
+          <div class="field">
+            <label>Server URL</label>
+            <div id="server-url" style="font-size:0.9rem; color:var(--text); word-break:break-all;"></div>
+          </div>
+          <div class="hint" style="margin-top:8px;">
+            Open the abookify app on your phone and scan this QR code,<br>
+            or enter the server URL manually.
+          </div>
+          <div style="margin-top:14px;">
+            <button type="button" id="rotate-tunnel-btn" onclick="rotateTunnel()"
+              style="background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">
+              Rotate tunnel URL
+            </button>
+            <div class="hint" style="margin-top:6px;">
+              Mints a new public hostname. Existing paired devices will need to re-scan the QR code,
+              and you'll need to restart the relay container so it advertises the new slug.
+            </div>
+            <div id="rotate-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Security</h2>
+      <div class="hint" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
+      <div id="auth-state" style="font-size:0.85rem; margin-bottom:12px;"></div>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="auth-username" autocomplete="username" autocapitalize="none" autocorrect="off" placeholder="e.g. your name">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="auth-password" autocomplete="new-password" placeholder="set a password to protect this server">
+        <div class="hint" id="auth-password-hint">Leave blank to keep the current password.</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+        <button type="button" class="save-btn" onclick="saveSecurity()">Save password</button>
+        <span class="save-msg" id="security-save-msg">Saved!</span>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+        <button type="button" id="auth-disable-btn" onclick="disableAuth()" style="display:none; background:transparent; color:var(--danger); border:1px solid var(--danger); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Disable password protection</button>
+        <button type="button" id="auth-logout-btn" onclick="logoutThisDevice()" style="display:none; background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Sign out this browser</button>
+      </div>
+    </div>
+
+    <div class="section">
       <h2>Local Services</h2>
       <div class="hint" style="margin-bottom:12px;">These run locally on your server. No API keys needed, no data leaves your machine.</div>
       <div class="status-row">
@@ -252,53 +303,6 @@
         </div>
       </div>
       <div class="hint">Voice chat is a premium feature that uses real-time speech-to-speech AI. Your audio is sent to the selected provider for processing.</div>
-    </div>
-
-    <div class="section">
-      <h2>Mobile App Pairing</h2>
-      <div class="pairing-row">
-        <img id="qr-img" src="/api/pair-qr" width="200" height="200" style="border-radius:8px; background:#fff;">
-        <div>
-          <div class="field">
-            <label>Server URL</label>
-            <div id="server-url" style="font-size:0.9rem; color:var(--text); word-break:break-all;"></div>
-          </div>
-          <div class="hint" style="margin-top:8px;">
-            Open the abookify app on your phone and scan this QR code,<br>
-            or enter the server URL manually.
-          </div>
-          <div style="margin-top:14px;">
-            <button type="button" id="rotate-tunnel-btn" onclick="rotateTunnel()"
-              style="background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">
-              Rotate tunnel URL
-            </button>
-            <div class="hint" style="margin-top:6px;">
-              Mints a new public hostname. Existing paired devices will need to re-scan the QR code,
-              and you'll need to restart the relay container so it advertises the new slug.
-            </div>
-            <div id="rotate-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="section">
-      <h2>Security</h2>
-      <div class="hint" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
-      <div id="auth-state" style="font-size:0.85rem; margin-bottom:12px;"></div>
-      <div class="field">
-        <label>Username</label>
-        <input type="text" id="auth-username" autocomplete="username" autocapitalize="none" autocorrect="off" placeholder="e.g. your name">
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input type="password" id="auth-password" autocomplete="new-password" placeholder="set a password to protect this server">
-        <div class="hint" id="auth-password-hint">Leave blank to keep the current password.</div>
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
-        <button type="button" id="auth-disable-btn" onclick="disableAuth()" style="display:none; background:transparent; color:var(--danger); border:1px solid var(--danger); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Disable password protection</button>
-        <button type="button" id="auth-logout-btn" onclick="logoutThisDevice()" style="display:none; background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Sign out this browser</button>
-      </div>
     </div>
 
     <div class="section">
@@ -493,6 +497,28 @@
 
     function escapeHtmlAttr(s) {
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // Per-section save for credentials only, so enabling/changing the
+    // password doesn't require scrolling to the global Save (#204).
+    // Same write semantics as the global save: blank password = keep
+    // current (use "Disable password protection" to turn auth off).
+    async function saveSecurity() {
+      const settings = { auth_username: document.getElementById('auth-username').value.trim() };
+      const pw = document.getElementById('auth-password').value;
+      if (pw) settings.auth_password = pw;
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(settings),
+        });
+        const msg = document.getElementById('security-save-msg');
+        msg.style.display = 'inline';
+        setTimeout(() => msg.style.display = 'none', 2000);
+        document.getElementById('auth-password').value = '';
+        loadAuthState();
+      } catch { alert('Failed to save.'); }
     }
 
     async function disableAuth() {
