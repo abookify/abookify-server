@@ -451,6 +451,18 @@
       --reader-line-height: 1.55;
       --reader-measure: 33rem;   /* ~66 CPL at 18px */
       --reader-font: "Iowan Old Style", "Charter", Georgia, ui-serif, serif;
+
+      /* Theme-aware "paper" (#205). The reader keeps a warm reading
+         surface that follows the theme instead of a fixed cream page:
+         warm-dark paper in dark mode (current), warm cream in light
+         (added when light activates at the end of the rollout).
+         --reader-ink = full-strength text + the just-read word window;
+         --reader-dim = upcoming words; --reader-faded = words already
+         passed. The active word itself is rendered in --accent. */
+      --reader-bg: #1b1813;
+      --reader-ink: #e9e2d4;
+      --reader-dim: #8f8676;
+      --reader-faded: #5f5950;
     }
     .reader-content {
       padding: 1.5rem 2rem;
@@ -459,8 +471,8 @@
       font-family: var(--reader-font);
       font-size: var(--reader-font-size);
       line-height: var(--reader-line-height);
-      color: #1a1a1a;
-      background: #f5f0e8;
+      color: var(--reader-ink);
+      background: var(--reader-bg);
       word-wrap: break-word;
       border-top: 1px solid var(--border);
       hyphens: manual;
@@ -529,7 +541,7 @@
       z-index: 400;
       max-height: none;
       padding: 4.5rem 2rem 10rem;
-      background: #fafaf7;
+      background: var(--reader-bg);
     }
     .reader-fs-topbar {
       display: none;
@@ -563,19 +575,21 @@
        also muted via .sync-para so there's no jarring color jump as the
        reader moves through the chapter. */
     .reader-content .sync-para {
-      color: #8a8478;
+      color: var(--reader-dim);
       transition: color 0.15s;
     }
     .reader-content .sync-word {
       transition: color 0.15s;
-      color: #8a8478;
+      color: var(--reader-dim);
     }
+    /* The active (currently-spoken) word pops in accent — the mock's
+       active-word treatment — on the warm paper. */
     .reader-content .sync-word.read {
-      color: #1a1a1a;
-      font-weight: 500;
+      color: var(--accent);
+      font-weight: 600;
     }
     .reader-content .sync-word.past {
-      color: #b8b2a5;
+      color: var(--reader-faded);
     }
     /* Paragraph anchor — tap a paragraph in the reader to set Q&A
        scope to "this paragraph". Subtle hover hint so the gesture is
@@ -725,7 +739,7 @@
       position: fixed; bottom: var(--np-height); left: 0; right: 0;
       z-index: 95;
       height: 360px;
-      background: #f5f0e8;
+      background: var(--reader-bg);
       border-top: 1px solid var(--border);
       box-shadow: 0 -4px 14px rgba(0,0,0,0.35);
       display: none; flex-direction: column;
