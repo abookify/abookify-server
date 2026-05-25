@@ -414,3 +414,17 @@ Dropping stopwords *hurt* consecutive matching — the content words also differ
 - ~0% anchor coverage → run embedding+DTW. It then distinguishes **different translation of the same work** (high paragraph-similarity → align at paragraph grain) from **a genuinely different book** (low similarity everywhere → correctly "these don't match").
 
 **Test fixture is ready:** Plato Republic exists in two real translations on disk (audio transcript = modern; EPUB = Jowett). Prototype embedding+DTW on it to validate cross-translation alignment on real data.
+
+### Embedding alignment PROVEN on Plato (2026-05-25)
+
+Prototype `testdata/transcription-experiments/plato_embed_align.py` (runs on atrium, Ollama `nomic-embed-text`, no OpenAI). Chunked both texts into ~120-word windows (378 transcript / 1806 Jowett), embedded each, found each transcript chunk's best-cosine Jowett chunk.
+
+Result — vs the **0.2%** lexical-anchor coverage on the same pair:
+
+- best-match cosine: min 0.760, **median 0.847**, max 0.960.
+- **All 378/378 transcript chunks matched a Jowett chunk at cosine ≥0.7** (360 at ≥0.8).
+- **75% of matches fall in a single monotonic (non-decreasing) run** of Jowett positions — using *naive* best-match with no ordering constraint. DTW (which enforces monotonicity) would absorb most of the remaining 25% back-jumps.
+- Matches are semantically correct across the translation gap: transcript chunk 0 ("I went down to Piraeus yesterday with Glaucon, the son of Ariston, to offer a prayer to the goddess") → Jowett "Book I I went down yesterday…"; the Ring of Gyges passage ("setting of the ring… became invisible") → Jowett "touching the ring he turned the collet outwards and reappeared"; the Form of the Good → Jowett's orb-of-light passage.
+- Bonus: transcript chunk 0 matched Jowett chunk **822**, not 0 — because the Jowett "Republic" section opens with ~822 chunks of Jowett's *Introduction/Analysis* (not in the audio). The embedding match correctly skipped the scholarly front-matter and locked onto the dialogue's start. So embedding alignment handles front-matter divergence for free too.
+
+**Conclusion: the cross-translation problem is solved at paragraph level.** Lexical anchoring (0.2%) → semantic embeddings (100% of chunks matched, 75%+ monotonic). The local `nomic-embed-text` model is more than adequate — no paid API needed. Productionizing = embed paragraphs (RAG pipeline already does this) + DTW over the cosine matrix + the same coverage/divergence reporting. Routing stays coverage-driven: high lexical coverage → word-level anchor karaoke; near-zero → embedding+DTW for paragraph-level cross-translation correlation.
