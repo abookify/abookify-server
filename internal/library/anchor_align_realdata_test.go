@@ -58,24 +58,53 @@ func TestAlign_RealData(t *testing.T) {
 		t.Skipf("cannot open local DB: %v", err)
 	}
 
-	cases := []struct {
-		workID int64
-		label  string
-	}{
-		{27, "Kitchen Confidential"},
-		{28, "Frankenstein"},
+	// Auto-discover every work that has both a publisher ebook and a
+	// whisper transcript, so newly imported test books are verified
+	// without editing this test.
+	books, err := store.ListBooks()
+	if err != nil {
+		t.Fatalf("ListBooks: %v", err)
 	}
-	for _, c := range cases {
-		ebook := Tokenize(concatByOrigin(t, store, c.workID, "publisher_epub"))
-		trans := Tokenize(concatByOrigin(t, store, c.workID, "whisper_transcript"))
+	hasEbook := map[int64]bool{}
+	hasTrans := map[int64]bool{}
+	title := map[int64]string{}
+	for _, b := range books {
+		switch b.Origin {
+		case "publisher_epub", "publisher_mobi":
+			hasEbook[b.WorkID] = true
+		case "whisper_transcript":
+			hasTrans[b.WorkID] = true
+		}
+		if b.Title != "" && title[b.WorkID] == "" {
+			title[b.WorkID] = b.Title
+		}
+	}
+	var workIDs []int64
+	for wid := range hasEbook {
+		if hasTrans[wid] {
+			workIDs = append(workIDs, wid)
+		}
+	}
+	sort.Slice(workIDs, func(i, j int) bool { return workIDs[i] < workIDs[j] })
+	if len(workIDs) == 0 {
+		t.Skip("no work has both an ebook and a transcript")
+	}
+
+	for _, wid := range workIDs {
+		label := title[wid]
+		ebook := Tokenize(concatByOrigin(t, store, wid, "publisher_epub"))
+		if len(ebook) == 0 {
+			ebook = Tokenize(concatByOrigin(t, store, wid, "publisher_mobi"))
+		}
+		trans := Tokenize(concatByOrigin(t, store, wid, "whisper_transcript"))
 		if len(ebook) < 1000 || len(trans) < 1000 {
-			t.Logf("%s (work %d): missing peer text (ebook=%d, trans=%d) — skipping", c.label, c.workID, len(ebook), len(trans))
+			t.Logf("%q (work %d): missing peer text (ebook=%d, trans=%d) — skipping", label, wid, len(ebook), len(trans))
 			continue
 		}
 		a := Align(ebook, trans, 4)
 		cov := a.Coverage(len(ebook))
 		t.Logf("%s (work %d): ebook %d words, transcript %d words, %d anchors, coverage %.1f%%",
-			c.label, c.workID, len(ebook), len(trans), len(a.Anchors), cov*100)
+			label, wid, len(ebook), len(trans), len(a.Anchors), cov*100)
 
 		// Report the biggest divergence segments — these are the audiobook
 		// intros/outros and ebook front/back-matter the aligner found.
@@ -102,9 +131,17 @@ func TestAlign_RealData(t *testing.T) {
 				i+1, d.kind, d.eWords, d.tWords, d.eStart)
 		}
 
-		// Loose sanity: content-matched works should cover most of the ebook.
-		if cov < 0.5 {
-			t.Errorf("%s: coverage %.1f%% is suspiciously low for a content-matched pair", c.label, cov*100)
+		// Correctness invariant that holds regardless of coverage (so it's
+		// valid even for deliberate partial-coverage fixtures like Plato's
+		// Republic audio vs the all-dialogues ebook): the anchor chain must
+		// strictly increase on both axes.
+		pe, pt := -1, -1
+		for _, an := range a.Anchors {
+			if an.EbookPos <= pe || an.TransPos <= pt {
+				t.Errorf("%s: anchor chain not strictly increasing at (e=%d,t=%d) after (e=%d,t=%d)", label, an.EbookPos, an.TransPos, pe, pt)
+				break
+			}
+			pe, pt = an.EbookPos, an.TransPos
 		}
 	}
 }
