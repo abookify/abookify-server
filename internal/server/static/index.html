@@ -144,27 +144,35 @@
 
     .stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); }
 
-    .works-list { padding: 0 2rem 2rem; display: flex; flex-direction: column; gap: 1rem; }
+    /* Library surface (#205) — border-first cards on the design tokens,
+       per design/design-system-mock.html. Structure unchanged (cards stay
+       expandable); only the visual language is rolled onto the system. */
+    .works-list { padding: 0 var(--space-7) var(--space-7); display: flex; flex-direction: column; gap: var(--space-4); }
 
     .work-card {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-md); box-shadow: var(--shadow);
       overflow: hidden; transition: border-color 0.15s;
     }
-    .work-card:hover { border-color: var(--text-muted); }
+    .work-card:hover { border-color: var(--muted); }
 
     .work-header {
-      padding: 1.25rem 1.5rem; cursor: pointer; user-select: none;
-      display: flex; align-items: center; gap: 1rem;
+      padding: var(--space-5) var(--space-6); cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: var(--space-4);
     }
     .work-title-block { flex: 1; min-width: 0; }
-    .work-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.25rem; }
-    .work-author { font-size: 0.85rem; color: var(--text-muted); }
+    .work-title { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: var(--space-1); }
+    .work-author { font-size: 0.85rem; color: var(--muted); }
 
-    .work-badges { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
+    .work-badges { display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0; }
 
+    /* Pill badges follow the mock badge shape (full pill, 11px/700). The
+       per-media-type colors are kept rather than the mock's uniform accent
+       badge — they convey audio-vs-text-vs-missing at a glance, which the
+       3-up mock (every card has both) didn't need to. */
     .media-pill {
-      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
-      padding: 0.2rem 0.6rem; border-radius: 10px; letter-spacing: 0.03em;
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      padding: 5px 8px; border-radius: 999px; letter-spacing: 0.03em;
     }
     .media-pill.audio { background: rgba(240,165,0,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
