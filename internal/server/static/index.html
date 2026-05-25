@@ -318,11 +318,18 @@
       min-height: 0;
     }
 
+    /* Work-detail panes (#205) — the mock's bordered chapter panels.
+       App keeps a single split-view grid with a center divider rather
+       than two free-standing panels, so the design-system treatment is
+       applied to the headers + rows. panel-header gets the surface-2
+       inset fill from the mock; type colors (audio amber / text green)
+       are kept as a useful at-a-glance distinction. */
     .pane-header {
       font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.05em; padding: 0.75rem 1.25rem;
+      letter-spacing: 0.05em; padding: var(--space-3) var(--space-5);
       border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; gap: 0.5rem;
+      background: var(--surface-2);
+      display: flex; align-items: center; gap: var(--space-2);
     }
     .pane-header.audio { color: var(--mp3); }
     .pane-header.text { color: var(--epub); }
@@ -332,15 +339,18 @@
     }
 
     .chapter-row {
-      display: flex; align-items: center; gap: 0.5rem;
-      padding: 0.45rem 1.25rem; font-size: 0.8rem;
-      color: var(--text-muted); cursor: pointer; transition: background 0.1s;
-      border-bottom: 1px solid rgba(42,58,92,0.3);
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: var(--space-2) var(--space-5); font-size: 0.8rem;
+      color: var(--muted); cursor: pointer; transition: background 0.1s;
+      border-bottom: 1px solid var(--border);
       position: relative;
     }
     .chapter-row:last-child { border-bottom: none; }
     .chapter-row:hover { background: var(--surface-hover); }
-    .chapter-row.active { background: rgba(78,204,163,0.08); color: var(--text); }
+    /* Active (the open text chapter) follows the mock's accent-soft +
+       accent active row. Playing (the audio cursor) keeps its own blue
+       wash — already accent-hued — so the two states stay distinct. */
+    .chapter-row.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
     .chapter-row.playing { background: rgba(59,130,246,0.1); color: var(--text); }
     /* Per-chapter progress bar — fills left-to-right based on playback position.
        Set to 100% on chapters already finished, 0% on unstarted. The chapter
