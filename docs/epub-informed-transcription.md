@@ -346,3 +346,24 @@ Findings:
 - **Boilerplate cross-matches are a real hazard.** At n=5 a few license 5-grams spuriously matched the LibriVox closing announcement ("…in the public domain…") in the transcript — semantically wrong, textually identical. Reinforces stripping front/back-matter before alignment, and a robust divergence base case.
 
 Conclusion: the recursive anchor aligner is not just viable, it's easy on this data. Building it next with synthetic known-answer tests.
+
+### Anchor aligner built + validated (2026-05-25)
+
+`internal/library/anchor_align.go` — pure-Go aligner: tokenize/normalize → hapax-in-ebook n-gram anchors that appear in the transcript → longest monotonic chain (LIS on transcript position) → classify gaps as aligned / ebook-only / trans-only / replace. No chapter correspondence required; divergence detection falls out of gap classification.
+
+Tests:
+- `anchor_align_test.go` — 10 synthetic known-answer cases (identical → full coverage; transcript intro → trans-only head; skipped paragraph → ebook-only; single STT error → bridged; out-of-order/repeated phrase → rejected by the chain; trailing Gutenberg license → ebook-only; ambiguous ebook n-gram → not anchored). CI-safe.
+- `anchor_align_realdata_test.go` — runs against the local dev DB (skips in CI); aligns works 27/28 and reports coverage + largest divergences.
+
+**Real-data result** (n=4, exact normalized matching, no fuzzy):
+
+| Work | ebook words | transcript words | anchors | coverage | biggest divergence |
+|---|---|---|---|---|---|
+| Kitchen Confidential | 99,768 | 101,114 | 82,495 | **95.5%** | ~166-word section-transition gaps |
+| Frankenstein | 78,604 | 77,597 | 67,161 | **96.4%** | ebook +3,012 / trans +49 at end = **Gutenberg license** |
+
+Both books — which the chapter-link aligner could not align at all (0 usable links, garbage pairs) — reach **95-96% word-level coverage**, with the divergences landing exactly where expected: Frankenstein's trailing Gutenberg license (3,012 ebook words, ~no audio) and its front-matter header (237 words at position 0). KC's divergences are all small.
+
+Note the end-of-Frankenstein divergence is classified `replace` rather than `ebook-only` because ~49 transcript words (the LibriVox public-domain outro) spuriously matched the license boilerplate — the front/back-matter cross-match again. **Fix #2 (strip non-content front/back-matter before alignment) would clean this up** and is the obvious next increment; the divergence is correctly *found* either way.
+
+The chapter-correspondence requirement is gone, and the result is good on real audiobooks. Remaining work: (a) strip front/back-matter; (b) wire `Align` into the alignment pipeline as an alternative to / replacement for the chapter-link path, writing the anchor chain into the `alignments` table and projecting EPUB structure onto audio timestamps via the sidecar; (c) product decision on how divergences surface in the reader.
