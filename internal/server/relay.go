@@ -11,6 +11,8 @@ import (
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
+
+	"github.com/pj/abookify/internal/db"
 )
 
 const (
@@ -145,14 +147,37 @@ func (s *Server) handleRotateServerID(w http.ResponseWriter, r *http.Request) {
 type PairingPayload struct {
 	URL   string `json:"url"`
 	Token string `json:"token"`
+	// AuthToken is a 30-day login token, embedded only when auth is
+	// enabled, so a scanned device is authenticated without typing the
+	// password (#197). Omitted (empty) on open servers. The pair
+	// endpoints are gated, so only an already-authenticated user can
+	// generate a QR that carries one.
+	AuthToken string `json:"auth_token,omitempty"`
 }
 
-// handlePairQR issues a fresh pairing token and encodes {url, token} as JSON in a QR.
-func (s *Server) handlePairQR(w http.ResponseWriter, r *http.Request) {
-	payload := PairingPayload{
+// newPairingPayload builds the payload, minting a session-backed auth
+// token when auth is enabled. The auth token is a real 30-day
+// auth_sessions row (distinct from the short-lived single-use pairing
+// Token, which authorizes device registration).
+func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
+	p := PairingPayload{
 		URL:   s.PublicURL(r),
 		Token: pairing.Issue(),
 	}
+	if s.authEnabled() {
+		if tok, err := db.NewSessionToken(); err == nil {
+			user, _ := s.store.GetSetting("auth_username")
+			if err := s.store.CreateAuthSession(tok, user, db.DefaultSessionTTL); err == nil {
+				p.AuthToken = tok
+			}
+		}
+	}
+	return p
+}
+
+// handlePairQR issues a fresh pairing payload and encodes it as JSON in a QR.
+func (s *Server) handlePairQR(w http.ResponseWriter, r *http.Request) {
+	payload := s.newPairingPayload(r)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -171,8 +196,5 @@ func (s *Server) handlePairQR(w http.ResponseWriter, r *http.Request) {
 // handlePairPayload returns the current pairing payload as JSON (for the web UI
 // to display the raw values alongside the QR).
 func (s *Server) handlePairPayload(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, PairingPayload{
-		URL:   s.PublicURL(r),
-		Token: pairing.Issue(),
-	})
+	writeJSON(w, http.StatusOK, s.newPairingPayload(r))
 }

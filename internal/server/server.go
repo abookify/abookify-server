@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
@@ -175,10 +177,17 @@ func New(store *db.Store, port string) *Server {
 		embedInFlight: make(map[int64]bool),
 	}
 
+	// Drop any login tokens that expired while the server was down (#197).
+	// Per-request validation also purges lazily; this keeps the table tidy.
+	_ = store.PurgeExpiredAuthSessions()
+
 	mux := http.NewServeMux()
 
 	// API routes
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("GET /api/info", s.handleInfo)
 	mux.HandleFunc("GET /api/pair-qr", s.handlePairQR)
 	mux.HandleFunc("GET /api/pair-payload", s.handlePairPayload)
@@ -259,7 +268,10 @@ func New(store *db.Store, port string) *Server {
 
 	s.http = &http.Server{
 		Addr:    ":" + port,
-		Handler: accessLogMiddleware(corsMiddleware(mux)),
+		// auth is innermost so every request is still logged + CORS-
+		// decorated, and OPTIONS preflight is handled by cors before it
+		// reaches the gate (#197).
+		Handler: accessLogMiddleware(corsMiddleware(s.authMiddleware(mux))),
 	}
 
 	return s
@@ -1461,9 +1473,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 // isSecretSettingKey matches any settings name that should never leave
 // the server in plaintext. Conservative: any "_api_key", "_secret",
-// "_token", or "_password" suffix.
+// "_token", "_password", or "_hash" suffix. "_hash" covers
+// auth_password_hash so the bcrypt digest never ships to a client via
+// GET /api/settings (#197).
 func isSecretSettingKey(k string) bool {
-	for _, suf := range []string{"_api_key", "_secret", "_token", "_password"} {
+	for _, suf := range []string{"_api_key", "_secret", "_token", "_password", "_hash"} {
 		if strings.HasSuffix(k, suf) {
 			return true
 		}
@@ -1556,6 +1570,29 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
+	}
+	// auth_password is write-only: hash it into auth_password_hash and
+	// drop the plaintext so it never lands in the settings KV. An empty
+	// value clears the hash, which disables auth (back to an open
+	// server). The bare auth_password key is never persisted. (#197)
+	if pw, ok := body["auth_password"]; ok {
+		delete(body, "auth_password")
+		if strings.TrimSpace(pw) == "" {
+			if err := s.store.SetSetting("auth_password_hash", ""); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		} else {
+			hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hash password: " + err.Error()})
+				return
+			}
+			if err := s.store.SetSetting("auth_password_hash", string(hash)); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 	}
 	llmTouched := false
 	for k, v := range body {

@@ -363,6 +363,20 @@ func migrate(db *sql.DB) error {
 			value TEXT NOT NULL DEFAULT ''
 		);
 
+		-- Login sessions for optional username/password auth (#197).
+		-- Opaque random tokens minted at login (or embedded in a pairing
+		-- QR), validated per request. A DB table (not in-memory) so 30-day
+		-- tokens survive the frequent server restarts. Rows are deleted on
+		-- logout and lazily purged once expired.
+		CREATE TABLE IF NOT EXISTS auth_sessions (
+			token      TEXT PRIMARY KEY,
+			username   TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+
 		-- Q&A chat sessions: a session is a multi-turn conversation
 		-- scoped to one work. A book can have many parallel sessions
 		-- (one per topic, draft, or open tab). Title is auto-derived
