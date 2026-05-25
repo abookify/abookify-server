@@ -6,16 +6,24 @@
   <title>abookify - Settings</title>
   <style>
     :root {
-      /* STYLE_GUIDE.md dark palette (#191) — app is dark-only; accent
-         #3b82f6 for AA contrast on #0B1020 (brand #1D4ED8 fails). */
+      /* Design system tokens (#205) — see design/design-system-mock.html.
+         Dark base; light activation deferred to end of rollout. */
       color-scheme: dark;
-      --bg: #0B1020; --surface: #141a2e; --surface-hover: #1c2438;
-      --border: #1F2937; --text: #F3F4F6; --text-muted: #9aa0b0;
-      --accent: #3b82f6; --danger: #e94560; --epub: #4ecca3; --mp3: #f0a500; --generate: #7b68ee;
+      --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-reader: Georgia, "Iowan Old Style", "Charter", ui-serif, serif;
+      --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+      --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 40px;
+      --radius-sm: 10px; --radius-md: 16px; --radius-lg: 24px;
+      --bg: #0B1020; --surface: #141A2E; --surface-2: #111827; --surface-hover: #1c2438;
+      --border: #1F2937; --text: #F3F4F6; --muted: #9AA0B0; --text-muted: var(--muted);
+      --accent: #3b82f6; --accent-soft: rgba(59,130,246,.16);
+      --danger: #e94560; --success: #34D399; --highlight: #172554; --ebook-only: #F59E0B;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 18px 48px rgba(0,0,0,.45);
+      --epub: #4ecca3; --mp3: #f0a500; --generate: #7b68ee;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: var(--font-ui);
       background: var(--bg); color: var(--text); min-height: 100vh;
     }
     header {
