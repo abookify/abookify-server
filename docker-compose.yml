@@ -52,6 +52,12 @@ services:
       NULLBORE_API_KEY: ${NULLBORE_API_KEY:-}
       NULLBORE_TUNNELS: ${NULLBORE_TUNNELS:-server:7654}
       NULLBORE_TLS_SKIP_VERIFY: ${NULLBORE_TLS_SKIP_VERIFY:-false}
+    # Pin default_ttl=168h (client default is 1h, no env override for it)
+    # so the tunnel stops expiring/reconnecting hourly. Read-only; the
+    # client's device_id auto-append is a no-op here, same as the
+    # (volume-less) prior setup.
+    volumes:
+      - ../relay/nullbore-config.toml:/root/.config/nullbore/config.toml:ro
     profiles:
       - relay
     depends_on:
