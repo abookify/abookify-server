@@ -39,60 +39,74 @@
 
     .settings { padding: 2rem; max-width: 700px; }
 
+    /* Settings surfaces (#205) — sections are the mock's bordered,
+       shadowed surfaces; inputs are surface-2 insets; the security
+       note uses the mock callout. */
     .section {
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem;
+      border-radius: var(--radius-lg); box-shadow: var(--shadow);
+      padding: var(--space-6); margin-bottom: var(--space-6);
     }
     .section h2 {
-      font-size: 1rem; font-weight: 600; margin-bottom: 1rem;
-      padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+      font-size: 1rem; font-weight: 600; margin-bottom: var(--space-4);
+      padding-bottom: var(--space-2); border-bottom: 1px solid var(--border);
     }
 
-    .field { margin-bottom: 1rem; }
+    .field { margin-bottom: var(--space-4); }
     .field:last-child { margin-bottom: 0; }
     .field label {
       display: block; font-size: 0.8rem; font-weight: 500;
-      color: var(--text-muted); margin-bottom: 0.35rem; text-transform: uppercase;
+      color: var(--muted); margin-bottom: var(--space-2); text-transform: uppercase;
       letter-spacing: 0.03em;
     }
     .field select,
     .field input[type="text"],
     .field input[type="password"],
     .field input[type="number"] {
-      width: 100%; background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 0.5rem 0.75rem; color: var(--text);
+      width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: var(--space-3); color: var(--text);
       font-size: 0.9rem;
       font-family: inherit; box-sizing: border-box;
     }
     .field select:focus, .field input:focus { outline: none; border-color: var(--accent); }
-    .field .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+    .field .hint { font-size: 0.75rem; color: var(--muted); margin-top: var(--space-1); }
     .field .saved-key {
-      font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;
+      font-size: 0.75rem; color: var(--muted); margin-top: var(--space-2);
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
     }
     .field .saved-key code {
       color: var(--text); background: rgba(255,255,255,0.04);
-      padding: 1px 6px; border-radius: 4px; font-size: 0.78rem;
+      padding: 1px 6px; border-radius: var(--radius-sm); font-size: 0.78rem;
     }
 
     .status-row {
-      display: flex; align-items: center; gap: 0.5rem;
-      padding: 0.5rem 0; font-size: 0.85rem;
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: var(--space-2) 0; font-size: 0.85rem;
     }
     .status-dot {
-      width: 8px; height: 8px; border-radius: 50; flex-shrink: 0;
+      width: 8px; height: 8px; flex-shrink: 0;
       border-radius: 50%;
     }
-    .status-dot.ok { background: var(--epub); }
-    .status-dot.err { background: var(--accent); }
+    .status-dot.ok { background: var(--success); }
+    .status-dot.err { background: var(--danger); }
+
+    /* Mock callout: accent left-rule + accent-soft wash (used for the
+       security recommendation). */
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3) var(--space-4);
+      font-size: 0.85rem;
+    }
 
     .save-btn {
-      background: var(--accent); border: none; border-radius: 6px;
+      background: var(--accent); border: none; border-radius: var(--radius-sm);
       color: white; padding: 0.6rem 1.5rem; font-size: 0.9rem;
       cursor: pointer; font-weight: 500;
     }
     .save-btn:hover { opacity: 0.9; }
-    .save-msg { font-size: 0.8rem; color: var(--epub); margin-left: 1rem; display: none; }
+    .save-msg { font-size: 0.8rem; color: var(--success); margin-left: 1rem; display: none; }
 
     /* Pairing row layout — desktop default keeps QR + text side by side. */
     .pairing-row {
@@ -162,7 +176,7 @@
 
     <div class="section">
       <h2>Security</h2>
-      <div class="hint" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
+      <div class="callout" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
       <div id="auth-state" style="font-size:0.85rem; margin-bottom:12px;"></div>
       <div class="field">
         <label>Username</label>
