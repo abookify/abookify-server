@@ -16,11 +16,15 @@ import (
 
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
+	"github.com/pj/abookify/internal/llm"
 )
 
 func main() {
 	dbPath := flag.String("db", envOr("ABOOKIFY_DB_PATH", "./data/abookify.db"), "path to SQLite database")
 	workID := flag.Int64("work", 0, "align only this work ID (0 = all eligible works)")
+	embed := flag.Bool("embed", false, "when lexical anchor coverage is below --threshold, fall back to embedding+DTW (cross-translation) alignment")
+	embedURL := flag.String("embed-url", "http://localhost:11434", "Ollama base URL for embeddings (nomic-embed-text)")
+	threshold := flag.Float64("threshold", 0.25, "lexical coverage below which the embedding fallback runs (with --embed)")
 	flag.Parse()
 
 	store, err := db.Open(*dbPath)
@@ -28,6 +32,11 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 	defer store.Close()
+
+	var embedder library.ChunkEmbedder
+	if *embed {
+		embedder = llm.NewRAG(store, llm.NewClient(llm.ProviderOllama, "", "", *embedURL))
+	}
 
 	var workIDs []int64
 	if *workID != 0 {
@@ -40,19 +49,38 @@ func main() {
 	}
 
 	for _, id := range workIDs {
-		cov, err := library.ComputeAnchorAlignment(store, id)
-		if err != nil {
-			log.Printf("work %d: ERROR %v", id, err)
-			continue
-		}
-		w, _ := store.GetWork(id)
 		title := ""
-		if w != nil {
+		if w, _ := store.GetWork(id); w != nil {
 			title = w.Title
 		}
-		fmt.Printf("work %-4d coverage %5.1f%%  %s\n", id, cov*100, title)
+		cov, err := library.ComputeAnchorAlignment(store, id)
+		if err != nil {
+			log.Printf("work %d: anchor ERROR %v", id, err)
+			continue
+		}
+		fmt.Printf("work %-4d anchor %5.1f%%  %s\n", id, cov*100, title)
+
+		// Coverage-driven routing: lexical alignment failed (different
+		// translation/edition, or unrelated text) — try semantic alignment.
+		if embedder != nil && cov < *threshold {
+			ecov, mq, err := library.ComputeEmbeddingAlignment(store, embedder, id)
+			if err != nil {
+				log.Printf("work %d: embedding ERROR %v", id, err)
+				continue
+			}
+			verdict := "different book (low similarity)"
+			if mq >= embeddingSameWorkCutoff {
+				verdict = "same work, different translation"
+			}
+			fmt.Printf("work %-4d   ↳ embedding %5.1f%% coverage, match-quality %.3f → %s\n", id, ecov*100, mq, verdict)
+		}
 	}
 }
+
+// embeddingSameWorkCutoff: mean matched-pair cosine above this means the two
+// texts are the same work in a different translation (alignable at paragraph
+// level); below it they're genuinely different texts.
+const embeddingSameWorkCutoff = 0.7
 
 // eligibleWorks returns work IDs that have both a publisher ebook/mobi and a
 // whisper transcript — the pairs the anchor aligner can act on.

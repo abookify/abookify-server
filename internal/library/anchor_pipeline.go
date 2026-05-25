@@ -54,7 +54,12 @@ type AnchorAlignmentPayload struct {
 	EbookWords    int               `json:"ebook_words"`
 	TransWords    int               `json:"trans_words"`
 	Coverage      float64           `json:"coverage"`
-	Divergence    DivergenceSummary `json:"divergence"`
+	// MatchQuality is the mean cosine similarity of the matched chain, set
+	// only by the embedding path (Method="embedding"). High ⇒ same work in a
+	// different translation; low everywhere ⇒ genuinely different texts. 0 for
+	// the lexical anchor path.
+	MatchQuality float64           `json:"match_quality,omitempty"`
+	Divergence   DivergenceSummary `json:"divergence"`
 }
 
 // anchorNGram is the n-gram length used for anchoring. 4 is the empirical
