@@ -279,3 +279,32 @@ Ran the alignment on the complete transcript. **Average confidence stayed at 0.1
 ### Next
 - Transcribe full Kitchen Confidential on GPU (~1 h), import, align. Expect ratios near ~1.0 since audio and EPUB cover the same content — the real test of alignment quality.
 - Consider adding word-ratio to the divergence report as a mis-link detector.
+
+### KC full-book result — the chapter-linking bottleneck is the real blocker (2026-05-24)
+
+Transcribed the complete Kitchen Confidential on atrium GPU: **493 min (8.2 h) in 58 min wall (~8.5× realtime)**, 101k words. Imported cleanly (audio + `publisher_epub` + `whisper_transcript` all present). This is the ideal fixture — complete author-read audio and the matching EPUB, same content end to end. Aligned it. Result:
+
+- EPUB: **30 chapters**, 96,829 words. Transcript: **4 chapters**, 99,522 words. `chapter_links`: **0**.
+- The aligner index-matched the few overlapping indices and produced 3 junk pairs (word ratios 1547×, 161×, 0.00×). avg conf 0.42 is meaningless — driven by a 4-ebook-word "chapter 0".
+
+**Why:** KC is a memoir. Bourdain's narration has *named* sections ("FOOD IS GOOD", "FOOD IS SEX", "INSIDE THE CIA") — not "Chapter One / Chapter Two." The narrator-pattern chapter detector keys on numeric "Chapter N" / "Part N" sequences, so it found almost nothing and lumped the 8-hour transcript into 4 giant blobs. The EPUB, meanwhile, has clean 30-section structure. Chapter-level linking can't bridge 4 ↔ 30.
+
+**This is the headline conclusion of the whole experiment.** Across all three runs the failure was the same root cause, reached three different ways:
+
+| Fixture | Audio/EPUB content | Why alignment failed |
+|---|---|---|
+| Frankenstein (testdata) | partial + scrambled audio (36% of book) | mismatched content — linker paired wrong chapters |
+| Frankenstein (complete) | full, matched | (pending re-run) |
+| Kitchen Confidential | full, matched, ideal | transcript under-chapterized (4 vs 30) → no links |
+
+**Forced alignment is architecturally gated on chapter-level linking, and chapter links break whenever the two sides don't share chapter structure.** That is the *common* case, not the edge case: continuous-narration audiobooks, memoirs, anything without spoken "Chapter N" announcements. Transcript quality and audio coverage are not the bottleneck — the `chapter_links` dependency is.
+
+**Recommended fix (design, not yet built):** decouple forced alignment from chapter links.
+1. **Anchored / banded whole-book alignment.** Align the full transcript word-stream against the full EPUB word-stream and let the alignment *discover* where transcript content lands in the EPUB — chapter/paragraph boundaries then fall out of the alignment instead of being a precondition. The current Needleman-Wunsch DP can't do this directly: 100k × 97k = ~9.7 B cells, far past the 50 M guard. Needs a banded/anchored approach — seed with high-confidence n-gram anchors (rare proper nouns make great anchors — see approach 1), then DP only within a diagonal band between anchors. O(n·band) instead of O(n·m).
+2. **EPUB-title-anchored chapter segmentation.** Cheaper interim step: we *have* the EPUB section titles. Search the transcript for each EPUB chapter's opening words/title to segment the transcript to match the EPUB's chapter count, then run the existing per-chapter DP. Turns "4 vs 30" into "30 vs 30." Doesn't need the banded aligner, reuses everything else.
+
+Either path removes the chapter-link precondition. (2) is the smaller change and a natural next experiment; (1) is the robust long-term answer and also subsumes the divergence-detection and citation features.
+
+### Next
+- Re-run the complete Frankenstein (work 28, audio already imported + merged with Gutenberg EPUB) on GPU to see whether a *numbered-chapter* audiobook (LibriVox reads "Chapter One…") links cleanly where KC's memoir structure did not. That isolates whether chapter-link success is purely a function of spoken chapter announcements.
+- Prototype EPUB-title-anchored transcript segmentation (fix #2) — the cheapest path to a real per-chapter alignment on KC.
