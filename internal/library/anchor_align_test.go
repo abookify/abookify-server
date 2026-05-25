@@ -106,6 +106,24 @@ func TestAlign_SingleSTTError_BridgedBySurroundingAnchors(t *testing.T) {
 	}
 }
 
+func TestAlign_SegmentsWellFormed_NoNegativeOrOverlap(t *testing.T) {
+	// Dense identical text → consecutive anchors whose n-grams overlap.
+	// Regression: overlapping n-gram tails must not produce negative-width
+	// gaps or overlapping segments (was yielding negative ebook-only words).
+	w := toks(prose + " " + prose) // repeats are fine; tests the builder
+	a := Align(w, w, 4)
+	pe, pt := 0, 0
+	for _, s := range a.Segments {
+		if s.EbookEnd < s.EbookStart || s.TransEnd < s.TransStart {
+			t.Fatalf("negative-width segment: %+v", s)
+		}
+		if s.EbookStart < pe || s.TransStart < pt {
+			t.Fatalf("segment overlaps previous: %+v (prev ends e=%d t=%d)", s, pe, pt)
+		}
+		pe, pt = s.EbookEnd, s.TransEnd
+	}
+}
+
 func TestMonotonicChain_RejectsOutOfOrderMatch(t *testing.T) {
 	// A phrase that appears once in the ebook but twice in the transcript:
 	// once in the correct (monotonic) place and once earlier (out of order).

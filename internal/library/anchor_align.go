@@ -50,11 +50,14 @@ const (
 	SegReplace   SegmentKind = "replace"    // both sides have content but it differs (STT noise / edition divergence)
 )
 
-// Segment is a half-open span [Start,End) on each side.
+// Segment is a half-open span [Start,End) on each side, in global token
+// offsets over the concatenated content streams Align ran on.
 type Segment struct {
-	EbookStart, EbookEnd int
-	TransStart, TransEnd int
-	Kind                 SegmentKind
+	EbookStart int         `json:"es"`
+	EbookEnd   int         `json:"ee"`
+	TransStart int         `json:"ts"`
+	TransEnd   int         `json:"te"`
+	Kind       SegmentKind `json:"k"`
 }
 
 // Alignment is the result: the monotonic anchor chain plus the classified
@@ -62,6 +65,85 @@ type Segment struct {
 type Alignment struct {
 	Anchors  []Anchor
 	Segments []Segment
+}
+
+// ChapterSpan records where one source chapter lands in the concatenated
+// token stream that Align operates on. Lets a consumer map a global word
+// offset back to (chapter index, word-within-chapter) — and from there, via
+// the transcript's per-chapter sync_data, to an audio timestamp.
+type ChapterSpan struct {
+	Index int `json:"idx"`   // chapter index in the source book
+	Start int `json:"start"` // global token offset where this chapter begins
+	Len   int `json:"len"`   // token count in this chapter
+}
+
+// boilerplateExactTitles are chapter titles that, matched whole (case-
+// insensitive, trimmed), are publisher/archive front- and back-matter rather
+// than narrated content. Excluded from alignment so they don't drift cross-
+// source word offsets or surface as spurious "ebook-only" divergences.
+var boilerplateExactTitles = map[string]bool{
+	"contents": true, "table of contents": true,
+	"index": true, "notes": true, "end notes": true, "endnotes": true,
+	"footnotes": true, "references": true, "bibliography": true,
+	"acknowledgments": true, "acknowledgements": true, "about the author": true,
+	"copyright": true, "colophon": true, "a note on the type": true,
+	"illustration permissions": true, "permissions": true, "title page": true,
+	"cover": true, "dedication": true, "epigraph": true, "imprint": true,
+	"frontispiece": true,
+}
+
+// IsBoilerplateChapterTitle reports whether a chapter title looks like
+// non-narrative front/back-matter that should be excluded from alignment.
+// "Project Gutenberg" headers/licenses carry a long trailing title, so they
+// match as a substring; the rest match the whole (trimmed) title so a real
+// chapter like "Notes from Underground" isn't mistaken for an endnotes
+// section.
+func IsBoilerplateChapterTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "project gutenberg") {
+		return true
+	}
+	return boilerplateExactTitles[t]
+}
+
+// ChapterText pairs a source chapter index with its plain text. Build these
+// from the book's content chapters (boilerplate already filtered out).
+type ChapterText struct {
+	Index int
+	Text  string
+}
+
+// AssembleStream tokenizes each chapter and concatenates into one stream,
+// returning the tokens plus the ChapterSpan table describing where each
+// chapter sits in the stream. The spans are what let global alignment
+// offsets be mapped back to (chapter, local-word) on either side.
+func AssembleStream(chapters []ChapterText) ([]string, []ChapterSpan) {
+	var toks []string
+	var spans []ChapterSpan
+	for _, ch := range chapters {
+		ct := Tokenize(ch.Text)
+		if len(ct) == 0 {
+			continue
+		}
+		spans = append(spans, ChapterSpan{Index: ch.Index, Start: len(toks), Len: len(ct)})
+		toks = append(toks, ct...)
+	}
+	return toks, spans
+}
+
+// LocateGlobal maps a global token offset to (chapter index, word-within-
+// chapter). Returns ok=false if the offset falls outside every span (e.g.,
+// past the end). Spans must be sorted by Start (AssembleStream guarantees it).
+func LocateGlobal(spans []ChapterSpan, globalPos int) (chapterIdx, localPos int, ok bool) {
+	for _, s := range spans {
+		if globalPos >= s.Start && globalPos < s.Start+s.Len {
+			return s.Index, globalPos - s.Start, true
+		}
+	}
+	return 0, 0, false
 }
 
 var nonWord = regexp.MustCompile(`[^a-z0-9' ]+`)
@@ -200,10 +282,8 @@ func Align(ebook, trans []string, n int) Alignment {
 	i := 0
 	for i < len(chain) {
 		a := chain[i]
-		flushGap(a.EbookPos, a.TransPos)
 		// Merge this anchor and any directly-consecutive ones (both sides
 		// advancing in lockstep, gap 0/0) into one aligned run.
-		eRunStart, tRunStart := a.EbookPos, a.TransPos
 		eCur, tCur := a.EbookPos+1, a.TransPos+1
 		j := i + 1
 		for j < len(chain) && chain[j].EbookPos == eCur && chain[j].TransPos == tCur {
@@ -213,16 +293,30 @@ func Align(ebook, trans []string, n int) Alignment {
 		}
 		// The matched run spans the merged anchor positions plus the trailing
 		// (n-1) tokens of the last n-gram.
-		eEnd := eCur - 1 + n
-		tEnd := tCur - 1 + n
-		if eEnd > len(ebook) {
-			eEnd = len(ebook)
+		eRunStart, tRunStart := a.EbookPos, a.TransPos
+		eEnd := min(eCur-1+n, len(ebook))
+		tEnd := min(tCur-1+n, len(trans))
+		// Consecutive anchors' n-grams overlap (anchor at pos p covers p..p+n),
+		// so a run can start inside the previous run's tail. Clamp the start to
+		// the previous end so runs never overlap and gaps stay non-negative.
+		if eRunStart < ePrev {
+			eRunStart = ePrev
 		}
-		if tEnd > len(trans) {
-			tEnd = len(trans)
+		if tRunStart < tPrev {
+			tRunStart = tPrev
 		}
+		if eEnd <= eRunStart && tEnd <= tRunStart {
+			i = j // fully covered by the previous run
+			continue
+		}
+		flushGap(eRunStart, tRunStart)
 		segs = append(segs, Segment{eRunStart, eEnd, tRunStart, tEnd, SegAligned})
-		ePrev, tPrev = eEnd, tEnd
+		if eEnd > ePrev {
+			ePrev = eEnd
+		}
+		if tEnd > tPrev {
+			tPrev = tEnd
+		}
 		i = j
 	}
 	// Trailing gap to the end of both sides.
