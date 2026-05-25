@@ -294,7 +294,7 @@ Transcribed the complete Kitchen Confidential on atrium GPU: **493 min (8.2 h) i
 | Fixture | Audio/EPUB content | Why alignment failed |
 |---|---|---|
 | Frankenstein (testdata) | partial + scrambled audio (36% of book) | mismatched content — linker paired wrong chapters |
-| Frankenstein (complete) | full, matched | (pending re-run) |
+| Frankenstein (complete) | full, matched 99% by word count | front-matter offset + per-volume number resets → 10 transcript vs 31 ebook chapters → 0 links |
 | Kitchen Confidential | full, matched, ideal | transcript under-chapterized (4 vs 30) → no links |
 
 **Forced alignment is architecturally gated on chapter-level linking, and chapter links break whenever the two sides don't share chapter structure.** That is the *common* case, not the edge case: continuous-narration audiobooks, memoirs, anything without spoken "Chapter N" announcements. Transcript quality and audio coverage are not the bottleneck — the `chapter_links` dependency is.
@@ -305,6 +305,22 @@ Transcribed the complete Kitchen Confidential on atrium GPU: **493 min (8.2 h) i
 
 Either path removes the chapter-link precondition. (2) is the smaller change and a natural next experiment; (1) is the robust long-term answer and also subsumes the divergence-detection and citation features.
 
-### Next
-- Re-run the complete Frankenstein (work 28, audio already imported + merged with Gutenberg EPUB) on GPU to see whether a *numbered-chapter* audiobook (LibriVox reads "Chapter One…") links cleanly where KC's memoir structure did not. That isolates whether chapter-link success is purely a function of spoken chapter announcements.
-- Prototype EPUB-title-anchored transcript segmentation (fix #2) — the cheapest path to a real per-chapter alignment on KC.
+### Complete Frankenstein result — confirmed, even with spoken chapter numbers (2026-05-24)
+
+Swapped in the complete audiobook (`/mnt/raid/audiobooks/Shelley, Mary - Frankenstein`, 8 files / 8.6 h — the old testdata set was a broken partial slice). GPU transcription: **515 min in 58 min (~8.8× realtime)**, 77,583 words. Imported with all peers, EPUB origin fixed, aligned.
+
+- EPUB **31 ch / 78,230 words**; transcript **10 ch / 77,465 words**; `chapter_links` **0**; index-fallback gave 8 garbage pairs (avg conf 0.19).
+- **Word counts match to 99%** — the content corresponds almost perfectly. Same reading, same edition, end to end. Yet linking still failed, for reasons *different* from KC:
+  1. **EPUB front-matter offsets every index** — EPUB 0 = Gutenberg boilerplate, 1 = CONTENTS, 2-5 = Letters 1-4, *then* Chapter 1. Audio has none of it.
+  2. **Chapter numbers reset per volume** (3 volumes each restart at "Chapter 1"); the monotonic-sequence validator breaks at each reset and collapses whole volumes into blobs — transcript "Chapter 5" = 23,891 words, "Chapter 9" = 29,799 words. 10 detected vs 31 real.
+
+So KC failed on named sections, Frankenstein failed on front-matter + volume resets — but both have content matching at the word level and both produced 0 links. **The transcripts are good; the chapter-correspondence requirement is the whole problem.**
+
+### Verdict + build order
+
+The 99%-matching word counts are the key: a banded whole-book aligner will work cleanly on both. Recommended order:
+1. **Strip non-content EPUB front/back-matter** (Gutenberg header, CONTENTS, license) — cheap, helps every approach, removes the index offset.
+2. **Banded/anchored whole-book alignment** (the real fix) — seed with rare proper-noun n-gram anchors (exactly the tokens approach 1 cared about), DP within a diagonal band. EPUB chapter/paragraph boundaries then project onto the audio timeline through the alignment — which is what karaoke + citations actually need.
+3. EPUB-title-anchored per-chapter segmentation only where it applies; (2) subsumes it.
+
+Needs human/product input on presenting partial + structurally-divergent matches — flagged with PJ to review the KC + Frankenstein data together.
