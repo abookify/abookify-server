@@ -387,3 +387,28 @@ Imported and aligned three more works (GPU-transcribed). The real-data test now 
 - ~0% → wrong pairing: different translation/edition, or simply not the same book. The system should **detect this and warn** ("these don't look like the same edition") rather than silently emit a broken alignment.
 
 So beyond karaoke, coverage% is the signal that drives the right UX per work — and the diff-view minimap (PJ's idea) renders it directly: KC/Frankenstein nearly all green, Why We Sleep green-then-grey, Plato almost entirely grey with a few green flecks = "we can't line these up."
+
+### Cross-translation alignment — strategy (2026-05-25)
+
+The Plato case (same work, different translation → 0.2% lexical coverage) needs a non-lexical method. Two ideas, in increasing power:
+
+**Why stopword-drop / content-word anchoring does NOT help (measured).** Republic audio vs *just* the Jowett Republic text (217k words):
+
+| method | transcript n-grams found in Jowett-Republic |
+|---|---|
+| raw 4-gram | 5.3% |
+| raw 3-gram | 17.3% |
+| content-word 3-gram (stopwords dropped) | 2.1% |
+| content-word 2-gram | 16.0% |
+
+Dropping stopwords *hurt* consecutive matching — the content words also differ and reorder across translations. **But 92.4% of the audio's content-word tokens appear somewhere in the Jowett Republic** (3,049 / 3,790 distinct types shared). The vocabulary is nearly identical; only the order/phrasing differs. So the signal lives in *word sets*, not *word sequences*.
+
+**Precursor (cheap): windowed set-overlap.** Slide a window over each side; match audio-paragraph ↔ text-paragraph by shared distinctive (rare, TF-IDF-weighted) content words, ignoring order. Buys coarse paragraph/section alignment. No model needed.
+
+**Real fix: paragraph embeddings + DTW.** Embed each paragraph (the RAG pipeline already does this — `internal/llm/embed.go`, OpenAI `text-embedding-3-small` or Ollama). An embedding is a deterministic vector fingerprint of *meaning*, paraphrase-invariant by construction, so two translations of a paragraph land at near-identical vectors even with zero shared phrasing. Align the two vector sequences with Dynamic Time Warping (monotonic path maximizing cosine similarity) — the same shape as our anchor-chain LIS but scored by similarity instead of exact match. DTW absorbs 1↔2 paragraph splits and small local reorders. Gets **paragraph-level** correlation across translations (follow-along, cross-translation citations) — not word-level karaoke.
+
+**Unified routing — coverage% picks the method:**
+- ~95% anchor coverage → same edition → word-level anchor aligner (karaoke).
+- ~0% anchor coverage → run embedding+DTW. It then distinguishes **different translation of the same work** (high paragraph-similarity → align at paragraph grain) from **a genuinely different book** (low similarity everywhere → correctly "these don't match").
+
+**Test fixture is ready:** Plato Republic exists in two real translations on disk (audio transcript = modern; EPUB = Jowett). Prototype embedding+DTW on it to validate cross-translation alignment on real data.
