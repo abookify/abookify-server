@@ -324,3 +324,25 @@ The 99%-matching word counts are the key: a banded whole-book aligner will work 
 3. EPUB-title-anchored per-chapter segmentation only where it applies; (2) subsumes it.
 
 Needs human/product input on presenting partial + structurally-divergent matches — flagged with PJ to review the KC + Frankenstein data together.
+
+### Anchor-density measurement (2026-05-25)
+
+Before building the anchor aligner, measured how dense/unambiguous word-sequence anchors actually are on both imported works. Script: `testdata/transcription-experiments/anchor_density.py` (read-only against the DB). A "clean 1:1 anchor" = an n-gram that occurs exactly once in the ebook **and** exactly once in the transcript, after normalization (lowercase, strip punctuation), **exact match, no fuzzy**.
+
+| n | KC clean anchors | KC gap med/p95/max | Frank clean anchors | Frank gap med/p95/max |
+|---|---|---|---|---|
+| 3 | 75,905 (76%) | 1 / 3 / 124 | 58,681 (75%) | 1 / 3 / 1558 |
+| **4** | **82,082 (82%)** | **1 / 2 / 137** | **66,788 (85%)** | **1 / 1 / 2696** |
+| 5 | 81,136 | 1 / 1 / 138 | 67,529 | 1 / 1 / 110 |
+| 6 | 78,881 | 1 / 1 / 139 | 66,713 | 1 / 1 / 111 |
+
+(percentages = clean anchors / ebook words; "gap" = words between consecutive clean anchors in ebook order)
+
+Findings:
+- **The texts are near word-identical in content.** ~80-85% of *every* 4-gram window in the ebook is a unique 1:1 anchor. Median anchor spacing is **1 word**. Anchors are not scarce — they're everywhere.
+- **n=4 is the sweet spot**: most clean anchors, and tiny ambiguity (KC: ~428 "1-in-ebook-N-in-transcript", ~917 "appears-multiple-times-in-both"; Frank similar). The "out of the blue appears 10× in both" case is rare and resolved by monotonic ordering.
+- **No frequency dictionary or rare-word selection needed.** At n=4 the density is so high we can discard every STT-risky or ambiguous candidate and still anchor every few words. Exact normalized matching already survives ~80%; the ~15-20% STT breaks are pure surplus.
+- **Divergence falls out for free.** Frankenstein's 2,696-word max gap at n=4 is the **Project Gutenberg license** appended to the ebook (no audio). Confirmed by inspecting the gap text. This is the front/back-matter that fix #2 should strip — and a ready-made divergence test case.
+- **Boilerplate cross-matches are a real hazard.** At n=5 a few license 5-grams spuriously matched the LibriVox closing announcement ("…in the public domain…") in the transcript — semantically wrong, textually identical. Reinforces stripping front/back-matter before alignment, and a robust divergence base case.
+
+Conclusion: the recursive anchor aligner is not just viable, it's easy on this data. Building it next with synthetic known-answer tests.
