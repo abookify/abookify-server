@@ -443,4 +443,16 @@ Backfilled all five fixtures (accurate coverage, after fixing an overlap over-co
 
 Stored payload (`AnchorAlignmentPayload`, the `pairs` JSON for `anchor`-method rows) is self-contained for the reader: ebook + transcript `ChapterSpan`s (global-offset ↔ chapter/word), `Segment`s (aligned / ebook-only / trans-only / replace, global offsets), coverage, and a divergence summary (per-kind counts + biggest divergent spans). `MapEbookToTrans` maps an ebook range to the transcript range; compose with `TransChapters` + `sync_data` for audio time. Contract documented in `anchor_pipeline.go`; cross-session consumer notes in `engineering/SESSION_HANDOFF.md`.
 
+### Embedding+chain alignment productionized + validated (#203, 2026-05-25)
+
+`ComputeEmbeddingAlignment` (`internal/library/embedding_align.go`) is the production semantic path, run via `align-cli --embed` with coverage-driven routing (anchor first; if coverage < 0.25, embedding fallback). Reuses the RAG embedding pipeline (`EmbedBook` — also persists vectors for Q&A), aligns chunk sequences by cosine along a monotonic chain (reuses the anchor LIS), emits the same `AnchorAlignmentPayload` (`Unit="paragraph"`) plus a `match_quality` field.
+
+**Validated on Plato** (Republic audio = modern translation vs the 1.2M-word all-dialogues Jowett EPUB), the case lexical anchoring scored 0.1% on:
+- routing fired correctly: anchor 0.1% < 0.25 → embedding fallback.
+- **`match_quality` = 0.843** (mean matched-pair cosine) → verdict **"same work, different translation"** (cutoff 0.7). This is the separation coverage alone can't make.
+- coverage 2.75% — correct and expected: the Republic is ~one dialogue of ~36 in the all-dialogues EPUB. 188 aligned chunk-pairs map 33,168 ebook words (the Republic slice) to the 45k-word audio; the other ~97% of the ebook (other dialogues) is correctly left unaligned (not force-matched — the monotonic-chain-not-full-DTW choice paying off).
+- two alignment rows now coexist for the work: `anchor|word|0.001` and `embedding|paragraph|0.028`. The diff-view/router uses coverage + match_quality to pick what to show.
+
+Operational note: bulk-embedding 7.8k chunks via a second process (`align-cli`) contended with the running server on the SQLite WAL write lock (`SQLITE_BUSY`). Worked around with a resume loop (embeddings persist per-batch). Proper fix is to embed *through the server* (single writer) or add retry-on-BUSY to `EmbedBook` — flagged to server+web. Not a SQLite-fitness problem; an artifact of two writer processes.
+
 **Conclusion: the cross-translation problem is solved at paragraph level.** Lexical anchoring (0.2%) → semantic embeddings (100% of chunks matched, 75%+ monotonic). The local `nomic-embed-text` model is more than adequate — no paid API needed. Productionizing = embed paragraphs (RAG pipeline already does this) + DTW over the cosine matrix + the same coverage/divergence reporting. Routing stays coverage-driven: high lexical coverage → word-level anchor karaoke; near-zero → embedding+DTW for paragraph-level cross-translation correlation.
