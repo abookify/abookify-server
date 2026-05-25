@@ -427,4 +427,20 @@ Result — vs the **0.2%** lexical-anchor coverage on the same pair:
 - Matches are semantically correct across the translation gap: transcript chunk 0 ("I went down to Piraeus yesterday with Glaucon, the son of Ariston, to offer a prayer to the goddess") → Jowett "Book I I went down yesterday…"; the Ring of Gyges passage ("setting of the ring… became invisible") → Jowett "touching the ring he turned the collet outwards and reappeared"; the Form of the Good → Jowett's orb-of-light passage.
 - Bonus: transcript chunk 0 matched Jowett chunk **822**, not 0 — because the Jowett "Republic" section opens with ~822 chunks of Jowett's *Introduction/Analysis* (not in the audio). The embedding match correctly skipped the scholarly front-matter and locked onto the dialogue's start. So embedding alignment handles front-matter divergence for free too.
 
+### Anchor aligner wired into the pipeline (2026-05-25)
+
+`ComputeAnchorAlignment(store, workID)` (`internal/library/anchor_pipeline.go`) is the production path: load ebook + transcript, **strip EPUB front/back-matter** (boilerplate chapters — Gutenberg headers/license, Contents, Index, Notes, colophon…), assemble content word streams with per-chapter global offsets, run the anchor aligner, and upsert an `alignments` row (`Method="anchor"`, `Unit="word"`, `Confidence`=coverage). `cmd/align-cli` runs it per-work or over all eligible works.
+
+Backfilled all five fixtures (accurate coverage, after fixing an overlap over-count bug):
+
+| Work | coverage | note |
+|---|---|---|
+| Frankenstein | 96.4% | complete, same edition |
+| Kitchen Confidential | 92.9% | complete, same edition |
+| Life of Pi | 57.0% | amateur recording (chatter + gaps) |
+| Why We Sleep | 50.8% | only half the audio (missing discs) |
+| Plato Republic | 0.1% | different translation (needs embeddings) |
+
+Stored payload (`AnchorAlignmentPayload`, the `pairs` JSON for `anchor`-method rows) is self-contained for the reader: ebook + transcript `ChapterSpan`s (global-offset ↔ chapter/word), `Segment`s (aligned / ebook-only / trans-only / replace, global offsets), coverage, and a divergence summary (per-kind counts + biggest divergent spans). `MapEbookToTrans` maps an ebook range to the transcript range; compose with `TransChapters` + `sync_data` for audio time. Contract documented in `anchor_pipeline.go`; cross-session consumer notes in `engineering/SESSION_HANDOFF.md`.
+
 **Conclusion: the cross-translation problem is solved at paragraph level.** Lexical anchoring (0.2%) → semantic embeddings (100% of chunks matched, 75%+ monotonic). The local `nomic-embed-text` model is more than adequate — no paid API needed. Productionizing = embed paragraphs (RAG pipeline already does this) + DTW over the cosine matrix + the same coverage/divergence reporting. Routing stays coverage-driven: high lexical coverage → word-level anchor karaoke; near-zero → embedding+DTW for paragraph-level cross-translation correlation.
