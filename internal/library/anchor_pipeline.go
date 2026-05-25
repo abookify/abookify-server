@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -46,8 +47,13 @@ type DivergenceSummary struct {
 }
 
 // AnchorAlignmentPayload is the JSON stored in alignments.pairs for
-// Method="anchor". Self-contained: a reader needs only this row + sync_data.
+// Method="anchor" and Method="embedding". Self-contained + render-ready:
+// audio times are baked onto aligned segments, so the reader needs only
+// this row (no sync_data, no recompute). See SESSION_HANDOFF.md for the
+// contract the diff-view/reader build against.
 type AnchorAlignmentPayload struct {
+	Method        string            `json:"method"` // mirrors the row: "anchor" | "embedding"
+	Unit          string            `json:"unit"`   // "word" | "paragraph" → reader render mode
 	EbookChapters []ChapterSpan     `json:"ebook_chapters"`
 	TransChapters []ChapterSpan     `json:"trans_chapters"`
 	Segments      []Segment         `json:"segments"`
@@ -112,7 +118,17 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 	aln := Align(ebookToks, transToks, anchorNGram)
 	coverage := aln.Coverage(len(ebookToks))
 
+	// Bake the audio timeline. The anchor transcript stream is in Tokenize
+	// basis; sync_data is in the transcript's whitespace-word (Fields) basis,
+	// so map Tokenize offsets → Fields offsets before the timeline lookup.
+	if timeline := loadTranscriptTimeline(store, work); len(timeline) > 0 {
+		tokToFields := buildTokToFields(transChapters)
+		bakeSegmentTimes(aln.Segments, timeline, tokToFields, true)
+	}
+
 	payload := AnchorAlignmentPayload{
+		Method:        "anchor",
+		Unit:          "word",
 		EbookChapters: ebookSpans,
 		TransChapters: transSpans,
 		Segments:      aln.Segments,
@@ -198,6 +214,102 @@ func summarizeAnchorDivergence(segs []Segment) DivergenceSummary {
 	}
 	d.Top = diverging
 	return d
+}
+
+// loadTranscriptTimeline returns the transcript's word timestamps in reading
+// order (whitespace-word / "Fields" basis — the order sync_data stores). The
+// sidecar writes the whole transcript as one continuous sync_data blob keyed
+// to an audio book at chapter 0, so this finds + decodes that single row.
+func loadTranscriptTimeline(store *db.Store, work *db.Work) []db.SyncTimestamp {
+	for _, ab := range work.AudioFiles {
+		raw, _ := store.GetSyncData(work.ID, ab.ID, 0)
+		if raw == "" {
+			continue
+		}
+		var ts []db.SyncTimestamp
+		if json.Unmarshal([]byte(raw), &ts) == nil && len(ts) > 0 {
+			return ts
+		}
+	}
+	return nil
+}
+
+// buildTokToFields maps each Tokenize-token index (the anchor stream's basis)
+// to its whitespace-word index (sync_data's basis). Tokenize splits on every
+// non-alphanumeric char while sync words are whitespace-delimited, so a word
+// like "well-known" is one sync word but two Tokenize tokens. Walking the same
+// content chapters by Fields and counting Tokenize sub-tokens per word yields
+// the exact map. nil for the embedding path (already in Fields basis).
+func buildTokToFields(chapters []ChapterText) []int {
+	var m []int
+	fieldsIdx := 0
+	for _, ch := range chapters {
+		for _, fw := range strings.Fields(ch.Text) {
+			for j := 0; j < len(Tokenize(fw)); j++ {
+				m = append(m, fieldsIdx)
+			}
+			fieldsIdx++
+		}
+	}
+	return m
+}
+
+// bakeSegmentTimes resolves audio start/end seconds onto each aligned segment
+// from the transcript timeline. tokToFields converts transcript token offsets
+// to sync indices (nil = identity, Fields basis). With withWordSecs, also
+// fills per-ebook-word start times (the word-karaoke path).
+func bakeSegmentTimes(segs []Segment, timeline []db.SyncTimestamp, tokToFields []int, withWordSecs bool) {
+	n := len(timeline)
+	toSync := func(transIdx int) int {
+		i := transIdx
+		if tokToFields != nil {
+			if i < 0 {
+				i = 0
+			}
+			if i >= len(tokToFields) {
+				i = len(tokToFields) - 1
+			}
+			if i < 0 {
+				return -1
+			}
+			i = tokToFields[i]
+		}
+		if i < 0 {
+			return 0
+		}
+		if i >= n {
+			return n - 1
+		}
+		return i
+	}
+	for k := range segs {
+		s := &segs[k]
+		if s.Kind != SegAligned {
+			continue
+		}
+		siStart, siEnd := toSync(s.TransStart), toSync(s.TransEnd-1)
+		if siStart < 0 || siEnd < 0 {
+			continue
+		}
+		s.StartSec = timeline[siStart].Start
+		s.EndSec = timeline[siEnd].End
+		if !withWordSecs {
+			continue
+		}
+		ew, tw := s.EbookEnd-s.EbookStart, s.TransEnd-s.TransStart
+		if ew <= 0 {
+			continue
+		}
+		ws := make([]float64, ew)
+		for e := 0; e < ew; e++ {
+			tTok := s.TransStart
+			if tw > 0 {
+				tTok = s.TransStart + e*tw/ew
+			}
+			ws[e] = timeline[toSync(tTok)].Start
+		}
+		s.WordSecs = ws
+	}
 }
 
 // MapEbookToTrans maps an ebook global word range to the corresponding

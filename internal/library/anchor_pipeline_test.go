@@ -1,6 +1,10 @@
 package library
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pj/abookify/internal/db"
+)
 
 func TestIsBoilerplateChapterTitle(t *testing.T) {
 	boiler := []string{
@@ -104,5 +108,56 @@ func TestSummarizeAnchorDivergence(t *testing.T) {
 	// Biggest divergence (the 5000-word ebook-only block) is first in Top.
 	if len(d.Top) == 0 || d.Top[0].Kind != SegEbookOnly {
 		t.Errorf("Top[0] should be the 5000-word ebook-only segment, got %+v", d.Top)
+	}
+}
+
+func TestBuildTokToFields(t *testing.T) {
+	// "well-known" is 1 Fields word but 2 Tokenize tokens (well, known);
+	// "don't" is 1 of each. So Tokenize stream [well,known,don't,fox] maps to
+	// Fields indices [0,0,1,2].
+	chs := []ChapterText{{Index: 0, Text: "well-known don't fox"}}
+	m := buildTokToFields(chs)
+	want := []int{0, 0, 1, 2}
+	if len(m) != len(want) {
+		t.Fatalf("len=%d want %d (%v)", len(m), len(want), m)
+	}
+	for i := range want {
+		if m[i] != want[i] {
+			t.Errorf("tokToFields[%d]=%d want %d", i, m[i], want[i])
+		}
+	}
+}
+
+func TestBakeSegmentTimes_WordPath(t *testing.T) {
+	// timeline: 4 transcript words at 1s apart.
+	tl := []db.SyncTimestamp{{Start: 0, End: 0.9}, {Start: 1, End: 1.9}, {Start: 2, End: 2.9}, {Start: 3, End: 3.9}}
+	segs := []Segment{
+		{EbookStart: 0, EbookEnd: 4, TransStart: 0, TransEnd: 4, Kind: SegAligned},
+		{EbookStart: 4, EbookEnd: 6, TransStart: 4, TransEnd: 4, Kind: SegEbookOnly},
+	}
+	bakeSegmentTimes(segs, tl, nil, true) // identity basis (Fields), word path
+	a := segs[0]
+	if a.StartSec != 0 || a.EndSec != 3.9 {
+		t.Errorf("aligned ss/se = %v/%v, want 0/3.9", a.StartSec, a.EndSec)
+	}
+	if len(a.WordSecs) != 4 || a.WordSecs[0] != 0 || a.WordSecs[3] != 3 {
+		t.Errorf("WordSecs = %v, want [0 1 2 3]", a.WordSecs)
+	}
+	// divergence segment carries no times
+	if segs[1].StartSec != 0 || segs[1].WordSecs != nil {
+		t.Errorf("ebook-only segment should have no baked times: %+v", segs[1])
+	}
+}
+
+func TestBakeSegmentTimes_TokenizeBasis(t *testing.T) {
+	// Transcript Tokenize stream of 4 tokens maps to 3 sync words via
+	// tokToFields [0,0,1,2] (e.g. "well-known don't fox"). A segment over
+	// Tokenize [0,4) should resolve start=word0, end=word2.
+	tl := []db.SyncTimestamp{{Start: 10, End: 10.5}, {Start: 11, End: 11.5}, {Start: 12, End: 12.5}}
+	tok2f := []int{0, 0, 1, 2}
+	segs := []Segment{{EbookStart: 0, EbookEnd: 4, TransStart: 0, TransEnd: 4, Kind: SegAligned}}
+	bakeSegmentTimes(segs, tl, tok2f, false)
+	if segs[0].StartSec != 10 || segs[0].EndSec != 12.5 {
+		t.Errorf("ss/se = %v/%v, want 10/12.5", segs[0].StartSec, segs[0].EndSec)
 	}
 }

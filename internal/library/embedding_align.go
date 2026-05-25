@@ -100,6 +100,12 @@ func ComputeEmbeddingAlignment(store *db.Store, embedder ChunkEmbedder, workID i
 	matches, meanSim := embeddingChain(ebChunks, trChunks, embSimThreshold)
 	segs := chunkSegments(ebChunks, trChunks, matches)
 
+	// Bake paragraph audio times. Embedding chunk offsets are already in the
+	// transcript's Fields/sync basis, so no Tokenize→Fields remap (nil).
+	if timeline := loadTranscriptTimeline(store, work); len(timeline) > 0 {
+		bakeSegmentTimes(segs, timeline, nil, false)
+	}
+
 	aligned := 0
 	for _, s := range segs {
 		if s.Kind == SegAligned {
@@ -115,6 +121,8 @@ func ComputeEmbeddingAlignment(store *db.Store, embedder ChunkEmbedder, workID i
 	matchQuality = meanSim
 
 	payload := AnchorAlignmentPayload{
+		Method:        "embedding",
+		Unit:          "paragraph",
 		EbookChapters: ebSpans,
 		TransChapters: trSpans,
 		Segments:      segs,
@@ -258,7 +266,7 @@ func chunkSegments(ebook, trans []embChunk, matches []chunkMatch) []Segment {
 			tAt = tPrev
 		}
 		if kind, ok := classifyGap(eAt-ePrev, tAt-tPrev); ok {
-			segs = append(segs, Segment{ePrev, eAt, tPrev, tAt, kind})
+			segs = append(segs, Segment{EbookStart: ePrev, EbookEnd: eAt, TransStart: tPrev, TransEnd: tAt, Kind: kind})
 		}
 	}
 	for _, m := range matches {
@@ -274,7 +282,7 @@ func chunkSegments(ebook, trans []embChunk, matches []chunkMatch) []Segment {
 		if ec.gEnd <= eS && tc.gEnd <= tS {
 			continue
 		}
-		segs = append(segs, Segment{eS, ec.gEnd, tS, tc.gEnd, SegAligned})
+		segs = append(segs, Segment{EbookStart: eS, EbookEnd: ec.gEnd, TransStart: tS, TransEnd: tc.gEnd, Kind: SegAligned})
 		if ec.gEnd > ePrev {
 			ePrev = ec.gEnd
 		}

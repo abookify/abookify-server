@@ -51,13 +51,18 @@ const (
 )
 
 // Segment is a half-open span [Start,End) on each side, in global token
-// offsets over the concatenated content streams Align ran on.
+// offsets over the concatenated content streams Align ran on. StartSec/
+// EndSec/WordSecs are the baked audio timeline (resolved at write from
+// sync_data); they're set only on aligned segments — see bakeSegmentTimes.
 type Segment struct {
 	EbookStart int         `json:"es"`
 	EbookEnd   int         `json:"ee"`
 	TransStart int         `json:"ts"`
 	TransEnd   int         `json:"te"`
 	Kind       SegmentKind `json:"k"`
+	StartSec   float64     `json:"ss,omitempty"` // audio start sec of this segment (aligned only)
+	EndSec     float64     `json:"se,omitempty"` // audio end sec (aligned only)
+	WordSecs   []float64   `json:"ws,omitempty"` // per-ebook-word start sec; len==ee-es; word path only
 }
 
 // Alignment is the result: the monotonic anchor chain plus the classified
@@ -275,7 +280,7 @@ func Align(ebook, trans []string, n int) Alignment {
 	ePrev, tPrev := 0, 0
 	flushGap := func(eAt, tAt int) {
 		if kind, ok := classifyGap(eAt-ePrev, tAt-tPrev); ok {
-			segs = append(segs, Segment{ePrev, eAt, tPrev, tAt, kind})
+			segs = append(segs, Segment{EbookStart: ePrev, EbookEnd: eAt, TransStart: tPrev, TransEnd: tAt, Kind: kind})
 		}
 	}
 
@@ -310,7 +315,7 @@ func Align(ebook, trans []string, n int) Alignment {
 			continue
 		}
 		flushGap(eRunStart, tRunStart)
-		segs = append(segs, Segment{eRunStart, eEnd, tRunStart, tEnd, SegAligned})
+		segs = append(segs, Segment{EbookStart: eRunStart, EbookEnd: eEnd, TransStart: tRunStart, TransEnd: tEnd, Kind: SegAligned})
 		if eEnd > ePrev {
 			ePrev = eEnd
 		}
