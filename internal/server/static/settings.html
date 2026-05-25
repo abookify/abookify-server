@@ -280,6 +280,25 @@
     </div>
 
     <div class="section">
+      <h2>Security</h2>
+      <div class="hint" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
+      <div id="auth-state" style="font-size:0.85rem; margin-bottom:12px;"></div>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="auth-username" autocomplete="username" autocapitalize="none" autocorrect="off" placeholder="e.g. your name">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="auth-password" autocomplete="new-password" placeholder="set a password to protect this server">
+        <div class="hint" id="auth-password-hint">Leave blank to keep the current password.</div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+        <button type="button" id="auth-disable-btn" onclick="disableAuth()" style="display:none; background:transparent; color:var(--danger); border:1px solid var(--danger); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Disable password protection</button>
+        <button type="button" id="auth-logout-btn" onclick="logoutThisDevice()" style="display:none; background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 12px; border-radius:6px; font-size:0.8rem; cursor:pointer;">Sign out this browser</button>
+      </div>
+    </div>
+
+    <div class="section">
       <h2>Library</h2>
       <div class="field">
         <label>Library Stats</label>
@@ -422,7 +441,13 @@
         llm_base_url: document.getElementById('llm-base-url').value,
         voice_provider: document.getElementById('voice-provider').value,
         voice_api_key: keyFieldValue('voice-api-key'),
+        auth_username: document.getElementById('auth-username').value.trim(),
       };
+      // Only send auth_password when the user actually typed one. Blank
+      // means "keep current" — sending "" would clear it and disable
+      // auth, which has its own explicit button.
+      const pw = document.getElementById('auth-password').value;
+      if (pw) settings.auth_password = pw;
       try {
         await fetch('/api/settings', {
           method: 'POST',
@@ -432,7 +457,60 @@
         const msg = document.getElementById('save-msg');
         msg.style.display = 'inline';
         setTimeout(() => msg.style.display = 'none', 2000);
+        document.getElementById('auth-password').value = '';
+        loadAuthState();
       } catch {}
+    }
+
+    // --- Security section state (#197) ---
+    async function loadAuthState() {
+      const stateEl = document.getElementById('auth-state');
+      const disableBtn = document.getElementById('auth-disable-btn');
+      const logoutBtn = document.getElementById('auth-logout-btn');
+      const pwHint = document.getElementById('auth-password-hint');
+      try {
+        const st = await fetch('/api/auth/status').then(r => r.json());
+        if (st.auth_enabled) {
+          stateEl.innerHTML = '<span style="color:var(--epub);">&#9679; Password protection is ON</span>'
+            + (st.username ? ` &middot; user <code>${escapeHtmlAttr(st.username)}</code>` : '');
+          disableBtn.style.display = '';
+          logoutBtn.style.display = st.authenticated ? '' : 'none';
+          pwHint.textContent = 'Leave blank to keep the current password, or type a new one to change it.';
+          if (st.username) document.getElementById('auth-username').value = st.username;
+        } else {
+          stateEl.innerHTML = '<span style="color:var(--danger);">&#9679; Your server is currently unprotected</span> — anyone with the URL can access it.';
+          disableBtn.style.display = 'none';
+          logoutBtn.style.display = 'none';
+          pwHint.textContent = 'Set a username + password above and Save to turn on protection.';
+        }
+      } catch {
+        stateEl.textContent = '';
+      }
+    }
+
+    function escapeHtmlAttr(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function disableAuth() {
+      if (!confirm('Disable password protection? Your server will be open to anyone with the URL.')) return;
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ auth_password: '' }),
+        });
+        document.getElementById('auth-password').value = '';
+        loadAuthState();
+      } catch { alert('Failed to disable protection.'); }
+    }
+
+    async function logoutThisDevice() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch {}
+      // Cookie cleared server-side; reload bounces to the login gate.
+      location.href = '/';
     }
 
     async function checkServices() {
@@ -538,6 +616,7 @@
 
     loadSettings();
     checkServices();
+    loadAuthState();
   </script>
 </body>
 </html>

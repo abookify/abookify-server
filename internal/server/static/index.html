@@ -627,6 +627,32 @@
     .reader-content .para-missing::before {
       content: '⊘ '; color: var(--text-muted); font-size: 0.7rem;
     }
+    /* Login gate — sits above everything (incl. drop overlay + reader) */
+    .login-gate {
+      position: fixed; inset: 0; z-index: 2000;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg);
+    }
+    .login-box {
+      display: flex; flex-direction: column; gap: 0.75rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2rem; width: 320px; max-width: 90vw;
+    }
+    .login-box h2 { font-size: 1.2rem; font-weight: 600; }
+    .login-box .login-sub { font-size: 0.85rem; color: var(--text-muted); margin-top: -0.4rem; }
+    .login-box input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.6rem 0.75rem; color: var(--text); font-size: 0.95rem;
+    }
+    .login-box input:focus { outline: none; border-color: var(--accent); }
+    .login-box button {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 0.6rem; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+    }
+    .login-box button:hover { filter: brightness(1.08); }
+    .login-box button:disabled { opacity: 0.6; cursor: default; }
+    .login-error { color: var(--danger); font-size: 0.8rem; min-height: 1em; text-align: center; }
+
     /* Drag-and-drop upload overlay */
     .drop-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; }
     .drop-overlay.active { display: flex; }
@@ -1221,6 +1247,21 @@
       <p>Audio: MP3, M4B, M4A, FLAC, AAC &middot; Text: EPUB, MOBI, TXT</p>
       <p style="margin-top:6px; font-size:0.75rem;">PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" style="color:var(--accent);">Calibre</a>.</p>
     </div>
+  </div>
+
+  <!-- Login gate — covers the SPA when auth is enabled and this client
+       isn't authenticated. The shell loads underneath (static is open)
+       so this can render; a successful login sets the cookie and we
+       reload. -->
+  <div class="login-gate" id="login-gate" style="display:none;">
+    <form class="login-box" id="login-form" onsubmit="return submitLogin(event)">
+      <h2>Sign in to Abookify</h2>
+      <p class="login-sub">This library is password-protected.</p>
+      <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none" autocorrect="off">
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <button type="submit" id="login-submit">Sign in</button>
+      <div class="login-error" id="login-error"></div>
+    </form>
   </div>
   <audio id="audio-player" preload="auto" style="display:none;"></audio>
 
@@ -4306,6 +4347,10 @@
       }
     });
 
+    // Auth gate (#197). Check status first; if a password is set and we
+    // aren't authenticated, show the login overlay. The rest of the SPA
+    // still boots underneath but is covered until login succeeds.
+    enforceAuthGate();
     loadWorks();
     loadQueue();
     applyWaveformVisibility();
@@ -4590,6 +4635,61 @@
       } catch(e) {
         alert('Import failed: ' + e.message);
       }
+    }
+
+    // --- Auth gate (#197) ---
+    // Show the login overlay when the server requires a password and
+    // this browser isn't authenticated (cookie missing/expired).
+    async function enforceAuthGate() {
+      const gate = document.getElementById('login-gate');
+      if (!gate) return;
+      try {
+        const res = await fetch('/api/auth/status');
+        const st = res.ok ? await res.json() : { auth_enabled: false, authenticated: true };
+        if (st.auth_enabled && !st.authenticated) {
+          gate.style.display = 'flex';
+          document.getElementById('login-username')?.focus();
+        } else {
+          gate.style.display = 'none';
+        }
+      } catch {
+        // If status itself is unreachable, leave the gate hidden — the
+        // user will see normal connection errors rather than a login
+        // form they can't submit.
+        gate.style.display = 'none';
+      }
+    }
+
+    async function submitLogin(e) {
+      e.preventDefault();
+      const btn = document.getElementById('login-submit');
+      const errEl = document.getElementById('login-error');
+      const username = document.getElementById('login-username').value;
+      const password = document.getElementById('login-password').value;
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+          errEl.textContent = res.status === 401 ? 'Invalid username or password.' : 'Sign-in failed.';
+          btn.disabled = false;
+          btn.textContent = 'Sign in';
+          return false;
+        }
+        // Cookie is set by the response; reload so every subsequent
+        // request (incl. media tags + WS) rides it.
+        location.reload();
+      } catch {
+        errEl.textContent = 'Network error.';
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+      }
+      return false;
     }
 
     // Q&A — tries LLM-powered RAG first, falls back to keyword search
