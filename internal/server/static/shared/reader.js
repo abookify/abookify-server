@@ -118,6 +118,75 @@ export function transcriptParagraphsHTML(paraTexts, timestamps) {
   };
 }
 
+/**
+ * Build karaoke-ready transcript HTML directly from the sync timestamps
+ * — NOT from the displayed text chapter. This is the alignment-correct
+ * path: Whisper's word tokens and the curated transcript text tokenize
+ * differently (Whisper splits possessives/contractions — "O'Halloran"
+ * becomes "O" + "'Halloran"), so the old approach of counting displayed
+ * words and mapping sync[i] onto displayed-word[i] drifts further ahead
+ * the deeper you read (measured ~23% word-count divergence on a 68k-word
+ * audiobook — enough to put the highlight ~3s ahead of the audio mid-
+ * chapter). Rendering the sync words themselves makes data-widx == the
+ * timestamp index by construction, which is exactly what the mobile
+ * NowPlaying karaoke does — and why mobile never drifts.
+ *
+ * Words are grouped into paragraphs at pause boundaries (gap between one
+ * word's end and the next word's start > `gapSecs`), mirroring the
+ * sidecar importer's >0.6s paragraphing, with `maxWords` as a safety cap
+ * so a gapless stretch can't become a wall of text. Each word is emitted
+ * pre-wrapped as <span class="sync-word" data-widx="i">; the paragraph
+ * carries data-wrapped="1" so the lazy wrapper no-ops over it.
+ *
+ * Returns the same shape as transcriptParagraphsHTML. karaokeSafe is
+ * always true here — the mapping cannot diverge because both sides ARE
+ * the timestamp array.
+ */
+export function transcriptParagraphsFromSync(timestamps, opts) {
+  const o = opts || {};
+  const gapSecs = o.gapSecs != null ? o.gapSecs : 0.6;
+  const maxWords = o.maxWords != null ? o.maxWords : 150;
+  const n = (timestamps && timestamps.length) || 0;
+  if (n === 0) {
+    return { html: '', totalWords: 0, paragraphCount: 0, karaokeSafe: false, paragraphs: [] };
+  }
+  // Paragraph boundaries: [start, endExclusive) index ranges.
+  const bounds = [];
+  let start = 0;
+  for (let i = 1; i < n; i++) {
+    const gap = (timestamps[i].s || 0) - (timestamps[i - 1].e || 0);
+    if (gap > gapSecs || (i - start) >= maxWords) {
+      bounds.push([start, i]);
+      start = i;
+    }
+  }
+  bounds.push([start, n]);
+
+  const paragraphs = [];
+  let html = '';
+  for (let b = 0; b < bounds.length; b++) {
+    const s = bounds[b][0];
+    const e = bounds[b][1];
+    let inner = '';
+    for (let i = s; i < e; i++) {
+      const w = String((timestamps[i] && timestamps[i].w) || '').trim();
+      inner += '<span class="sync-word" data-widx="' + i + '">' + escapeHTML(w) + '</span>';
+      if (i < e - 1) inner += ' ';
+    }
+    if (inner.length === 0) continue;
+    html += '<p class="sync-para" data-widx-start="' + s + '" data-widx-end="' + e +
+      '" data-wrapped="1">' + inner + '</p>';
+    paragraphs.push({ widxStart: s, widxEnd: e, wordCount: e - s });
+  }
+  return {
+    html,
+    totalWords: n,
+    paragraphCount: paragraphs.length,
+    karaokeSafe: true,
+    paragraphs,
+  };
+}
+
 function escapeHTML(s) {
   return String(s)
     .replace(/&/g, '&amp;')

@@ -11,6 +11,7 @@ import {
   htmlForPlainText,
   extractReaderParagraphs,
   transcriptParagraphsHTML,
+  transcriptParagraphsFromSync,
 } from './reader.js';
 
 // Tiny mock for a reader DOM element. Just enough surface to exercise
@@ -144,4 +145,76 @@ test('transcriptParagraphsHTML: empty input', () => {
   const got = transcriptParagraphsHTML([], []);
   assert.equal(got.paragraphCount, 0);
   assert.equal(got.karaokeSafe, false);
+});
+
+// ---- transcriptParagraphsFromSync (alignment-correct path) ----
+
+// Helper: build a monotonic timestamp array with controllable gaps.
+function ts(words, opts) {
+  const o = opts || {};
+  const gapAfter = o.gapAfter || {}; // {index: extraSecondsBeforeNext}
+  const out = [];
+  let t = 0;
+  for (let i = 0; i < words.length; i++) {
+    const s = t;
+    const e = t + 0.3;
+    out.push({ s, e, w: words[i] });
+    t = e + 0.1 + (gapAfter[i] || 0);
+  }
+  return out;
+}
+
+test('transcriptParagraphsFromSync: each word span data-widx == timestamp index', () => {
+  const timestamps = ts([' This', ' is', ' a', ' test']);
+  const got = transcriptParagraphsFromSync(timestamps);
+  assert.equal(got.totalWords, 4);
+  assert.equal(got.karaokeSafe, true);
+  // widx 0..3 present, in order, regardless of how the words tokenize.
+  for (let i = 0; i < 4; i++) {
+    assert.match(got.html, new RegExp(`data-widx="${i}"`));
+  }
+});
+
+test('transcriptParagraphsFromSync: immune to contraction-split that broke the old path', () => {
+  // Whisper emits "O" and "'Halloran" as two separate tokens. The old
+  // displayed-text path would see "O'Halloran" as one word and slide.
+  // Here the spans are the timestamps, so the count is exact.
+  const timestamps = ts([' With', ' Tim', ' O', "'Halloran", ' Dedicated']);
+  const got = transcriptParagraphsFromSync(timestamps);
+  assert.equal(got.totalWords, 5);
+  // The split token "'Halloran" gets its own widx=3 span.
+  assert.match(got.html, /data-widx="3">&#39;Halloran</);
+});
+
+test('transcriptParagraphsFromSync: breaks paragraphs at >0.6s pause gaps', () => {
+  // gap after word index 1 (1.2s) should start a new paragraph at widx 2.
+  const timestamps = ts([' a', ' b', ' c', ' d'], { gapAfter: { 1: 1.2 } });
+  const got = transcriptParagraphsFromSync(timestamps);
+  assert.equal(got.paragraphCount, 2);
+  assert.deepEqual(got.paragraphs[0], { widxStart: 0, widxEnd: 2, wordCount: 2 });
+  assert.deepEqual(got.paragraphs[1], { widxStart: 2, widxEnd: 4, wordCount: 2 });
+});
+
+test('transcriptParagraphsFromSync: paragraphs are pre-wrapped (data-wrapped) so lazy wrap no-ops', () => {
+  const got = transcriptParagraphsFromSync(ts([' a', ' b']));
+  assert.match(got.html, /data-wrapped="1"/);
+});
+
+test('transcriptParagraphsFromSync: maxWords caps runaway gapless paragraphs', () => {
+  const words = Array.from({ length: 400 }, (_, i) => 'w' + i);
+  const got = transcriptParagraphsFromSync(ts(words), { maxWords: 150 });
+  assert.ok(got.paragraphCount >= 3, 'should split a 400-word gapless run');
+  assert.equal(got.totalWords, 400);
+});
+
+test('transcriptParagraphsFromSync: escapes HTML in word text', () => {
+  const got = transcriptParagraphsFromSync(ts([' <b>', ' &amp']));
+  assert.ok(!got.html.includes('<b>'), 'must escape angle brackets in words');
+  assert.match(got.html, /&lt;b&gt;/);
+});
+
+test('transcriptParagraphsFromSync: empty input is unsafe', () => {
+  const got = transcriptParagraphsFromSync([]);
+  assert.equal(got.karaokeSafe, false);
+  assert.equal(got.paragraphCount, 0);
 });

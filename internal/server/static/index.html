@@ -2965,45 +2965,44 @@
       }
     }
 
-    // Transcript renderer with lazy per-paragraph span wrapping.
+    // Transcript renderer — builds the reading surface FROM the sync
+    // timestamps themselves, so each word's data-widx is its timestamp
+    // index by construction (1:1, like the mobile NowPlaying karaoke).
     //
-    // Splits the reader's plain-text content on double-newlines (inserted by
-    // the sidecar importer at pause boundaries). Each paragraph becomes a
-    // <p data-widx-start="A" data-widx-end="B"> element containing plain
-    // text. When the karaoke loop enters a paragraph, lazyWrapParagraph()
-    // walks it once, replaces the text node with <span class="sync-word">
-    // elements, and caches that we've done so. Previously-visited
-    // paragraphs stay wrapped (cheap to keep; unwrap adds complexity).
+    // The previous version rebuilt paragraphs from the displayed text
+    // chapter and mapped sync[i] onto displayed-word[i] by sequential
+    // count. That drifts: Whisper tokenizes possessives/contractions
+    // differently from the curated transcript ("O'Halloran" -> "O" +
+    // "'Halloran"), so the indices slide apart the deeper you read
+    // (~23% word-count divergence on the Norm Macdonald book put the
+    // highlight ~3s ahead of the audio mid-chapter). Rendering the sync
+    // words directly removes the mapping entirely.
+    //
+    // Words are grouped into paragraphs at >0.6s pause gaps (mirrors the
+    // sidecar importer) and emitted pre-wrapped, so lazyWrapParagraph
+    // no-ops over them. The shared builder lives in shared/reader.js so
+    // it's covered by node:test.
     function renderParagraphedTranscript(reader, timestamps) {
-      // Both pieces — DOM read + sync-anchored HTML build — live in
-      // shared/reader.js so they're covered by node:test. Inline fallback
-      // is kept in case the shared module hasn't loaded yet (unlikely
-      // since 'shared-ready' fires before this runs, but cheap insurance).
       const sh = window.shared;
-      const paraTexts = sh && sh.extractReaderParagraphs
-        ? sh.extractReaderParagraphs(reader)
-        : Array.from(reader.querySelectorAll('p'))
-            .map(p => p.textContent.trim()).filter(p => p.length > 0);
-      if (paraTexts.length === 0) {
-        karaokeHighlightSafe = false;
-        return;
-      }
-      const built = sh && sh.transcriptParagraphsHTML
-        ? sh.transcriptParagraphsHTML(paraTexts, timestamps)
+      const built = sh && sh.transcriptParagraphsFromSync
+        ? sh.transcriptParagraphsFromSync(timestamps)
         : null;
-      if (!built) {
+      if (!built || !built.karaokeSafe || !built.html) {
+        // Shared module not ready or no timestamps — show the displayed
+        // text without karaoke rather than a blank pane.
         karaokeHighlightSafe = false;
-        return;
-      }
-      if (!built.karaokeSafe) {
-        console.warn(`Sync: paragraph word count ${built.totalWords} diverges from sync ${timestamps.length}; karaoke disabled for this chapter.`);
-        karaokeHighlightSafe = false;
-        reader.innerHTML = paraTexts.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+        const paraTexts = sh && sh.extractReaderParagraphs
+          ? sh.extractReaderParagraphs(reader)
+          : Array.from(reader.querySelectorAll('p'))
+              .map(p => p.textContent.trim()).filter(p => p.length > 0);
+        if (paraTexts.length > 0) {
+          reader.innerHTML = paraTexts.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+        }
         return;
       }
       reader.innerHTML = built.html;
       karaokeHighlightSafe = true;
-      console.log(`Sync: transcript rendered as ${built.paragraphCount} paragraphs, ${built.totalWords} words total`);
+      console.log(`Sync: transcript rendered from sync as ${built.paragraphCount} paragraphs, ${built.totalWords} words total`);
     }
 
     // Wrap a single paragraph's words into sync-span elements. Idempotent:
