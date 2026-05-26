@@ -3787,13 +3787,23 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       // Skip the network fetch entirely when the user has hidden waveforms.
       if (localStorage.getItem('waveformHidden') === '1') return;
-      let peaks = waveformCache[bookId];
+      // The scrubber spans the whole book, so a multi-file audiobook needs
+      // the book-merged waveform (#180) — the per-file peaks would only cover
+      // the current file's slice stretched across the full bar, mismatching
+      // the book-global fill/thumb/ticks. Single-file books use the per-book
+      // endpoint (identical shape, one fewer re-bucket).
+      const multiFile = currentAudioFiles.length > 1 && currentWorkId != null;
+      const cacheKey = multiFile ? `work-${currentWorkId}` : `book-${bookId}`;
+      const url = multiFile
+        ? `/api/works/${currentWorkId}/waveform`
+        : `/api/books/${bookId}/waveform`;
+      let peaks = waveformCache[cacheKey];
       if (!peaks) {
         try {
-          const res = await fetch(`/api/books/${bookId}/waveform`);
+          const res = await fetch(url);
           const data = await res.json();
           peaks = data.peaks;
-          waveformCache[bookId] = peaks;
+          waveformCache[cacheKey] = peaks;
         } catch { return; }
       }
       if (!peaks || !peaks.length) return;
@@ -3827,15 +3837,20 @@
       // skip the chapters that fall outside this file's window.
       const chapters = currentSyncBookId ? audioChapterCache[currentSyncBookId] : null;
       if (!chapters || chapters.length < 2) return;
-      const fileStart = currentAudioOffset;
-      const fileEnd = currentAudioOffset + p.duration;
+      // The scrubber spans the WHOLE book — fill, thumb, time text and seek
+      // are all book-global (see the timeupdate handler + initScrubber). So
+      // chapter ticks have to be positioned by book-absolute fraction too,
+      // NOT the current file's local fraction. The old per-file math meant a
+      // multi-file audiobook only ever showed the current file's chapters,
+      // smeared across the full bar — the 8-file / 32-chapter Norm book read
+      // as "8 chapters" because file 0 happens to hold 7 of them.
+      const bookTotal = totalBookDurationSec() || p.duration;
+      if (bookTotal <= 0) return;
       const work = allWorks.find(w => w.id === currentWorkId);
       chapters.forEach((ch, idx) => {
         const absStart = ch.start_sec || 0;
-        if (absStart < fileStart || absStart > fileEnd) return;
-        const localStart = absStart - fileStart;
-        const pct = (localStart / p.duration) * 100;
-        if (pct < 0.5 || pct > 99) return;
+        const pct = (absStart / bookTotal) * 100;
+        if (pct < 0.3 || pct > 99.7) return;
         const tick = document.createElement('div');
         tick.className = 'chapter-tick';
         tick.style.left = pct + '%';
@@ -3846,7 +3861,7 @@
           // Use seekToAbsoluteBookTime so clicks work correctly for multi-
           // file books (may cross file boundaries).
           if (work) seekToAbsoluteBookTime(work, absStart, label);
-          else if (p && p.duration) p.currentTime = localStart;
+          else if (p && p.duration) p.currentTime = absStart - (currentAudioOffset || 0);
         });
         bar.appendChild(tick);
       });
