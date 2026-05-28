@@ -213,6 +213,63 @@
     .primary-btn:hover:not(:disabled) { filter: brightness(1.1); }
     .primary-btn:disabled { opacity: 0.6; cursor: default; }
 
+    /* .abook file summary modal (#199/#200): a readout of the work's
+       sources and how well the audio aligns to the ebook. Mirrors the
+       mobile AbookSummaryScreen so the two stay visually in step. */
+    .abs-intro { color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; margin: 0.25rem 0 1.25rem; }
+    .abs-section { margin-top: 1.25rem; }
+    .abs-section:first-of-type { margin-top: 0; }
+    .abs-label {
+      font-size: 0.7rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.6rem;
+    }
+    .abs-source {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.6rem 0.7rem; margin-bottom: 0.4rem;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .abs-badge {
+      flex-shrink: 0; padding: 0.2rem 0.45rem; border-radius: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      font-size: 0.62rem; font-weight: 700; color: var(--muted); letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .abs-source-body { flex: 1; min-width: 0; }
+    .abs-source-title { font-size: 0.85rem; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .abs-source-meta { font-size: 0.74rem; color: var(--muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
+    .abs-total { font-size: 0.74rem; color: var(--muted); margin-top: 0.35rem; font-variant-numeric: tabular-nums; }
+
+    .abs-cov-head { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.7rem; }
+    .abs-pill {
+      flex-shrink: 0; padding: 0.25rem 0.7rem; border-radius: 999px;
+      font-size: 0.8rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent);
+    }
+    .abs-pill.good { background: rgba(52,211,153,0.14); border-color: var(--success); color: var(--success); }
+    .abs-pill.warn { background: rgba(245,158,11,0.14); border-color: var(--ebook-only); color: var(--ebook-only); }
+    .abs-pill.bad  { background: rgba(233,69,96,0.12); border-color: var(--danger); color: var(--danger); }
+    .abs-quality { font-size: 0.88rem; font-weight: 600; color: var(--text); }
+
+    .abs-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
+    .abs-bar-seg { height: 10px; }
+    .abs-legend { display: flex; flex-wrap: wrap; gap: 0.85rem; margin-top: 0.6rem; }
+    .abs-leg { display: flex; align-items: center; gap: 0.35rem; font-size: 0.74rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .abs-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+    .abs-note { font-size: 0.82rem; color: var(--text); margin-top: 0.7rem; line-height: 1.45; }
+    .abs-extra { font-size: 0.74rem; color: var(--muted); margin-top: 0.6rem; line-height: 1.4; }
+
+    .abs-diff {
+      border-left: 3px solid var(--border); border-radius: 8px;
+      padding: 0.55rem 0.7rem; margin-bottom: 0.35rem;
+    }
+    .abs-diff-label { font-size: 0.8rem; font-weight: 700; }
+    .abs-diff-meta { font-size: 0.74rem; color: var(--muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
+    .abs-empty {
+      padding: 0.9rem; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); font-size: 0.82rem; color: var(--muted); line-height: 1.5;
+    }
+
     /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
        author. Filled by hydrateWorkProgress() once positions arrive. */
     .work-progress { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; opacity: 0.8; }
@@ -1659,6 +1716,9 @@
       items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); openRenameDialog(${work.id});">
         <span class="icon">&#9998;</span>Rename
       </button>`);
+      items.push(`<button class="work-menu-item" onclick="openAbookSummary(${work.id});">
+        <span class="icon">&#9432;</span>.abook summary
+      </button>`);
       items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); downloadAbookFromMenu(${work.id});">
         <span class="icon">&#11015;</span>Download .abook
       </button>`);
@@ -2194,6 +2254,223 @@
     function closeGapModal(e) {
       if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
       const host = document.getElementById('gap-modal-host');
+      if (host) host.remove();
+    }
+
+    // ---- .abook file summary (#199/#200) -------------------------------
+    // A readout of how the .abook is put together: its sources and how well
+    // the audio aligns to the ebook. Reads the same /api/works/{id} +
+    // /api/works/{id}/alignments the mobile AbookSummaryScreen consumes, and
+    // parses the render-ready AnchorAlignmentPayload client-side (the "anchor"
+    // /"embedding" method rows carry it as JSON in `pairs`). NOT woven into
+    // the reader — it's a standalone "how well-aligned is this file" view.
+
+    // Decode the rich payload from an alignment row, or null for legacy
+    // (edit-distance / whisper-native) rows that carry a different `pairs`.
+    function parseAnchorPayload(a) {
+      if (!a || (a.method !== 'anchor' && a.method !== 'embedding')) return null;
+      try { return JSON.parse(a.pairs); } catch { return null; }
+    }
+
+    function absOriginLabel(b) {
+      switch (b.origin) {
+        case 'publisher_epub': return 'EPUB · publisher';
+        case 'publisher_mobi': return 'MOBI · publisher';
+        case 'publisher_pdf': return 'PDF · publisher';
+        case 'whisper_transcript': return 'Transcript · Whisper';
+        case 'author_recording': return 'Audio · author-read';
+        case 'narrator_recording': return 'Audio · narrated';
+        case 'librivox': return 'Audio · LibriVox';
+        case 'tts_kokoro': return 'Audio · TTS';
+        case 'tts_preprocessed': return 'Text · TTS prep';
+        case 'user_upload': return (b.format || 'file').toUpperCase() + ' · upload';
+        default: return (b.format || b.media_type || 'file').toUpperCase();
+      }
+    }
+
+    // Position of a global word offset as a percentage through a stream — a
+    // locator we can trust ("34% in") without leaning on chapter numbering.
+    function absPctThrough(offset, total) {
+      if (!total) return '';
+      return Math.round((offset / total) * 100) + '% in';
+    }
+
+    function absNum(n) { return Number(n || 0).toLocaleString(); }
+
+    function renderAbsSource(b, subtitle) {
+      return `<div class="abs-source">
+        <span class="abs-badge">${escapeHtml(absOriginLabel(b))}</span>
+        <div class="abs-source-body">
+          <div class="abs-source-title">${escapeHtml(b.title || b.filename || '')}</div>
+          <div class="abs-source-meta">${escapeHtml(subtitle)}</div>
+        </div>
+      </div>`;
+    }
+
+    function renderAbsDiffRow(seg, payload) {
+      let label, cls, words, where;
+      if (seg.k === 'ebook-only') {
+        label = 'Skipped'; cls = 'warn';
+        words = seg.ee - seg.es;
+        where = 'ebook · ' + absPctThrough(seg.es, payload.ebook_words);
+      } else if (seg.k === 'trans-only') {
+        label = 'Non-book content'; cls = 'bad';
+        words = seg.te - seg.ts;
+        where = 'audio · ' + absPctThrough(seg.ts, payload.trans_words);
+      } else {
+        label = 'Differs'; cls = 'bad';
+        words = Math.max(seg.ee - seg.es, seg.te - seg.ts);
+        where = 'ebook · ' + absPctThrough(seg.es, payload.ebook_words);
+      }
+      const color = cls === 'warn' ? 'var(--ebook-only)' : 'var(--danger)';
+      const tint = cls === 'warn' ? 'rgba(245,158,11,0.10)' : 'rgba(233,69,96,0.10)';
+      return `<div class="abs-diff" style="border-left-color:${color};background:${tint}">
+        <div class="abs-diff-label" style="color:${color}">${label}</div>
+        <div class="abs-diff-meta">${absNum(words)} words · ${where}</div>
+      </div>`;
+    }
+
+    function renderAbsAlignment(payload) {
+      const pct = Math.round(payload.coverage * 100);
+      const ebookWords = payload.ebook_words || 0;
+      const alignedW = Math.round(payload.coverage * ebookWords);
+      const div = payload.divergence || {};
+      const skippedW = div.ebook_only_words || 0;
+      const otherW = Math.max(0, ebookWords - alignedW - skippedW);
+      const transOnly = div.trans_only_words || 0;
+
+      let quality, pillCls;
+      if (payload.coverage >= 0.9) { quality = 'Tightly aligned'; pillCls = 'good'; }
+      else if (payload.coverage >= 0.6) { quality = 'Mostly aligned'; pillCls = 'good'; }
+      else if (payload.coverage >= 0.3) { quality = 'Partial coverage'; pillCls = 'warn'; }
+      else { quality = 'Weak — likely a different edition'; pillCls = 'bad'; }
+
+      let note;
+      if (payload.unit === 'word') {
+        note = 'The audio follows the ebook word by word (karaoke).';
+      } else {
+        note = 'The audio follows the ebook paragraph by paragraph — coarser, used when the editions differ.';
+      }
+      if (payload.method === 'embedding' && (payload.match_quality ?? 1) < 0.3) {
+        note = 'Low correlation between the audio and this text — they may be different works.';
+      }
+
+      const seg = (frac, color) => frac > 0
+        ? `<div class="abs-bar-seg" style="flex:${frac};background:${color}"></div>` : '';
+      const bar = `<div class="abs-bar">
+        ${seg(alignedW, 'var(--success)')}
+        ${seg(skippedW, 'var(--ebook-only)')}
+        ${seg(otherW, 'var(--danger)')}
+        ${(alignedW + skippedW + otherW) === 0 ? '<div class="abs-bar-seg" style="flex:1;background:var(--border)"></div>' : ''}
+      </div>`;
+
+      const leg = (color, text) => `<span class="abs-leg"><span class="abs-swatch" style="background:${color}"></span>${text}</span>`;
+      const legend = `<div class="abs-legend">
+        ${leg('var(--success)', absNum(alignedW) + ' aligned')}
+        ${skippedW > 0 ? leg('var(--ebook-only)', absNum(skippedW) + ' skipped') : ''}
+        ${otherW > 0 ? leg('var(--danger)', absNum(otherW) + ' differs') : ''}
+      </div>`;
+
+      const top = (div.top || []).filter(s => s.k !== 'aligned').slice(0, 10);
+      const diffs = top.length
+        ? `<div class="abs-label" style="margin-top:1.25rem">Biggest divergences</div>
+           ${top.map(s => renderAbsDiffRow(s, payload)).join('')}`
+        : '';
+
+      return `<div class="abs-section">
+        <div class="abs-label">Alignment</div>
+        <div class="abs-cov-head">
+          <span class="abs-pill ${pillCls}">${pct}% aligned</span>
+          <span class="abs-quality">${escapeHtml(quality)}</span>
+        </div>
+        ${bar}
+        ${legend}
+        ${transOnly > 0 ? `<div class="abs-extra">+ ${absNum(transOnly)} words of audio not in the ebook (intros, narration, ad-libs).</div>` : ''}
+        <div class="abs-note">${escapeHtml(note)}</div>
+        ${diffs}
+      </div>`;
+    }
+
+    async function openAbookSummary(workId) {
+      closeAllWorkMenus();
+      const host = document.createElement('div');
+      host.id = 'abook-summary-host';
+      host.innerHTML = `<div class="modal-backdrop" onclick="closeAbookSummary(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div id="abs-body"><p style="color:var(--text-muted)">Loading…</p></div>
+          <div style="text-align:right;margin-top:1rem"><button onclick="closeAbookSummary()">Close</button></div>
+        </div>
+      </div>`;
+      document.body.appendChild(host);
+      const body = document.getElementById('abs-body');
+
+      let work, alignments = [];
+      try {
+        const [wRes, aRes] = await Promise.all([
+          fetch(`/api/works/${workId}`),
+          fetch(`/api/works/${workId}/alignments`),
+        ]);
+        if (!wRes.ok) throw new Error('work ' + wRes.status);
+        work = await wRes.json();
+        if (aRes.ok) alignments = (await aRes.json()) || [];
+      } catch (e) {
+        body.innerHTML = `<p style="color:var(--danger)">Couldn't load the .abook summary.</p>`;
+        return;
+      }
+
+      // Prefer the richest pairing: highest-coverage anchor/embedding row.
+      let payload = null;
+      for (const a of alignments) {
+        const p = parseAnchorPayload(a);
+        if (p && (!payload || p.coverage > payload.coverage)) payload = p;
+      }
+
+      const audioFiles = (work.audio_files || []).filter(b => b.visibility !== 'internal');
+      const textFiles = (work.text_files || []).filter(b => b.visibility !== 'internal');
+      const totalAudioSec = audioFiles.reduce((a, f) => a + (f.duration_secs || 0), 0);
+      const totalBytes = work.total_size
+        || [...audioFiles, ...textFiles].reduce((a, f) => a + (f.size_bytes || 0), 0);
+
+      let sources = '';
+      if (audioFiles.length) {
+        const sub = `${audioFiles.length} ${audioFiles.length === 1 ? 'file' : 'files'}`
+          + (totalAudioSec > 0 ? ` · ${formatChapterDuration(totalAudioSec)}` : '');
+        sources += renderAbsSource(audioFiles[0], sub);
+      }
+      for (const b of textFiles) {
+        const sub = (b.chapter_count ? `${b.chapter_count} chapters` : 'text')
+          + (b.size_bytes ? ` · ${formatSize(b.size_bytes)}` : '');
+        sources += renderAbsSource(b, sub);
+      }
+      const nSources = audioFiles.length + textFiles.length;
+
+      let alignmentHtml;
+      if (payload) {
+        alignmentHtml = renderAbsAlignment(payload);
+      } else {
+        const msg = (audioFiles.length && textFiles.length)
+          ? 'Not aligned yet. Once the audio is transcribed and aligned on the server, you’ll see here how closely it tracks the ebook.'
+          : 'Alignment compares an ebook against its narration. This .abook has only '
+            + (audioFiles.length ? 'audio.' : 'text.');
+        alignmentHtml = `<div class="abs-section"><div class="abs-label">Alignment</div>
+          <div class="abs-empty">${escapeHtml(msg)}</div></div>`;
+      }
+
+      body.innerHTML = `
+        <h2 style="margin:0 0 0.15rem">${escapeHtml(work.title || 'Untitled')}</h2>
+        <div style="color:var(--muted);font-size:0.85rem">${escapeHtml(work.author || 'Unknown author')}</div>
+        <p class="abs-intro">How this .abook is put together — its sources and how closely the audio and ebook line up.</p>
+        <div class="abs-section">
+          <div class="abs-label">Sources</div>
+          ${sources || '<div class="abs-empty">No sources.</div>'}
+          <div class="abs-total">${nSources} ${nSources === 1 ? 'source' : 'sources'}${totalBytes > 0 ? ` · ${formatSize(totalBytes)} total` : ''}</div>
+        </div>
+        ${alignmentHtml}`;
+    }
+
+    function closeAbookSummary(e) {
+      if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
+      const host = document.getElementById('abook-summary-host');
       if (host) host.remove();
     }
 
