@@ -1423,6 +1423,7 @@
         <option value="1.55" selected>Normal</option>
         <option value="1.8">Relaxed</option>
       </select>
+      <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
       <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
@@ -2093,14 +2094,9 @@
       }
       const chListId = 'text-chapters-' + book.id;
 
-      // Edition picker: shown when multiple text files exist.
-      const editionPicker = files.length > 1 ? `
-        <select onchange="switchTextEdition(${work.id}, this.value)"
-          style="margin-left:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
-          ${files.map(f => `<option value="${f.id}" ${f.id === book.id ? 'selected' : ''}>
-            ${escapeHtml(f.edition || f.format.toUpperCase())} (${escapeHtml(f.origin || 'unknown')})
-          </option>`).join('')}
-        </select>` : '';
+      // Text-source switching now lives in the reader gear menu
+      // (np-text-source), so the split-view TOC header stays clean. See
+      // refreshTextSourcePicker / orderedTextSources (#210).
 
       if (book.chapter_count > 0) {
         // Reader content lives in the floating now-playing overlay — pick a
@@ -2108,7 +2104,7 @@
         // toolbar, so the work card just shows the TOC + a hint.
         return `
           <div class="split-pane">
-            <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters${editionPicker}</div>
+            <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters</div>
             <div class="chapter-list" id="${chListId}" style="max-height:360px">
               <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">
                 Loading chapters...
@@ -2504,18 +2500,88 @@
       }
     }
 
-    // Switch to a different text edition when the user picks from the dropdown.
-    // Persists the choice on the work so subsequent reloads (and other
-    // clients on the same library) see the same edition.
+    // Text-source selection (#210). Mirrors mobile src/utils/textSources.ts
+    // so the web switcher reads EPUB-first / transcript-last and defaults to
+    // the same source the server would resolve.
+    const TEXT_ORIGIN_AUTHORITY = {
+      publisher_epub: 100, publisher_mobi: 95, publisher_pdf: 90,
+      user_upload: 50, whisper_transcript: 20, tts_preprocessed: 10,
+    };
+    function textOriginAuthority(origin) {
+      if (!origin) return 50;
+      return TEXT_ORIGIN_AUTHORITY[origin] ?? 50;
+    }
+    // Visible text sources, most-authoritative first; stable on ties so a
+    // work with two publisher EPUBs keeps a deterministic primary.
+    function orderedTextSources(work) {
+      return (work.text_files || [])
+        .filter(b => b.visibility !== 'internal')
+        .map((b, i) => ({ b, i }))
+        .sort((a, z) => textOriginAuthority(z.b.origin) - textOriginAuthority(a.b.origin) || a.i - z.i)
+        .map(x => x.b);
+    }
+    // The text book the reader should display: server-resolved choice when
+    // present (already honors override + authority + visibility), else the
+    // highest-authority visible source, else the first text file.
+    function resolveDisplayTextBook(work) {
+      const texts = work.text_files || [];
+      if (work.display_text_id) {
+        const pinned = texts.find(b => b.id === work.display_text_id);
+        if (pinned) return pinned;
+      }
+      return orderedTextSources(work)[0] || texts[0];
+    }
+    function textSourceLabel(b) {
+      let base;
+      switch (b.origin) {
+        case 'publisher_epub': base = 'EPUB · publisher'; break;
+        case 'publisher_mobi': base = 'MOBI · publisher'; break;
+        case 'publisher_pdf': base = 'PDF · publisher'; break;
+        case 'whisper_transcript': base = 'Transcript · from audio'; break;
+        case 'tts_preprocessed': base = 'Prepared text'; break;
+        default: base = (b.format || 'text').toUpperCase();
+      }
+      return b.edition ? `${base} · ${b.edition}` : base;
+    }
+    // Populate the reader gear-bar text-source picker for the active work.
+    // Shown only when the work has >1 visible text source (mirrors mobile).
+    function refreshTextSourcePicker(work) {
+      const sel = document.getElementById('np-text-source');
+      if (!sel) return;
+      const sources = work ? orderedTextSources(work) : [];
+      if (sources.length < 2) { sel.style.display = 'none'; sel.innerHTML = ''; return; }
+      const current = resolveDisplayTextBook(work);
+      sel.innerHTML = sources.map(b =>
+        `<option value="${b.id}" ${current && b.id === current.id ? 'selected' : ''}>${escapeHtml(textSourceLabel(b))}</option>`
+      ).join('');
+      sel.style.display = '';
+    }
+    function onTextSourceChange(bookId) {
+      if (currentReaderWorkId != null) switchTextEdition(currentReaderWorkId, bookId);
+    }
+
+    // Switch to a different text source when the user picks from the gear
+    // menu. Persists the choice on the work so subsequent reloads (and other
+    // clients on the same library) see the same source.
     async function switchTextEdition(workId, bookId) {
       bookId = parseInt(bookId);
+      // Remember where we were so we can keep the reader near the same place
+      // in the new source (ordinal chapter position, clamped). The audio-time
+      // anchor / render-mode dispatch stays gated on the #209 timeline.
+      const prev = currentReaderChapter[workId];
+      let prevPos = 0;
+      if (prev) {
+        const oldChapters = chapterCache[prev.bookId]?.chapters || [];
+        const p = oldChapters.findIndex(c => c.index === prev.index);
+        if (p >= 0) prevPos = p;
+      }
       // Reload the chapter list for the new book.
       delete chapterCache[bookId]; // force reload
       await loadChapterList(bookId, workId);
-      // Load the first chapter.
       const chapters = chapterCache[bookId]?.chapters;
       if (chapters && chapters.length > 0) {
-        loadChapter(bookId, chapters[0].index, workId);
+        const target = chapters[Math.min(prevPos, chapters.length - 1)] || chapters[0];
+        loadChapter(bookId, target.index, workId);
       }
       // Mirror the local in-memory state so a re-render picks the same
       // book without waiting for the server round-trip.
@@ -3762,6 +3828,7 @@
       document.getElementById('np-overlay-title').textContent = work?.title || 'Reader';
       document.getElementById('np-sync-wrap').style.display =
         work?.has_audio ? 'flex' : 'none';
+      refreshTextSourcePicker(work);
       const leadInput = document.getElementById('np-sync-lead');
       if (leadInput) leadInput.value = Math.round(syncLeadSecs * 1000);
       const fs = document.getElementById('np-font-size');
