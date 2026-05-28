@@ -2,11 +2,14 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pj/abookify/internal/applog"
 
 	_ "modernc.org/sqlite"
 )
@@ -149,7 +152,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite uses the _pragma=name(value) DSN form, NOT the
+	// mattn-style _journal_mode=WAL. The old DSN was silently ignored, so
+	// the db ran in rollback-journal mode where a writer takes an
+	// exclusive lock and readers get SQLITE_BUSY. WAL lets readers run
+	// concurrently with a writer; busy_timeout waits out brief contention.
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -344,6 +352,26 @@ func migrate(db *sql.DB) error {
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+
+		-- Structured application logs (#214). A bounded recent window
+		-- (~24h, pruned hourly) backing the in-UI System Console so job
+		-- failures and pipeline errors are debuggable without Claude Code.
+		-- fields is a JSON object ("" when none). Written async/batched by
+		-- internal/applog; never on a request hot path.
+		CREATE TABLE IF NOT EXISTS logs (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			level     TEXT NOT NULL DEFAULT 'info',
+			component TEXT NOT NULL DEFAULT '',
+			job_id    TEXT NOT NULL DEFAULT '',
+			work_id   INTEGER NOT NULL DEFAULT 0,
+			message   TEXT NOT NULL DEFAULT '',
+			fields    TEXT NOT NULL DEFAULT ''
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_logs_component ON logs(component);
+		CREATE INDEX IF NOT EXISTS idx_logs_job ON logs(job_id);
 
 		CREATE TABLE IF NOT EXISTS playback_events (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1375,6 +1403,166 @@ func (s *Store) GetJob(id string) (*Job, error) {
 		return nil, err
 	}
 	return &j, nil
+}
+
+// sqliteTimeFmt matches SQLite's CURRENT_TIMESTAMP (UTC). We write log
+// timestamps in this exact format so lexicographic comparison against a
+// `since` bound is also chronological.
+const sqliteTimeFmt = "2006-01-02 15:04:05"
+
+// LogFilter narrows a QueryLogs read. All fields are optional; the zero
+// value returns the most recent Limit entries across everything.
+type LogFilter struct {
+	MinLevel  applog.Level // entries at or above this severity
+	Component string       // exact component match
+	JobID     string       // exact job id match
+	Query     string       // case-insensitive substring of the message
+	Since     time.Time    // only entries at/after this time
+	Limit     int          // default 200, capped at 2000
+}
+
+// InsertLogs batch-writes structured entries. Implements applog.Store.
+// Fields maps are JSON-encoded; an empty/unencodable map stores "".
+func (s *Store) InsertLogs(entries []applog.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO logs (ts, level, component, job_id, work_id, message, fields)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, e := range entries {
+		fields := ""
+		if len(e.Fields) > 0 {
+			if b, err := json.Marshal(e.Fields); err == nil {
+				fields = string(b)
+			}
+		}
+		ts := e.Time
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		level := e.Level
+		if level == "" {
+			level = applog.LevelInfo
+		}
+		if _, err := stmt.Exec(ts.UTC().Format(sqliteTimeFmt), string(level),
+			e.Component, e.JobID, e.WorkID, e.Message, fields); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// QueryLogs reads the recent window newest-first, applying the filter.
+func (s *Store) QueryLogs(f LogFilter) ([]applog.Entry, error) {
+	where := []string{"1=1"}
+	var args []any
+
+	if f.MinLevel != "" {
+		levels := applog.LevelsAtOrAbove(f.MinLevel)
+		ph := make([]string, len(levels))
+		for i, l := range levels {
+			ph[i] = "?"
+			args = append(args, l)
+		}
+		where = append(where, "level IN ("+strings.Join(ph, ",")+")")
+	}
+	if f.Component != "" {
+		where = append(where, "component = ?")
+		args = append(args, f.Component)
+	}
+	if f.JobID != "" {
+		where = append(where, "job_id = ?")
+		args = append(args, f.JobID)
+	}
+	if f.Query != "" {
+		where = append(where, "message LIKE ?")
+		args = append(args, "%"+f.Query+"%")
+	}
+	if !f.Since.IsZero() {
+		where = append(where, "ts >= ?")
+		args = append(args, f.Since.UTC().Format(sqliteTimeFmt))
+	}
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	args = append(args, limit)
+
+	rows, err := s.db.Query(`
+		SELECT ts, level, component, job_id, work_id, message, fields
+		FROM logs WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY ts DESC, id DESC LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]applog.Entry, 0, limit)
+	for rows.Next() {
+		var (
+			e      applog.Entry
+			ts     time.Time // modernc decodes the DATETIME column to time.Time
+			level  string
+			fields string
+		)
+		if err := rows.Scan(&ts, &level, &e.Component, &e.JobID, &e.WorkID, &e.Message, &fields); err != nil {
+			return nil, err
+		}
+		e.Time = ts.UTC()
+		e.Level = applog.Level(level)
+		if fields != "" {
+			_ = json.Unmarshal([]byte(fields), &e.Fields)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DistinctLogComponents lists the components currently present, for the
+// console's filter dropdown.
+func (s *Store) DistinctLogComponents() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT component FROM logs WHERE component <> '' ORDER BY component`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// PruneLogs deletes entries older than before. Implements applog.Store.
+func (s *Store) PruneLogs(before time.Time) (int, error) {
+	res, err := s.db.Exec(`DELETE FROM logs WHERE ts < ?`, before.UTC().Format(sqliteTimeFmt))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // CleanupOrphanedBooks removes DB entries where the file no longer exists on disk.

@@ -270,6 +270,43 @@
       border-radius: var(--radius-sm); font-size: 0.82rem; color: var(--muted); line-height: 1.5;
     }
 
+    /* System Console (#214): in-UI structured log viewer over GET /api/logs.
+       A wide modal with a filter row and a scrolling monospace log table so
+       job failures + pipeline errors are debuggable without Claude Code. */
+    .logs-modal { max-width: 1040px; width: 95%; max-height: 86vh; display: flex; flex-direction: column; }
+    .logs-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem; }
+    .logs-head h3 { margin: 0; font-size: 1rem; }
+    .logs-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.7rem; }
+    .logs-filters select, .logs-filters input {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.8rem;
+    }
+    .logs-filters input[type=search] { flex: 1; min-width: 9rem; }
+    .logs-auto { display: flex; align-items: center; gap: 0.3rem; font-size: 0.76rem; color: var(--muted); cursor: pointer; }
+    .logs-scroll {
+      flex: 1; overflow-y: auto; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--bg); min-height: 12rem;
+    }
+    .logs-line {
+      display: grid; grid-template-columns: 5.6rem 3.6rem 6rem 1fr; gap: 0.6rem;
+      padding: 0.3rem 0.7rem; border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.76rem;
+      align-items: baseline;
+    }
+    .logs-line:hover { background: rgba(255,255,255,0.03); }
+    .logs-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .logs-lvl { font-weight: 700; text-transform: uppercase; font-size: 0.64rem; letter-spacing: 0.04em; }
+    .logs-lvl.debug { color: var(--muted); }
+    .logs-lvl.info  { color: var(--accent); }
+    .logs-lvl.warn  { color: var(--ebook-only); }
+    .logs-lvl.error { color: var(--danger); }
+    .logs-comp { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .logs-msg { color: var(--text); word-break: break-word; white-space: pre-wrap; }
+    .logs-meta { color: var(--muted); }
+    .logs-line.lvl-error .logs-msg { color: #fca5a5; }
+    .logs-line.lvl-warn .logs-msg { color: #fcd9a5; }
+    .logs-empty { padding: 2.2rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+
     /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
        author. Filled by hydrateWorkProgress() once positions arrive. */
     .work-progress { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; opacity: 0.8; }
@@ -1242,6 +1279,7 @@
     <h1>abookify</h1>
     <div style="display:flex; align-items:center; gap:1.5rem;">
       <div class="status"><span class="dot"></span><span id="status-text">connecting...</span></div>
+      <a href="#" onclick="openSystemConsole(event)" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem;" title="System console — recent logs (#214)">Console</a>
       <a href="/settings.html" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem;">Settings</a>
     </div>
   </header>
@@ -2193,6 +2231,147 @@
       if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
       const host = document.getElementById('gap-modal-host');
       if (host) host.remove();
+    }
+
+    // ---- System Console (#214) -----------------------------------------
+    // Viewer over GET /api/logs: a recent (~24h) structured log window so
+    // job failures + pipeline errors are debuggable without Claude Code.
+    // Filter by level/component/time/text; "Live" polls every few seconds.
+    let logsTimer = null;
+    let logsQDebounce = null;
+
+    function openSystemConsole(e) {
+      if (e) e.preventDefault();
+      if (document.getElementById('logs-modal-host')) return;
+      const host = document.createElement('div');
+      host.id = 'logs-modal-host';
+      host.innerHTML = `
+        <div class="modal-backdrop" onclick="closeSystemConsole(event)">
+          <div class="modal logs-modal" onclick="event.stopPropagation()">
+            <div class="logs-head">
+              <h3>System console</h3>
+              <button onclick="closeSystemConsole()">Close</button>
+            </div>
+            <div class="logs-filters">
+              <select id="logs-level" onchange="refreshLogs()">
+                <option value="">All levels</option>
+                <option value="debug">Debug+</option>
+                <option value="info" selected>Info+</option>
+                <option value="warn">Warn+</option>
+                <option value="error">Error only</option>
+              </select>
+              <select id="logs-component" onchange="refreshLogs()">
+                <option value="">All components</option>
+              </select>
+              <select id="logs-since" onchange="refreshLogs()">
+                <option value="">Any time</option>
+                <option value="15m">Last 15m</option>
+                <option value="1h" selected>Last 1h</option>
+                <option value="6h">Last 6h</option>
+                <option value="24h">Last 24h</option>
+              </select>
+              <input type="search" id="logs-q" placeholder="Filter message / job id…" oninput="debouncedRefreshLogs()">
+              <label class="logs-auto"><input type="checkbox" id="logs-auto" onchange="toggleLogsAuto()"> Live</label>
+              <button onclick="refreshLogs()" title="Refresh">&#8635;</button>
+            </div>
+            <div class="logs-scroll" id="logs-scroll">
+              <div class="logs-empty">Loading…</div>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(host);
+      document.addEventListener('keydown', logsEscHandler);
+      refreshLogs();
+    }
+
+    function logsEscHandler(ev) { if (ev.key === 'Escape') closeSystemConsole(); }
+
+    function closeSystemConsole(e) {
+      if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
+      if (logsTimer) { clearInterval(logsTimer); logsTimer = null; }
+      document.removeEventListener('keydown', logsEscHandler);
+      const host = document.getElementById('logs-modal-host');
+      if (host) host.remove();
+    }
+
+    function toggleLogsAuto() {
+      const on = document.getElementById('logs-auto')?.checked;
+      if (logsTimer) { clearInterval(logsTimer); logsTimer = null; }
+      if (on) logsTimer = setInterval(() => refreshLogs(), 4000);
+    }
+
+    function debouncedRefreshLogs() {
+      clearTimeout(logsQDebounce);
+      logsQDebounce = setTimeout(() => refreshLogs(), 300);
+    }
+
+    async function refreshLogs() {
+      const scroll = document.getElementById('logs-scroll');
+      if (!scroll) return; // modal closed
+      const level = document.getElementById('logs-level')?.value || '';
+      const component = document.getElementById('logs-component')?.value || '';
+      const since = document.getElementById('logs-since')?.value || '';
+      const q = (document.getElementById('logs-q')?.value || '').trim();
+      const params = new URLSearchParams();
+      if (level) params.set('level', level);
+      if (component) params.set('component', component);
+      if (since) params.set('since', since);
+      if (q) params.set('q', q);
+      params.set('limit', '500');
+      try {
+        const res = await fetch('/api/logs?' + params.toString());
+        if (!res.ok) throw new Error(res.status === 401 ? 'authentication required' : ('HTTP ' + res.status));
+        const data = await res.json();
+        if (!document.getElementById('logs-scroll')) return; // closed mid-flight
+        populateLogComponents(data.components || []);
+        renderLogLines(data.logs || []);
+      } catch (err) {
+        scroll.innerHTML = `<div class="logs-empty">Couldn't load logs: ${escapeHtml(String(err.message || err))}</div>`;
+      }
+    }
+
+    function populateLogComponents(components) {
+      const sel = document.getElementById('logs-component');
+      if (!sel) return;
+      const cur = sel.value;
+      const want = [''].concat(components);
+      const have = Array.from(sel.options).map(o => o.value);
+      if (want.length === have.length && want.every((v, i) => v === have[i])) return;
+      sel.innerHTML = '<option value="">All components</option>' +
+        components.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      if (want.includes(cur)) sel.value = cur;
+    }
+
+    function renderLogLines(logs) {
+      const scroll = document.getElementById('logs-scroll');
+      if (!scroll) return;
+      if (!logs.length) {
+        scroll.innerHTML = '<div class="logs-empty">No log entries match.</div>';
+        return;
+      }
+      scroll.innerHTML = logs.map(e => {
+        const lvl = (e.level || 'info').toLowerCase();
+        const t = e.time ? new Date(e.time) : null;
+        const ts = t ? t.toLocaleTimeString([], { hour12: false }) : '';
+        let comp = e.component || '';
+        if (e.job_id) comp += (comp ? ' · ' : '') + e.job_id;
+        let meta = '';
+        if (e.work_id) meta += ` <span class="logs-meta">work=${e.work_id}</span>`;
+        if (e.fields) {
+          const extra = Object.entries(e.fields)
+            .filter(([k]) => k !== 'error' && k !== 'step')
+            .map(([k, v]) => `${k}=${v}`).join(' ');
+          if (extra) meta += ` <span class="logs-meta">${escapeHtml(extra)}</span>`;
+        }
+        const msg = e.message || '';
+        const msgOneLine = msg.replace(/\s+/g, ' ').trim();
+        return `<div class="logs-line lvl-${lvl}">
+          <span class="logs-time" title="${t ? escapeHtml(t.toLocaleString()) : ''}">${escapeHtml(ts)}</span>
+          <span class="logs-lvl ${lvl}">${escapeHtml(lvl)}</span>
+          <span class="logs-comp" title="${escapeHtml(comp)}">${escapeHtml(comp)}</span>
+          <span class="logs-msg" title="${escapeHtml(msg)}">${escapeHtml(msgOneLine)}${meta}</span>
+        </div>`;
+      }).join('');
     }
 
     // ---- .abook file summary (#199/#200) -------------------------------

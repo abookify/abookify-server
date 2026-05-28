@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/stt"
 	"github.com/pj/abookify/internal/tts"
@@ -48,6 +49,10 @@ type Generator struct {
 
 	mu      sync.Mutex
 	running map[string]bool
+	// lastStatus is the last status we logged per job id, so updateJob
+	// only emits a structured log on an actual transition (not every
+	// progress tick). Guarded by mu.
+	lastStatus map[string]string
 
 	queue chan queuedJob
 }
@@ -70,6 +75,9 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 			j.Status = "interrupted"
 			j.Error = "server restarted — will auto-resume"
 			store.UpsertJob(j)
+			applog.JobEvent(applog.LevelWarn, j.ID, j.WorkID,
+				"job interrupted: server restarted — will auto-resume",
+				map[string]any{"type": j.Type})
 		}
 	}
 
@@ -80,6 +88,7 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 		generatedDir: generatedDir,
 		onUpdate:     onUpdate,
 		running:      make(map[string]bool),
+		lastStatus:   make(map[string]string),
 		queue:        make(chan queuedJob, 50),
 	}
 
@@ -91,7 +100,8 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 		go func() {
 			time.Sleep(2 * time.Second) // let the rest of init finish
 			for _, j := range resumable {
-				log.Printf("auto-resuming %s job for work %d", j.Type, j.WorkID)
+				applog.JobEvent(applog.LevelInfo, j.ID, j.WorkID, "auto-resuming job after restart",
+					map[string]any{"type": j.Type})
 				switch j.Type {
 				case "tts":
 					g.GenerateAudioFromText(j.WorkID, 0, "") // will find text book + voice from settings
@@ -168,8 +178,40 @@ func (g *Generator) updateJob(job *JobStatus) {
 		Status: job.Status, Progress: job.Progress,
 		CurrentStep: job.CurrentStep, Error: job.Error,
 	})
+	g.logJobTransition(job)
 	if g.onUpdate != nil {
 		g.onUpdate(*job)
+	}
+}
+
+// logJobTransition emits a structured log only when a job's status
+// actually changes (queued→running→completed/failed/interrupted), so
+// progress ticks don't spam the console but every outcome — especially
+// *why* a job failed — is recorded for the System Console.
+func (g *Generator) logJobTransition(job *JobStatus) {
+	g.mu.Lock()
+	prev := g.lastStatus[job.ID]
+	g.lastStatus[job.ID] = job.Status
+	g.mu.Unlock()
+	if prev == job.Status {
+		return
+	}
+	fields := map[string]any{"type": job.Type}
+	if job.CurrentStep != "" {
+		fields["step"] = job.CurrentStep
+	}
+	switch job.Status {
+	case "failed":
+		fields["error"] = job.Error
+		applog.JobEvent(applog.LevelError, job.ID, job.WorkID, "job failed: "+job.Error, fields)
+	case "interrupted":
+		applog.JobEvent(applog.LevelWarn, job.ID, job.WorkID, "job interrupted: "+job.Error, fields)
+	case "completed":
+		applog.JobEvent(applog.LevelInfo, job.ID, job.WorkID, "job completed", fields)
+	case "running":
+		applog.JobEvent(applog.LevelInfo, job.ID, job.WorkID, "job started", fields)
+	case "queued":
+		applog.JobEvent(applog.LevelInfo, job.ID, job.WorkID, "job queued", fields)
 	}
 }
 

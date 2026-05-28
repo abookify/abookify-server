@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/scanner"
@@ -33,6 +34,11 @@ func main() {
 		log.Fatalf("failed to open database: %v", err)
 	}
 	defer store.Close()
+
+	// Structured logging (#214): persist a recent window + tee stdlib log
+	// into it so existing log.Printf calls show up in the System Console.
+	applog.Init(store)
+	applog.Info("system", "abookify server starting")
 
 	// Run initial scan with metadata extraction
 	results, err := scanner.Scan(*libraryPath)
