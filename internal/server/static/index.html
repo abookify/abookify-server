@@ -2566,21 +2566,26 @@
     async function switchTextEdition(workId, bookId) {
       bookId = parseInt(bookId);
       // Remember where we were so we can keep the reader near the same place
-      // in the new source (ordinal chapter position, clamped). The audio-time
-      // anchor / render-mode dispatch stays gated on the #209 timeline.
+      // in the new source. Sources can have very different chapter counts
+      // (e.g. EPUB front-matter sections vs. timed transcript chapters), so a
+      // raw index would clamp to the last chapter — map by PROPORTIONAL
+      // fraction through the book instead (mirrors mobile 8a6848e). The
+      // audio-time anchor / render-mode dispatch stays gated on the #209
+      // timeline.
       const prev = currentReaderChapter[workId];
-      let prevPos = 0;
+      let frac = 0;
       if (prev) {
         const oldChapters = chapterCache[prev.bookId]?.chapters || [];
         const p = oldChapters.findIndex(c => c.index === prev.index);
-        if (p >= 0) prevPos = p;
+        if (p >= 0 && oldChapters.length > 1) frac = p / (oldChapters.length - 1);
       }
       // Reload the chapter list for the new book.
       delete chapterCache[bookId]; // force reload
       await loadChapterList(bookId, workId);
       const chapters = chapterCache[bookId]?.chapters;
       if (chapters && chapters.length > 0) {
-        const target = chapters[Math.min(prevPos, chapters.length - 1)] || chapters[0];
+        const pos = Math.round(frac * (chapters.length - 1));
+        const target = chapters[Math.min(Math.max(pos, 0), chapters.length - 1)] || chapters[0];
         loadChapter(bookId, target.index, workId);
       }
       // Mirror the local in-memory state so a re-render picks the same
