@@ -162,6 +162,16 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// Serialize all access through a single connection. busy_timeout makes
+	// most writer-vs-writer contention wait it out, but it cannot cover a
+	// true deadlock (two connections each holding SHARED, both wanting
+	// RESERVED) — SQLite returns SQLITE_BUSY immediately without invoking
+	// the busy handler. A scanner/sidecar-import burst hit exactly that.
+	// With one connection there is never internal contention. This is safe
+	// here because no code holds a transaction or open *sql.Rows while
+	// issuing a second query, and the cost is nil for a single-user server.
+	db.SetMaxOpenConns(1)
+
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
