@@ -456,3 +456,22 @@ Stored payload (`AnchorAlignmentPayload`, the `pairs` JSON for `anchor`-method r
 Operational note: bulk-embedding 7.8k chunks via a second process (`align-cli`) contended with the running server on the SQLite WAL write lock (`SQLITE_BUSY`). Worked around with a resume loop (embeddings persist per-batch). Proper fix is to embed *through the server* (single writer) or add retry-on-BUSY to `EmbedBook` — flagged to server+web. Not a SQLite-fitness problem; an artifact of two writer processes.
 
 **Conclusion: the cross-translation problem is solved at paragraph level.** Lexical anchoring (0.2%) → semantic embeddings (100% of chunks matched, 75%+ monotonic). The local `nomic-embed-text` model is more than adequate — no paid API needed. Productionizing = embed paragraphs (RAG pipeline already does this) + DTW over the cosine matrix + the same coverage/divergence reporting. Routing stays coverage-driven: high lexical coverage → word-level anchor karaoke; near-zero → embedding+DTW for paragraph-level cross-translation correlation.
+
+---
+
+## Curiosities / future experiments (not core features)
+
+### Multi-translation cross-reference — "Rosetta" view (PJ, 2026-05-28)
+
+Idea (explicitly an experiment, not a core feature): tie several *different translations* of the same work to one audiobook and to each other. Test material on disk for Plato's Republic:
+- Audio: `/mnt/raid/audiobooks/Plato - The Republic` — a **theatrical/dramatized** production (already transcribed + embedding-aligned as work 30; its transcript is yet another modern translation).
+- `ebooks/philosophy/plato_dialogues_benjamin-jowett.epub` — Jowett (Victorian); the all-dialogues volume already aligned to work 30 (Republic localized to the 38–50% band, match_quality 0.843).
+- `ebooks/philosophy/The_Republic-Plato.epub` — a second standalone translation.
+- `ebooks/philosophy/Plato's Republic A Dialogue in Sixteen Chapters.mobi` — note the title suggests an *adapted/abridged* "sixteen chapters" rendering, not a straight translation — a good stress case (structure + wording both differ).
+
+Why it's tractable now: the embedding aligner already matches translation↔translation at paragraph level (that's exactly what the audio↔Jowett alignment is). So with N translations + 1 audio you can build a paragraph-keyed cross-reference:
+- Align audio→each translation (embedding, paragraph unit) — audio is the time spine.
+- Cross-reference any two translations either *directly* (embed both, chain-align) or *transitively* through the audio/shared paragraph index.
+- Reader: extend the source-toggle to N text sources of the *same* work — read any translation, see the corresponding passage in the others, hear the audio. `match_quality` per pair shows which translations track each other (and the audio) most closely.
+
+Open questions to play with: which translation is the display "spine"; how to render a paragraph that splits 1→2 across translations; whether the abridged "sixteen chapters" version aligns at all or just flags as low-coverage; whether transitive (A→audio→B) beats direct (A→B) embedding alignment. Park until the core word/paragraph reader (#210) ships.
