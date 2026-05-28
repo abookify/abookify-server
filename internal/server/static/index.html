@@ -324,11 +324,6 @@
     .work-menu-item .icon { width: 16px; text-align: center; opacity: 0.8; }
     .work-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
 
-    .expand-arrow {
-      color: var(--text-muted); font-size: 0.8rem; transition: transform 0.2s; flex-shrink: 0;
-    }
-    .work-card.expanded .expand-arrow { transform: rotate(90deg); }
-
     .work-body { display: none; border-top: 1px solid var(--border); }
     .work-card.expanded .work-body { display: block; }
 
@@ -338,41 +333,18 @@
     .split-pane + .split-pane { border-left: 1px solid var(--border); }
 
     /* When text chapters are time-synced to audio, the audio pane is
-       redundant — collapse to a single-column layout so the ebook+TOC pane
-       gets the full width. The audio pane retains its DOM (so playAudio's
-       row-highlighting code still finds elements) but is hidden visually.
-       The text pane reorganizes internally: header on top, chapter-list as
-       a 33% sidebar on the left, sync-panel + reader on the right. This
-       keeps the TOC visible at-a-glance while giving the reader text room
-       to breathe. */
+       redundant — collapse to a single column showing just the ebook TOC.
+       The reader itself lives in the now-playing overlay (#213), so there's
+       no reader/sync column here anymore. The audio pane keeps its DOM (so
+       playAudio's row-highlighting still finds elements) but is hidden. The
+       TOC is capped to a readable measure rather than spanning full bleed. */
     .split-view.unified { grid-template-columns: 1fr; }
     .split-view.unified > .split-pane.audio-pane { display: none; }
-    .split-view.unified > .split-pane:not(.audio-pane) {
-      display: grid;
-      grid-template-columns: minmax(240px, 33%) 1fr;
-      grid-template-rows: auto auto 1fr;
-      grid-template-areas:
-        "header header"
-        "list   sync"
-        "list   reader";
-    }
-    .split-view.unified > .split-pane:not(.audio-pane) > .pane-header { grid-area: header; }
     .split-view.unified > .split-pane:not(.audio-pane) > .chapter-list {
-      grid-area: list;
-      max-height: none !important;
-      border-right: 1px solid var(--border);
+      max-height: 420px;
+      max-width: 48rem;
+      margin: 0 auto;
       overflow-y: auto;
-    }
-    .split-view.unified > .split-pane:not(.audio-pane) > .sync-panel { grid-area: sync; }
-    .split-view.unified > .split-pane:not(.audio-pane) > .reader-content {
-      grid-area: reader;
-      /* Keep the reader scrollable inside the viewport instead of letting
-         a long chapter (Bonfire ch.3 is ~10k px) push the page height. The
-         offset reserves space for page header + pane-header + sync-panel +
-         player bar. min-height:0 lets the grid 1fr row actually shrink. */
-      max-height: calc(100vh - 220px);
-      overflow-y: auto;
-      min-height: 0;
     }
 
     /* Work-detail panes (#205) — the mock's bordered chapter panels.
@@ -905,18 +877,6 @@
       flex: 1; max-height: none; border-top: none; padding: 1.5rem 2rem;
       overflow-y: auto;
     }
-    /* Hint shown in the work card now that the reader has moved to the overlay. */
-    .reader-moved-hint {
-      padding: 0.65rem 0.9rem; font-size: 0.78rem;
-      color: var(--text-muted); border-top: 1px solid var(--border);
-      background: var(--bg); text-align: center;
-    }
-    .reader-moved-hint button {
-      background: rgba(78,204,163,0.15); border: 1px solid rgba(78,204,163,0.3);
-      color: var(--accent); border-radius: 4px; padding: 3px 10px;
-      cursor: pointer; font-size: 0.75rem; margin-left: 6px;
-    }
-    .reader-moved-hint button:hover { background: rgba(78,204,163,0.25); }
 
     /* Q&A panel */
     .qa-panel {
@@ -1216,34 +1176,19 @@
       .split-view { grid-template-columns: 1fr; }
       .split-pane + .split-pane { border-left: none; border-top: 1px solid var(--border); }
 
-      /* Unified mode (audio+text time-synced) uses an internal grid
-         with a 240px chapter sidebar — too wide on phones, where it
-         crushes the reader. Stack the regions vertically instead so
-         the reader gets the full screen width and the chapter list
-         + sync controls scroll above it. */
-      .split-view.unified > .split-pane:not(.audio-pane) {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto auto auto 1fr;
-        grid-template-areas:
-          "header"
-          "list"
-          "sync"
-          "reader";
-      }
+      /* Unified mode (audio+text time-synced) is now just a chapter TOC —
+         the reader lives in the overlay (#213). On phones let the TOC use
+         the full width and cap its height so it doesn't eat the screen. */
       .split-view.unified > .split-pane:not(.audio-pane) > .chapter-list {
-        max-height: 35vh !important;     /* don't let TOC eat the whole screen */
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-      }
-      .split-view.unified > .split-pane:not(.audio-pane) > .reader-content {
-        max-height: calc(100vh - 280px); /* leave room for header/list/sync/player */
+        max-width: none;
+        max-height: 50vh;
       }
 
       /* Work-card header on mobile:
-         Row 1: [cover] [title-block — fills the row] [⋯ menu] [arrow]
+         Row 1: [cover] [title-block — fills the row] [⋯ menu]
          Row 2: [audio badge] [text badge]
          Title-block reserves space for cover (~48px), menu (~32px),
-         arrow (~16px), and gaps; badges wrap below. */
+         and gaps; badges wrap below. */
       .work-header { flex-wrap: wrap; gap: 0.5rem 0.75rem; }
       .work-title-block { flex: 1 1 calc(100% - 140px); min-width: 0; }
       .work-title { font-size: 1rem; line-height: 1.3; word-break: break-word; }
@@ -1633,7 +1578,9 @@
             el.classList.add('complete');
             el.textContent = `✓ Finished · ${formatTimeHuman(total)}`;
           } else {
-            el.textContent = `▶ ${formatTimeHuman(elapsed)} of ${formatTimeHuman(total)} · ${pct}%`;
+            // Clock glyph (not a play triangle) so this reads as "time
+            // listened", distinct from the row's play button (#213).
+            el.textContent = `◷ ${formatTimeHuman(elapsed)} of ${formatTimeHuman(total)} · ${pct}%`;
           }
         } catch {}
       }));
@@ -1906,7 +1853,6 @@
                 onclick="event.stopPropagation();">
                 ${renderWorkMenu(work)}
               </div>
-              <span class="expand-arrow">&#9654;</span>
             </div>
             <div class="work-body">
               <div class="split-view">
@@ -2099,9 +2045,9 @@
       // refreshTextSourcePicker / orderedTextSources (#210).
 
       if (book.chapter_count > 0) {
-        // Reader content lives in the floating now-playing overlay — pick a
-        // chapter here and it opens there. Sync controls live in the overlay
-        // toolbar, so the work card just shows the TOC + a hint.
+        // The expanded card is just a chapter TOC now — clicking a chapter
+        // opens the reader in the now-playing overlay. No reader/sync panel
+        // here (#213).
         return `
           <div class="split-pane">
             <div class="pane-header text">&#128214; Ebook &middot; ${book.chapter_count} chapters</div>
@@ -2109,10 +2055,6 @@
               <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">
                 Loading chapters...
               </div>
-            </div>
-            <div class="reader-moved-hint">
-              Reader opens in the playback bar.
-              <button onclick="openOverlayFromWork(${work.id})">Open reader</button>
             </div>
           </div>`;
       }
