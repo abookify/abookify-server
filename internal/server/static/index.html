@@ -352,6 +352,8 @@
        wash — already accent-hued — so the two states stay distinct. */
     .chapter-row.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
     .chapter-row.playing { background: rgba(59,130,246,0.1); color: var(--text); }
+    /* Where the listener last left off, shown on TOC open before playback. */
+    .chapter-row.resume-here { box-shadow: inset 3px 0 0 var(--accent); }
     /* Per-chapter progress bar — fills left-to-right based on playback position.
        Set to 100% on chapters already finished, 0% on unstarted. The chapter
        currently playing gets the partial fill. */
@@ -2209,9 +2211,13 @@
             }
           }
         }
-        // Show resume indicator if there's a saved position
+        // Show resume indicator if there's a saved position. resumeIfSaved
+        // decorates the audio-file rows; markResumeOnTextToc decorates the
+        // visible ebook-pane TOC (the authoritative list for time-synced
+        // multi-file books, where the audio rows are hidden).
         if (work && work.has_audio) {
           resumeIfSaved(workId);
+          markResumeOnTextToc(workId);
         }
         // Hydrate chat sessions for the Q&A panel (no-op when LLM
         // isn't configured — the chat panel doesn't render).
@@ -2810,6 +2816,73 @@
           return false;
         };
         nameEl.appendChild(link);
+      } catch {}
+    }
+
+    // Surface the saved resume position on the VISIBLE text TOC when a work
+    // is opened — before any playback. resumeIfSaved only decorates the
+    // audio-file rows, which are hidden for time-synced multi-file books
+    // (there the ebook pane is the authoritative TOC), so opening e.g. the
+    // Norm book showed nothing until you pressed play. This highlights the
+    // text chapter that contains the saved book-absolute position and adds a
+    // click-to-resume affordance that plays from exactly where you left off.
+    async function markResumeOnTextToc(workId) {
+      try {
+        const work = allWorks.find(w => w.id === workId);
+        if (!work || !work.has_audio) return;
+        const { fileIdx, posSec } = await fetchResumePosition(work);
+        if (!(posSec > 0)) return;
+        const files = work.audio_files || [];
+        const file = files[fileIdx];
+        const fileStart = file && typeof file.start_sec === 'number' && file.start_sec > 0
+          ? file.start_sec
+          : files.slice(0, fileIdx).reduce((a, f) => a + (f.duration_secs || 0), 0);
+        const bookAbsSec = posSec + fileStart;
+        // The visible TOC is the display-text book's chapter list.
+        const textFiles = work.text_files || [];
+        let textBook = textFiles[0];
+        if (work.display_text_id) {
+          const pref = textFiles.find(t => t.id === work.display_text_id);
+          if (pref) textBook = pref;
+        }
+        if (!textBook) return;
+        const list = document.getElementById('text-chapters-' + textBook.id);
+        if (!list) return;
+        list.querySelectorAll('.chapter-row.resume-here').forEach(r => r.classList.remove('resume-here'));
+        list.querySelectorAll('.resume-indicator').forEach(el => el.remove());
+        const rows = list.querySelectorAll('.chapter-row');
+        let target = null;
+        rows.forEach(row => {
+          const start = parseFloat(row.dataset.start) || 0;
+          const end = parseFloat(row.dataset.end) || 0;
+          if (end > start && bookAbsSec >= start && bookAbsSec < end) target = row;
+        });
+        if (!target) {
+          // Position past the last chapter boundary — fall back to the last
+          // chapter that starts before it.
+          rows.forEach(row => {
+            const start = parseFloat(row.dataset.start) || 0;
+            if (bookAbsSec >= start) target = row;
+          });
+        }
+        if (!target) return;
+        target.classList.add('resume-here');
+        const nameEl = target.querySelector('.chapter-name');
+        if (nameEl) {
+          const link = document.createElement('a');
+          link.className = 'resume-indicator';
+          link.href = '#';
+          link.style.cssText = 'font-size:0.7rem;color:var(--accent);text-decoration:none;margin-left:6px;';
+          link.textContent = `(resume ${formatTime(bookAbsSec)})`;
+          link.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            seekToAbsoluteBookTime(work, bookAbsSec, work.title);
+            return false;
+          };
+          nameEl.appendChild(link);
+        }
+        if (target.scrollIntoView) target.scrollIntoView({ block: 'nearest' });
       } catch {}
     }
 
