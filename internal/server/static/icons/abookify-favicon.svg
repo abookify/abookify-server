@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="abookify">
+  <title>abookify</title>
+  <rect width="100" height="100" rx="20" fill="#1D4ED8"/>
+  <!-- Bars encode .abook (. a b o o k), inset 16 -->
+  <g fill="#FFFFFF" transform="translate(16.00, 16.00)">
+    <rect x="0.00" y="58.28" width="7.29" height="9.72" rx="3.64"/>
+    <rect x="12.14" y="34.00" width="7.29" height="34.00" rx="3.64"/>
+    <rect x="24.29" y="0.00" width="7.29" height="68.00" rx="3.64"/>
+    <rect x="36.43" y="34.00" width="7.29" height="34.00" rx="3.64"/>
+    <rect x="48.57" y="34.00" width="7.29" height="34.00" rx="3.64"/>
+    <rect x="60.71" y="0.00" width="7.29" height="68.00" rx="3.64"/>
+  </g>
+</svg>

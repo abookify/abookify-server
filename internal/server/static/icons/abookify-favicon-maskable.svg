@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="abookify">
+  <title>abookify</title>
+  <rect width="100" height="100" fill="#1D4ED8"/>
+  <!-- Bars within the maskable safe zone (inset 20) -->
+  <g fill="#FFFFFF" transform="translate(20.00, 20.00)">
+    <rect x="0.00" y="51.42" width="6.43" height="8.58" rx="3.21"/>
+    <rect x="10.71" y="30.00" width="6.43" height="30.00" rx="3.21"/>
+    <rect x="21.43" y="0.00" width="6.43" height="60.00" rx="3.21"/>
+    <rect x="32.14" y="30.00" width="6.43" height="30.00" rx="3.21"/>
+    <rect x="42.86" y="30.00" width="6.43" height="30.00" rx="3.21"/>
+    <rect x="53.57" y="0.00" width="6.43" height="60.00" rx="3.21"/>
+  </g>
+</svg>
