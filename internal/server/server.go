@@ -295,6 +295,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("GET /api/disk", s.handleDiskUsage)
+	mux.HandleFunc("POST /api/library/rescan", s.handleLibraryRescan)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
@@ -1741,6 +1742,31 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleLibraryRescan runs library.Rescan synchronously and returns
+// its summary. Safety valve for "the watcher missed something" —
+// rare but real on NFS/sshfs/fast-create-then-write sequences. Sync
+// because the operation is bounded (~1s for an ~800-file library)
+// and the UI wants a concrete result to render. Re-runs are safe;
+// every step short-circuits when the row/sidecar/chapters already
+// exist.
+func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
+	if s.LibraryDir == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
+		return
+	}
+	result, err := Rescan(s.store, s.LibraryDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Nudge listeners so the web/mobile work list reflects newly-created
+	// works without a manual refresh — mirrors the broadcast on import.
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleDiskUsage reports the on-disk footprint of the library and
