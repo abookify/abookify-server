@@ -346,6 +346,18 @@
         <label>Library Stats</label>
         <div id="lib-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading...</div>
       </div>
+      <div class="field">
+        <label>Anchor alignment</label>
+        <button type="button" id="align-all-btn" onclick="alignAll()"
+          style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
+          Re-align all works
+        </button>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          Backfills the audio↔ebook anchor alignment for every work that has both a transcript and an ebook.
+          Safe to re-run (idempotent). Progress lands in the System Console.
+        </div>
+        <div id="align-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
+      </div>
     </div>
 
     <div style="display:flex; align-items:center;">
@@ -657,6 +669,34 @@
       } finally {
         btn.disabled = false;
         btn.textContent = 'Rotate tunnel URL';
+      }
+    }
+
+    async function alignAll() {
+      const btn = document.getElementById('align-all-btn');
+      const msg = document.getElementById('align-all-msg');
+      btn.disabled = true;
+      btn.textContent = 'Aligning…';
+      msg.style.display = 'none';
+      msg.style.borderLeftColor = 'var(--accent)';
+      try {
+        const res = await fetch('/api/align-all', { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        msg.style.display = 'block';
+        const pct = (d.average_coverage * 100).toFixed(1);
+        msg.innerHTML =
+          '<b>Aligned ' + d.aligned + '</b> of ' + d.total + ' works · ' +
+          'skipped ' + d.skipped + ' (no transcript+ebook pair) · ' +
+          'errored ' + d.errored + ' · ' +
+          'avg coverage ' + pct + '%';
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.style.borderLeftColor = 'var(--danger)';
+        msg.textContent = 'Align-all failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Re-align all works';
       }
     }
 

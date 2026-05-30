@@ -261,6 +261,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/detect-chapters", s.handleDetectChapters)
 	mux.HandleFunc("POST /api/books/{id}/chapters", s.handleAddChapter)
 	mux.HandleFunc("POST /api/works/{id}/align", s.handleForceAlign)
+	mux.HandleFunc("POST /api/align-all", s.handleAlignAll)
 	mux.HandleFunc("POST /api/works/{id}/embed", s.handleEmbed)
 	mux.HandleFunc("POST /api/works/{id}/converse", s.handleConverse)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
@@ -1324,6 +1325,53 @@ func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"method":   "anchor",
 		"coverage": coverage,
+	})
+}
+
+// handleAlignAll backfills anchor alignment over the whole library. Useful
+// when an ebook is added to a work that was transcribed before the
+// post-STT auto-align hook existed (or before the work had an ebook peer).
+// Synchronous so the UI can show a one-shot summary; each work is
+// sub-second when chunks are cached.
+func (s *Server) handleAlignAll(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	applog.Info("align", fmt.Sprintf("align-all backfill starting (%d works)", len(works)))
+
+	var aligned, skipped, errored int
+	var totalCov float64
+	for _, wk := range works {
+		cov, err := library.ComputeAnchorAlignment(s.store, wk.ID)
+		if err != nil {
+			errored++
+			applog.Log(applog.LevelError, "align", "", wk.ID, "align-all: work failed",
+				map[string]any{"error": err.Error()})
+			continue
+		}
+		if cov == 0 {
+			skipped++ // no transcript or no ebook peer
+			continue
+		}
+		aligned++
+		totalCov += cov
+		applog.Log(applog.LevelInfo, "align", "", wk.ID, "align-all: work done",
+			map[string]any{"coverage": cov})
+	}
+	var avg float64
+	if aligned > 0 {
+		avg = totalCov / float64(aligned)
+	}
+	applog.Info("align", fmt.Sprintf("align-all backfill done: aligned=%d skipped=%d errored=%d avg=%.3f",
+		aligned, skipped, errored, avg))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":            len(works),
+		"aligned":          aligned,
+		"skipped":          skipped,
+		"errored":          errored,
+		"average_coverage": avg,
 	})
 }
 
