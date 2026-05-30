@@ -93,6 +93,20 @@
       color: var(--text); background: rgba(255,255,255,0.04);
       padding: 1px 6px; border-radius: var(--radius-sm); font-size: 0.78rem;
     }
+    .field .saved-key .clear-key-btn {
+      margin-left: var(--space-2);
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--border);
+      padding: 1px 8px;
+      border-radius: var(--radius-sm);
+      font-size: 0.72rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .field .saved-key .clear-key-btn:hover {
+      border-color: var(--danger);
+    }
 
     .status-row {
       display: flex; align-items: center; gap: var(--space-2);
@@ -308,6 +322,7 @@
         <input type="password" id="llm-api-key" autocomplete="off" placeholder="sk-… (paste to replace, leave empty to keep)">
         <div class="saved-key" id="llm-api-key-saved" style="display:none;">
           Saved key: <code id="llm-api-key-mask"></code>
+          <button type="button" class="clear-key-btn" onclick="clearSavedKey('llm-api-key', 'llm_api_key')">Clear</button>
         </div>
       </div>
       <div class="field">
@@ -340,6 +355,7 @@
         <input type="password" id="voice-api-key" autocomplete="off" placeholder="paste to replace, leave empty to keep">
         <div class="saved-key" id="voice-api-key-saved" style="display:none;">
           Saved key: <code id="voice-api-key-mask"></code>
+          <button type="button" class="clear-key-btn" onclick="clearSavedKey('voice-api-key', 'voice_api_key')">Clear</button>
         </div>
       </div>
       <div class="hint">Voice chat is a premium feature that uses real-time speech-to-speech AI. Your audio is sent to the selected provider for processing.</div>
@@ -454,6 +470,35 @@
       if (v) return v;
       if (_savedMasks[inputId]) return _savedMasks[inputId];
       return '';
+    }
+
+    // Immediately wipe a saved secret. POSTs an empty string for the
+    // single setting key — bypasses the saveSettings() flow so an
+    // unrelated dirty field doesn't get clobbered alongside the clear,
+    // and so the user doesn't have to remember to click Save.
+    async function clearSavedKey(inputId, settingKey) {
+      if (!confirm('Clear the saved key? You can paste a new one anytime.')) return;
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({[settingKey]: ''}),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        delete _savedMasks[inputId];
+        const row = document.getElementById(inputId + '-saved');
+        if (row) row.style.display = 'none';
+        const input = document.getElementById(inputId);
+        if (input) input.value = '';
+        const msg = document.getElementById('save-msg');
+        if (msg) {
+          msg.textContent = 'Cleared';
+          msg.style.display = 'inline';
+          setTimeout(() => { msg.style.display = 'none'; msg.textContent = 'Saved!'; }, 2000);
+        }
+      } catch (e) {
+        alert('Failed to clear key: ' + e.message);
+      }
     }
 
     async function loadSettings() {
