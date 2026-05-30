@@ -26,7 +26,6 @@ import (
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
-	"github.com/pj/abookify/internal/scanner"
 )
 
 //go:embed static
@@ -635,6 +634,9 @@ func (s *Server) handleMergeWorks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("merged work %d into work %d", req.SourceID, targetID)
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "merged"})
 }
 
@@ -645,6 +647,9 @@ func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("deleted work %d", id)
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1075,6 +1080,9 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -1286,21 +1294,19 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		saved = append(saved, fh.Filename)
 		log.Printf("upload: saved %s (%d bytes)", fh.Filename, fh.Size)
 	}
-	// Trigger a library rescan in the background.
+	// Trigger a library rescan in the background — same path the
+	// Settings "Rescan now" button uses, so MOBI conversion + sidecar
+	// import + chapter extraction all run on uploaded files for free.
 	go func() {
-		// Convert any MOBI/AZW3/AZW the upload landed into sibling EPUBs
-		// before scanning, so the scanner sees both representations.
-		library.ConvertMobiFilesInDir(s.LibraryDir)
-		results, err := scanner.Scan(s.LibraryDir)
+		result, err := Rescan(s.store, s.LibraryDir)
 		if err != nil {
 			log.Printf("upload: rescan failed: %v", err)
 			return
 		}
-		for _, r := range results {
-			s.store.UpsertBook(r)
+		log.Printf("upload: rescan complete — %d new/changed, %d new works", result.Scanned, result.NewWorks)
+		if s.Events != nil {
+			s.Events.Broadcast(Event{Type: "library_updated"})
 		}
-		library.MatchAndCreateWorks(s.store)
-		log.Printf("upload: rescan complete, %d files found", len(results))
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"uploaded": len(saved), "files": saved})
 }
