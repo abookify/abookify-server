@@ -45,6 +45,11 @@ type Server struct {
 	// a backfill while a per-work embed is already running.
 	embedMu      sync.Mutex
 	embedInFlight map[int64]bool
+
+	// alignment dedupe — same shape as embedInFlight; protects against two
+	// post-STT auto-align goroutines racing on the same work.
+	alignMu      sync.Mutex
+	alignInFlight map[int64]bool
 }
 
 // RAG returns the current LLM RAG client, or nil when no LLM is
@@ -107,6 +112,7 @@ func (s *Server) OnJobUpdate(job library.JobStatus) {
 	s.Events.Broadcast(Event{Type: "job_update", Data: job})
 	if job.Type == "stt" && job.Status == "completed" && job.WorkID > 0 {
 		go s.EmbedWorkAsync(job.WorkID)
+		go s.AlignWorkAsync(job.WorkID)
 	}
 }
 
@@ -156,6 +162,40 @@ func (s *Server) EmbedWorkAsync(workID int64) {
 	}
 }
 
+// AlignWorkAsync runs the anchor aligner on the work in the background.
+// Triggered on STT completion so a newly-transcribed audiobook paired with
+// an ebook gets its render-ready alignment row without a manual /align call.
+// No-op when the work lacks either a transcript or an ebook peer (coverage
+// 0, nil err). Logs to applog component "align" so failures land in the
+// System Console without surfacing as STT errors.
+func (s *Server) AlignWorkAsync(workID int64) {
+	s.alignMu.Lock()
+	if s.alignInFlight[workID] {
+		s.alignMu.Unlock()
+		return
+	}
+	s.alignInFlight[workID] = true
+	s.alignMu.Unlock()
+	defer func() {
+		s.alignMu.Lock()
+		delete(s.alignInFlight, workID)
+		s.alignMu.Unlock()
+	}()
+
+	coverage, err := library.ComputeAnchorAlignment(s.store, workID)
+	if err != nil {
+		applog.Log(applog.LevelError, "align", "", workID, "auto-align failed",
+			map[string]any{"error": err.Error(), "trigger": "stt-completed"})
+		return
+	}
+	if coverage > 0 {
+		applog.Log(applog.LevelInfo, "align", "", workID, "auto-align done",
+			map[string]any{"coverage": coverage, "trigger": "stt-completed"})
+	}
+	// coverage==0 + nil err means the work has no ebook/transcript pair —
+	// nothing to align, nothing worth logging.
+}
+
 // embedAllWorks runs EmbedWorkAsync for every work in the library.
 // Fired on the LLM-enable transition so works added while no LLM was
 // configured get backfilled. Each per-work embed is a no-op when its
@@ -176,6 +216,7 @@ func New(store *db.Store, port string) *Server {
 		store:         store,
 		Events:        NewEventBus(),
 		embedInFlight: make(map[int64]bool),
+		alignInFlight: make(map[int64]bool),
 	}
 
 	// Drop any login tokens that expired while the server was down (#197).
