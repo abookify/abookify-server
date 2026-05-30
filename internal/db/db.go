@@ -1426,6 +1426,7 @@ type LogFilter struct {
 	MinLevel  applog.Level // entries at or above this severity
 	Component string       // exact component match
 	JobID     string       // exact job id match
+	WorkID    int64        // exact work id match (0 = no filter)
 	Query     string       // case-insensitive substring of the message
 	Since     time.Time    // only entries at/after this time
 	Limit     int          // default 200, capped at 2000
@@ -1496,6 +1497,10 @@ func (s *Store) QueryLogs(f LogFilter) ([]applog.Entry, error) {
 	if f.JobID != "" {
 		where = append(where, "job_id = ?")
 		args = append(args, f.JobID)
+	}
+	if f.WorkID > 0 {
+		where = append(where, "work_id = ?")
+		args = append(args, f.WorkID)
 	}
 	if f.Query != "" {
 		where = append(where, "message LIKE ?")

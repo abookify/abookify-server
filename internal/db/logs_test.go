@@ -76,6 +76,15 @@ func TestLogsInsertQueryFilters(t *testing.T) {
 		t.Errorf("job_id filter: want 2, got %d", len(byJob))
 	}
 
+	// Work id filter (matches both job-tagged rows; the 2 system rows have work_id=0).
+	byWork, err := store.QueryLogs(LogFilter{WorkID: 42, Limit: 100})
+	if err != nil {
+		t.Fatalf("QueryLogs work_id: %v", err)
+	}
+	if len(byWork) != 2 {
+		t.Errorf("work_id filter: want 2, got %d", len(byWork))
+	}
+
 	// Message substring.
 	q, err := store.QueryLogs(LogFilter{Query: "connection", Limit: 100})
 	if err != nil {

@@ -329,6 +329,8 @@
     .logs-meta { color: var(--muted); }
     .logs-line.lvl-error .logs-msg { color: #fca5a5; }
     .logs-line.lvl-warn .logs-msg { color: #fcd9a5; }
+    .logs-filter-link { color: inherit; text-decoration: none; cursor: pointer; border-bottom: 1px dotted currentColor; }
+    .logs-filter-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
     .logs-empty { padding: 2.2rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
 
     /* Per-work progress: thin "Listened: HH:MM (NN%)" line under the
@@ -2279,6 +2281,8 @@
     // Filter by level/component/time/text; "Live" polls every few seconds.
     let logsTimer = null;
     let logsQDebounce = null;
+    let logsJobFilter = '';
+    let logsWorkFilter = '';
 
     function openSystemConsole(e) {
       if (e) e.preventDefault();
@@ -2313,7 +2317,9 @@
               <input type="search" id="logs-q" placeholder="Filter message / job id…" oninput="debouncedRefreshLogs()">
               <label class="logs-auto"><input type="checkbox" id="logs-auto" onchange="toggleLogsAuto()"> Live</label>
               <button onclick="refreshLogs()" title="Refresh">&#8635;</button>
+              <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear</button>
             </div>
+            <div class="logs-active-filters" id="logs-active-filters" style="display:none; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;"></div>
             <div class="logs-scroll" id="logs-scroll">
               <div class="logs-empty">Loading…</div>
             </div>
@@ -2345,6 +2351,37 @@
       logsQDebounce = setTimeout(() => refreshLogs(), 300);
     }
 
+    // Click-to-filter from log rows. Click again to clear.
+    function setLogJobFilter(jobId) {
+      logsJobFilter = (logsJobFilter === jobId) ? '' : jobId;
+      renderActiveLogFilters();
+      refreshLogs();
+    }
+    function setLogWorkFilter(workId) {
+      const w = String(workId || '');
+      logsWorkFilter = (logsWorkFilter === w) ? '' : w;
+      renderActiveLogFilters();
+      refreshLogs();
+    }
+    function clearLogFilters() {
+      logsJobFilter = ''; logsWorkFilter = '';
+      const lvl = document.getElementById('logs-level'); if (lvl) lvl.value = 'info';
+      const cmp = document.getElementById('logs-component'); if (cmp) cmp.value = '';
+      const snc = document.getElementById('logs-since'); if (snc) snc.value = '1h';
+      const qIn = document.getElementById('logs-q'); if (qIn) qIn.value = '';
+      renderActiveLogFilters();
+      refreshLogs();
+    }
+    function renderActiveLogFilters() {
+      const host = document.getElementById('logs-active-filters');
+      if (!host) return;
+      const chips = [];
+      if (logsJobFilter) chips.push(`<span style="display:inline-flex; align-items:center; gap:0.4rem; padding:3px 8px; background:var(--accent-soft); color:var(--accent); border-radius:999px; font-size:0.75rem;">job=${escapeHtml(logsJobFilter)}<a href="#" onclick="event.preventDefault(); setLogJobFilter(logsJobFilter)" style="color:inherit; text-decoration:none;">&times;</a></span>`);
+      if (logsWorkFilter) chips.push(`<span style="display:inline-flex; align-items:center; gap:0.4rem; padding:3px 8px; background:var(--accent-soft); color:var(--accent); border-radius:999px; font-size:0.75rem;">work=${escapeHtml(logsWorkFilter)}<a href="#" onclick="event.preventDefault(); setLogWorkFilter(logsWorkFilter)" style="color:inherit; text-decoration:none;">&times;</a></span>`);
+      host.innerHTML = chips.join('');
+      host.style.display = chips.length ? 'flex' : 'none';
+    }
+
     async function refreshLogs() {
       const scroll = document.getElementById('logs-scroll');
       if (!scroll) return; // modal closed
@@ -2357,6 +2394,8 @@
       if (component) params.set('component', component);
       if (since) params.set('since', since);
       if (q) params.set('q', q);
+      if (logsJobFilter) params.set('job_id', logsJobFilter);
+      if (logsWorkFilter) params.set('work_id', logsWorkFilter);
       params.set('limit', '500');
       try {
         const res = await fetch('/api/logs?' + params.toString());
@@ -2393,10 +2432,22 @@
         const lvl = (e.level || 'info').toLowerCase();
         const t = e.time ? new Date(e.time) : null;
         const ts = t ? t.toLocaleTimeString([], { hour12: false }) : '';
-        let comp = e.component || '';
-        if (e.job_id) comp += (comp ? ' · ' : '') + e.job_id;
+        const compText = e.component || '';
+        const fullComp = compText + (e.job_id ? (compText ? ' · ' : '') + e.job_id : '');
+        // Component cell: component as text, then job_id (if any) as a
+        // click-to-filter chip. Click again or × in the active-filter strip
+        // to clear.
+        let compCell = escapeHtml(compText);
+        if (e.job_id) {
+          const jb = escapeHtml(e.job_id);
+          compCell += compText ? ' · ' : '';
+          compCell += `<a href="#" class="logs-filter-link" title="Filter to this job" onclick="event.preventDefault(); setLogJobFilter('${jb}')">${jb}</a>`;
+        }
         let meta = '';
-        if (e.work_id) meta += ` <span class="logs-meta">work=${e.work_id}</span>`;
+        if (e.work_id) {
+          const wid = e.work_id;
+          meta += ` <a href="#" class="logs-filter-link logs-meta" title="Filter to this work" onclick="event.preventDefault(); setLogWorkFilter(${wid})">work=${wid}</a>`;
+        }
         if (e.fields) {
           const extra = Object.entries(e.fields)
             .filter(([k]) => k !== 'error' && k !== 'step')
@@ -2408,7 +2459,7 @@
         return `<div class="logs-line lvl-${lvl}">
           <span class="logs-time" title="${t ? escapeHtml(t.toLocaleString()) : ''}">${escapeHtml(ts)}</span>
           <span class="logs-lvl ${lvl}">${escapeHtml(lvl)}</span>
-          <span class="logs-comp" title="${escapeHtml(comp)}">${escapeHtml(comp)}</span>
+          <span class="logs-comp" title="${escapeHtml(fullComp)}">${compCell}</span>
           <span class="logs-msg" title="${escapeHtml(msg)}">${escapeHtml(msgOneLine)}${meta}</span>
         </div>`;
       }).join('');

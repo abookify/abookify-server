@@ -19,6 +19,7 @@ import (
 //	level=info        minimum severity (debug|info|warn|error)
 //	component=jobs    exact component
 //	job_id=stt-redo-12 exact job id
+//	work_id=28         exact work id
 //	q=connection      case-insensitive message substring
 //	since=1h          relative window (Go duration) or RFC3339 timestamp
 //	limit=200         max rows (capped at 2000)
@@ -29,6 +30,9 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 		Component: strings.TrimSpace(q.Get("component")),
 		JobID:     strings.TrimSpace(q.Get("job_id")),
 		Query:     strings.TrimSpace(q.Get("q")),
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(q.Get("work_id")), 10, 64); err == nil && n > 0 {
+		f.WorkID = n
 	}
 
 	switch strings.ToLower(strings.TrimSpace(q.Get("level"))) {
