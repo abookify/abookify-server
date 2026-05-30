@@ -405,7 +405,24 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	if works == nil {
 		works = []db.Work{}
 	}
-	writeJSON(w, http.StatusOK, works)
+	// Enrich each work with its best alignment so the work-list UI can show
+	// a coverage pill without an N+1 fetch. One SQL query for the whole library.
+	best, _ := s.store.BestAlignmentByWork()
+	type workWithAlign struct {
+		db.Work
+		Coverage        *float64 `json:"coverage,omitempty"`
+		AlignmentMethod string   `json:"alignment_method,omitempty"`
+	}
+	out := make([]workWithAlign, len(works))
+	for i, wk := range works {
+		out[i].Work = wk
+		if ba, ok := best[wk.ID]; ok {
+			cov := ba.Confidence
+			out[i].Coverage = &cov
+			out[i].AlignmentMethod = ba.Method
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {

@@ -1685,6 +1685,38 @@ func (s *Store) ListAlignmentsForWork(workID int64) ([]Alignment, error) {
 	return out, rows.Err()
 }
 
+// BestAlignmentByWork returns, for every work that has at least one alignment
+// row, the (method, confidence) of its highest-confidence row. Lets the work
+// list surface a coverage indicator without loading every work's pairs blob.
+type BestAlignment struct {
+	Method     string
+	Confidence float64
+}
+
+func (s *Store) BestAlignmentByWork() (map[int64]BestAlignment, error) {
+	rows, err := s.db.Query(`
+		SELECT work_id, method, confidence
+		FROM alignments
+		ORDER BY work_id, confidence DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]BestAlignment{}
+	for rows.Next() {
+		var wid int64
+		var ba BestAlignment
+		if err := rows.Scan(&wid, &ba.Method, &ba.Confidence); err != nil {
+			return nil, err
+		}
+		if _, seen := out[wid]; !seen { // ORDER BY guarantees this is the best
+			out[wid] = ba
+		}
+	}
+	return out, rows.Err()
+}
+
 // ListAlignmentsForBook returns all alignments where the given book is either
 // the from or to side. Used by ResolvePath to build a composition chain.
 func (s *Store) ListAlignmentsForBook(bookID int64) ([]Alignment, error) {
