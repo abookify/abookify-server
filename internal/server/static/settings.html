@@ -107,6 +107,26 @@
     .field .saved-key .clear-key-btn:hover {
       border-color: var(--danger);
     }
+    .key-test-row {
+      margin-top: var(--space-2);
+      display: flex; align-items: center; gap: var(--space-2);
+      font-size: 0.78rem;
+    }
+    .key-test-row .test-btn {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.78rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .key-test-row .test-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .key-test-row .test-btn:disabled { opacity: 0.6; cursor: progress; }
+    .key-test-result { color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .key-test-result.ok { color: var(--success); }
+    .key-test-result.err { color: var(--danger); }
 
     .status-row {
       display: flex; align-items: center; gap: var(--space-2);
@@ -324,6 +344,10 @@
           Saved key: <code id="llm-api-key-mask"></code>
           <button type="button" class="clear-key-btn" onclick="clearSavedKey('llm-api-key', 'llm_api_key')">Clear</button>
         </div>
+        <div class="key-test-row">
+          <button type="button" class="test-btn" id="llm-test-btn" onclick="testLLM()">Test connection</button>
+          <span class="key-test-result" id="llm-test-result"></span>
+        </div>
       </div>
       <div class="field">
         <label>Model</label>
@@ -498,6 +522,53 @@
         }
       } catch (e) {
         alert('Failed to clear key: ' + e.message);
+      }
+    }
+
+    // Probe the LLM provider with a one-token completion so the user
+    // can confirm a key works *before* trusting Q&A with it. Tests the
+    // pending form state (typed-but-not-saved) when present; otherwise
+    // the server falls back to the stored key. Result lands inline next
+    // to the button — never blocks anything.
+    async function testLLM() {
+      const btn = document.getElementById('llm-test-btn');
+      const resEl = document.getElementById('llm-test-result');
+      resEl.className = 'key-test-result';
+      resEl.textContent = 'Testing…';
+      btn.disabled = true;
+
+      // Resolve the model the same way saveSettings does: dropdown wins
+      // unless it's __custom__ or empty, in which case fall to the
+      // free-text input.
+      const sel = document.getElementById('llm-model-select').value;
+      const txt = document.getElementById('llm-model').value.trim();
+      const model = (sel && sel !== '__custom__') ? sel : txt;
+
+      const body = {
+        provider: document.getElementById('llm-provider').value,
+        api_key: document.getElementById('llm-api-key').value, // empty → server uses stored
+        model,
+        base_url: document.getElementById('llm-base-url').value,
+      };
+      try {
+        const r = await fetch('/api/llm/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          resEl.className = 'key-test-result ok';
+          resEl.textContent = `✓ Connected · ${j.latency_ms} ms · ${j.model}`;
+        } else {
+          resEl.className = 'key-test-result err';
+          resEl.textContent = `✗ ${j.error || 'failed'}`;
+        }
+      } catch (e) {
+        resEl.className = 'key-test-result err';
+        resEl.textContent = `✗ ${e.message}`;
+      } finally {
+        btn.disabled = false;
       }
     }
 

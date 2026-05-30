@@ -291,6 +291,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
+	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
@@ -1678,6 +1679,73 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleTestLLM probes the configured LLM with a single-token completion
+// so the Settings UI can confirm a key is valid before the user trusts
+// Q&A with it. POST body is fully optional — any missing field falls
+// back to the stored setting, so the button works for "test what's
+// saved" as well as "test the key I just pasted but haven't saved".
+//
+// Returns 200 in both success and failure cases (the failure is part
+// of the legitimate response, not an HTTP error). Shape:
+//
+//	{"ok": true,  "latency_ms": 320, "model": "gpt-4o"}
+//	{"ok": false, "latency_ms":  80, "error": "openai error 401: ..."}
+func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+		Model    string `json:"model"`
+		BaseURL  string `json:"base_url"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	settings, _ := s.store.GetAllSettings()
+	if body.Provider == "" {
+		body.Provider = settings["llm_provider"]
+	}
+	// Masked secret in the body means "the UI didn't touch the key" —
+	// fall through to the stored value just like handleSaveSettings does.
+	if body.APIKey == "" || isMaskedSecret(body.APIKey) {
+		body.APIKey = settings["llm_api_key"]
+	}
+	if body.Model == "" {
+		body.Model = settings["llm_model"]
+	}
+	if body.BaseURL == "" {
+		body.BaseURL = settings["llm_base_url"]
+	}
+
+	if body.Provider == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "no provider configured"})
+		return
+	}
+	if body.Provider != "ollama" && body.APIKey == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "no API key set"})
+		return
+	}
+
+	client := llm.NewClient(llm.Provider(body.Provider), body.APIKey, body.Model, body.BaseURL)
+	start := time.Now()
+	_, err := client.Complete(llm.CompletionRequest{
+		Messages:  []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 5,
+	})
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"error":      err.Error(),
+			"latency_ms": latencyMs,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"latency_ms": latencyMs,
+		"model":      client.Model(),
+	})
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
