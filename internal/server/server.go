@@ -1224,6 +1224,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	// Trigger a library rescan in the background.
 	go func() {
+		// Convert any MOBI/AZW3/AZW the upload landed into sibling EPUBs
+		// before scanning, so the scanner sees both representations.
+		library.ConvertMobiFilesInDir(s.LibraryDir)
 		results, err := scanner.Scan(s.LibraryDir)
 		if err != nil {
 			log.Printf("upload: rescan failed: %v", err)

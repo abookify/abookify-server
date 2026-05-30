@@ -17,6 +17,10 @@ import (
 var supportedExts = map[string]string{
 	".epub": "epub", ".pdf": "pdf", ".mp3": "mp3",
 	".m4b": "m4b", ".m4a": "m4a", ".flac": "flac", ".aac": "aac",
+	// MOBI family: routed through ConvertMobiToEpub in processPending so
+	// a sibling .epub is produced, and the EPUB chapter-extraction path
+	// runs on the converted file (via the next debounce tick).
+	".mobi": "mobi", ".azw3": "mobi", ".azw": "mobi",
 }
 
 var audioExts = map[string]bool{
@@ -231,6 +235,16 @@ func (w *Watcher) processPending() {
 		}
 		changed = true
 		log.Printf("watcher: ingested %s", filepath.Base(path))
+
+		// MOBI/AZW3/AZW: produce a sibling .epub if missing. The new file
+		// fires its own fsnotify Create event which lands back here via
+		// the next debounce tick, taking the EPUB chapter-extraction path
+		// below.
+		if format == "mobi" {
+			if _, cerr := ConvertMobiToEpub(path); cerr != nil {
+				log.Printf("watcher: mobi convert: %v", cerr)
+			}
+		}
 
 		// Extract chapters for EPUBs
 		if format == "epub" {

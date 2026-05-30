@@ -40,6 +40,12 @@ func main() {
 	applog.Init(store)
 	applog.Info("system", "abookify server starting")
 
+	// MOBI/AZW3/AZW → sibling .epub via calibre's ebook-convert (image
+	// dep). Idempotent — skips files that already have a sibling .epub.
+	// Lets the scanner + EPUB chapter extractor handle ebook formats
+	// without a separate parser path.
+	library.ConvertMobiFilesInDir(*libraryPath)
+
 	// Run initial scan with metadata extraction
 	results, err := scanner.Scan(*libraryPath)
 	if err != nil {
