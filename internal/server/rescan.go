@@ -42,10 +42,24 @@ func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 
 	library.ConvertMobiFilesInDir(libraryRoot)
 
-	results, err := scanner.Scan(libraryRoot)
+	// Build a path→size map of what's already in the DB so the scanner
+	// can skip ID3/EPUB metadata extraction for unchanged files. On a
+	// large library this is the difference between a multi-second sweep
+	// and a 50-second one — and the row is already correct anyway.
+	known := map[string]int64{}
+	if existing, err := store.ListBooks(); err == nil {
+		for _, b := range existing {
+			known[b.Path] = b.SizeBytes
+		}
+	}
+
+	results, err := scanner.ScanIncremental(libraryRoot, known)
 	if err != nil {
 		return res, fmt.Errorf("scan: %w", err)
 	}
+	// `Scanned` is now "new or changed since the last DB write" — the
+	// number that matters for a manual rescan. Unchanged files are
+	// elided by ScanIncremental so they don't appear here.
 	res.Scanned = len(results)
 	for _, r := range results {
 		if err := store.UpsertBook(r); err == nil {

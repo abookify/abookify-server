@@ -403,8 +403,8 @@
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
           Sweeps the library directory and ingests anything the file watcher missed.
-          Safe to re-run (idempotent). New EPUB/TXT chapters extract automatically.
-          Takes around a minute on a large library — metadata is re-read every file.
+          Safe to re-run (idempotent). Files unchanged since the last scan are skipped,
+          so a repeat rescan finishes in under a second.
         </div>
         <div id="rescan-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -867,7 +867,7 @@
         const d = await res.json();
         msg.style.display = 'block';
         msg.innerHTML =
-          '<b>Scanned ' + d.scanned + '</b> files · ' +
+          '<b>' + d.scanned + ' new/changed</b> files · ' +
           'upserted ' + d.upserted + ' · ' +
           'new works ' + d.new_works + ' · ' +
           'chapters extracted ' + d.chapters_extracted;

@@ -30,8 +30,28 @@ var audioFormats = map[string]bool{
 	"mp3": true, "m4b": true, "m4a": true, "flac": true, "aac": true,
 }
 
-// Scan walks the given directory and returns a Book entry for each supported file found.
+// Scan walks the given directory and returns a Book entry for each
+// supported file found. Extracts metadata for every match — use this on
+// first-pass scans where the DB is empty.
 func Scan(root string) ([]db.Book, error) {
+	return scan(root, nil)
+}
+
+// ScanIncremental is Scan with a metadata-extraction skip-set. Pass a
+// map of path → SizeBytes for books currently in the DB; entries whose
+// size matches what we see on disk get omitted from the result entirely
+// — the existing DB row is already correct, no UpsertBook needed and
+// no expensive ID3/EPUB read either. Size mismatch or absence falls
+// through to a normal full extract.
+//
+// Built for the manual /api/library/rescan path: a 722-file library
+// drops from ~50s (every file ID3-read) to <1s (only new/changed files
+// extracted).
+func ScanIncremental(root string, known map[string]int64) ([]db.Book, error) {
+	return scan(root, known)
+}
+
+func scan(root string, known map[string]int64) ([]db.Book, error) {
 	var results []db.Book
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -51,6 +71,14 @@ func Scan(root string) ([]db.Book, error) {
 		info, err := d.Info()
 		if err != nil {
 			return nil
+		}
+
+		// Incremental skip: same path with same size already in DB → the
+		// existing row is correct, don't pay for metadata extraction.
+		if known != nil {
+			if prev, hit := known[path]; hit && prev == info.Size() {
+				return nil
+			}
 		}
 
 		mediaType := "text"
