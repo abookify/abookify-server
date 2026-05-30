@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/pj/abookify/internal/abook"
+	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
@@ -1270,14 +1271,18 @@ func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	aligned, conf, err := library.ComputeTranscriptEbookAlignment(s.store, workID)
+	coverage, err := library.ComputeAnchorAlignment(s.store, workID)
 	if err != nil {
+		applog.Log(applog.LevelError, "align", "", workID, "anchor align failed",
+			map[string]any{"error": err.Error()})
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	applog.Log(applog.LevelInfo, "align", "", workID, "anchor align done",
+		map[string]any{"coverage": coverage})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"chapters_aligned":    aligned,
-		"average_confidence":  conf,
+		"method":   "anchor",
+		"coverage": coverage,
 	})
 }
 
