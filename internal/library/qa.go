@@ -324,7 +324,8 @@ type alignmentContext struct {
 
 type ebookAlignmentData struct {
 	transcriptBookID int64
-	pairs            []db.AlignmentPair
+	pairs            []db.AlignmentPair       // edit-distance method
+	anchor           *AnchorAlignmentPayload  // anchor/embedding (render-ready, preferred)
 }
 
 func newAlignmentContext(store *db.Store, workID int64) *alignmentContext {
@@ -338,19 +339,34 @@ func newAlignmentContext(store *db.Store, workID int64) *alignmentContext {
 	if work != nil && len(work.AudioFiles) > 0 {
 		ac.audioBookID = work.AudioFiles[0].ID
 	}
-	// Preload alignments.
+	// Preload alignments. Anchor/embedding payloads are render-ready (audio
+	// times baked) so we prefer them over edit-distance when both exist for
+	// the same ebook.
 	alignments, _ := store.ListAlignmentsForWork(workID)
 	for _, a := range alignments {
-		if a.Method != "edit-distance" {
-			continue
-		}
-		var pairs []db.AlignmentPair
-		if err := json.Unmarshal([]byte(a.Pairs), &pairs); err != nil {
-			continue
-		}
-		ac.byEbookBook[a.FromBookID] = &ebookAlignmentData{
-			transcriptBookID: a.ToBookID,
-			pairs:            pairs,
+		switch a.Method {
+		case "edit-distance":
+			var pairs []db.AlignmentPair
+			if err := json.Unmarshal([]byte(a.Pairs), &pairs); err != nil {
+				continue
+			}
+			d := ac.byEbookBook[a.FromBookID]
+			if d == nil {
+				d = &ebookAlignmentData{transcriptBookID: a.ToBookID}
+				ac.byEbookBook[a.FromBookID] = d
+			}
+			d.pairs = pairs
+		case "anchor", "embedding":
+			var payload AnchorAlignmentPayload
+			if err := json.Unmarshal([]byte(a.Pairs), &payload); err != nil {
+				continue
+			}
+			d := ac.byEbookBook[a.FromBookID]
+			if d == nil {
+				d = &ebookAlignmentData{transcriptBookID: a.ToBookID}
+				ac.byEbookBook[a.FromBookID] = d
+			}
+			d.anchor = &payload
 		}
 	}
 	return ac
@@ -386,10 +402,16 @@ func (ac *alignmentContext) audioTimesFor(chunk db.Chunk) (int64, float64, float
 	}
 
 	// Case 2: chunk is in an ebook — use alignment to map ebook word range
-	// to transcript word range, then transcript to audio time.
+	// to audio time. Anchor/embedding payloads have baked audio times; the
+	// edit-distance fallback composes pairs with sync_data.
 	aln, ok := ac.byEbookBook[chunk.BookID]
 	if !ok {
 		return 0, 0, 0, false
+	}
+	if aln.anchor != nil {
+		if abID, s, e, ok := ac.anchorTimesFor(chunk, aln.anchor); ok {
+			return abID, s, e, true
+		}
 	}
 	// Find alignment pair(s) covering this chunk's word range.
 	var tStart, tEnd int = -1, -1
@@ -424,6 +446,87 @@ func (ac *alignmentContext) audioTimesFor(chunk db.Chunk) (int64, float64, float
 		endIdx = tStart
 	}
 	return ac.audioBookID, ts[tStart].Start, ts[endIdx].End, true
+}
+
+// anchorTimesFor resolves audio times for an ebook chunk using a render-ready
+// AnchorAlignmentPayload. Maps the chunk's chapter-local word range to global
+// ebook offsets via EbookChapters, then finds overlapping aligned segments and
+// reads the baked audio times directly (no sync_data needed).
+func (ac *alignmentContext) anchorTimesFor(chunk db.Chunk, p *AnchorAlignmentPayload) (int64, float64, float64, bool) {
+	var base, length int = -1, 0
+	for _, cs := range p.EbookChapters {
+		if cs.Index == chunk.ChapterIdx {
+			base = cs.Start
+			length = cs.Len
+			break
+		}
+	}
+	if base < 0 {
+		return 0, 0, 0, false
+	}
+	lo := chunk.StartWord
+	hi := chunk.EndWord
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > length {
+		hi = length
+	}
+	if hi <= lo {
+		return 0, 0, 0, false
+	}
+	gStart := base + lo
+	gEnd := base + hi
+
+	var startSec, endSec float64 = -1, -1
+	for _, s := range p.Segments {
+		if s.Kind != SegAligned {
+			continue
+		}
+		segLo := max(gStart, s.EbookStart)
+		segHi := min(gEnd, s.EbookEnd)
+		if segLo >= segHi {
+			continue
+		}
+		var sStart, sEnd float64
+		if len(s.WordSecs) > 0 {
+			// Word path: WordSecs[i] = start of the (EbookStart+i)-th ebook word.
+			relStart := segLo - s.EbookStart
+			relEnd := segHi - s.EbookStart // half-open
+			if relStart < 0 {
+				relStart = 0
+			}
+			if relStart >= len(s.WordSecs) {
+				relStart = len(s.WordSecs) - 1
+			}
+			sStart = s.WordSecs[relStart]
+			if relEnd >= len(s.WordSecs) {
+				sEnd = s.EndSec
+			} else {
+				sEnd = s.WordSecs[relEnd]
+			}
+		} else {
+			// Paragraph path: interpolate within the segment's time range.
+			span := s.EbookEnd - s.EbookStart
+			if span <= 0 {
+				sStart, sEnd = s.StartSec, s.EndSec
+			} else {
+				dur := s.EndSec - s.StartSec
+				sStart = s.StartSec + dur*float64(segLo-s.EbookStart)/float64(span)
+				sEnd = s.StartSec + dur*float64(segHi-s.EbookStart)/float64(span)
+			}
+		}
+		if startSec < 0 || sStart < startSec {
+			startSec = sStart
+		}
+		if sEnd > endSec {
+			endSec = sEnd
+		}
+	}
+	if startSec < 0 {
+		return 0, 0, 0, false
+	}
+	return ac.audioBookID, startSec, endSec, true
 }
 
 // loadSync fetches (and caches) sync_data for an (audioBookID, chapterIdx).
