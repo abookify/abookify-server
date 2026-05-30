@@ -11,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -292,6 +294,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
+	mux.HandleFunc("GET /api/disk", s.handleDiskUsage)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
@@ -1738,6 +1741,62 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleDiskUsage reports the on-disk footprint of the library and
+// generated-audio directories plus the filesystem free space available
+// to each. The Settings page surfaces this so an impending "no space
+// left on device" — the kind that just blocked a sibling MOBI write
+// during development — is visible *before* it bites a real ingest.
+//
+// Shape:
+//
+//	{
+//	  "library":   {"path": "/library",   "used": 12839848, "free": 6442450944},
+//	  "generated": {"path": "/generated", "used":  210763,   "free": 6442450944}
+//	}
+//
+// Either entry is omitted when its server-side path isn't configured.
+// `free` is the user-available number (Statfs_t.Bavail × Bsize), the
+// same one `df -h` shows in its "Avail" column.
+func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{}
+	if s.LibraryDir != "" {
+		out["library"] = pathDiskStats(s.LibraryDir)
+	}
+	if s.GeneratedDir != "" {
+		out["generated"] = pathDiskStats(s.GeneratedDir)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// pathDiskStats walks `path` to total used bytes and queries the
+// containing filesystem for available bytes. Errors fall through as
+// zero — better to show "0 bytes" than to fail the whole settings
+// page over a missing dir on first boot.
+func pathDiskStats(path string) map[string]any {
+	var used int64
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		used += info.Size()
+		return nil
+	})
+	var free int64
+	var statfs syscall.Statfs_t
+	if syscall.Statfs(path, &statfs) == nil {
+		free = int64(statfs.Bavail) * int64(statfs.Bsize)
+	}
+	return map[string]any{
+		"path": path,
+		"used": used,
+		"free": free,
+	}
 }
 
 // handleTestLLM probes the configured LLM with a single-token completion

@@ -392,6 +392,10 @@
         <div id="lib-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading...</div>
       </div>
       <div class="field">
+        <label>Disk space</label>
+        <div id="disk-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading…</div>
+      </div>
+      <div class="field">
         <label>Anchor alignment</label>
         <button type="button" id="align-all-btn" onclick="alignAll()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
@@ -755,6 +759,43 @@
           : (totalBytes / (1024*1024)).toFixed(0) + ' MB';
         document.getElementById('lib-stats').textContent =
           `${works.length} works, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
+      } catch {}
+
+      // Disk-space readout. Renders used (library + generated) and free,
+      // tints amber under 10 GB free or 10% remaining, red under 1 GB or
+      // 2% — gives PJ a fighting chance to catch "no space left" before
+      // it bites an ingest. Free can be identical across the two paths
+      // when they share a filesystem; deduped to one line in that case.
+      try {
+        const disk = await fetch('/api/disk').then(r => r.json());
+        const fmt = b => {
+          if (!b && b !== 0) return '?';
+          if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(1) + ' GB';
+          if (b >= 1024*1024) return (b / (1024*1024)).toFixed(0) + ' MB';
+          return Math.max(1, Math.round(b/1024)) + ' KB';
+        };
+        const lib = disk.library, gen = disk.generated;
+        const usedTotal = (lib?.used || 0) + (gen?.used || 0);
+        const free = Math.min(lib?.free ?? Infinity, gen?.free ?? Infinity);
+        const total = usedTotal + (Number.isFinite(free) ? free : 0);
+        const pctFree = total > 0 ? free / total : 1;
+        const el = document.getElementById('disk-stats');
+        const sameFs = lib && gen && lib.free === gen.free;
+        let line = `${fmt(lib?.used || 0)} library`;
+        if (gen) line += ` · ${fmt(gen.used)} generated audio`;
+        if (Number.isFinite(free)) {
+          line += ` · ${fmt(free)} free`;
+          if (!sameFs && lib && gen && lib.free !== gen.free) {
+            line += ` (${fmt(lib.free)} library / ${fmt(gen.free)} generated)`;
+          }
+        }
+        el.textContent = line;
+        // Threshold colors: same scheme as the diff-view coverage pill.
+        el.style.color = '';
+        if (Number.isFinite(free)) {
+          if (free < 1024*1024*1024 || pctFree < 0.02) el.style.color = 'var(--danger)';
+          else if (free < 10*1024*1024*1024 || pctFree < 0.10) el.style.color = 'var(--ebook-only, #f0a500)';
+        }
       } catch {}
     }
 
