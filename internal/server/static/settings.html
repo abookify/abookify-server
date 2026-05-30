@@ -711,28 +711,35 @@
     }
 
     async function checkServices() {
-      // Health check goes through our own /api/health — the server proxies
-      // out to TTS/STT on its own network. Going direct to a service port
-      // breaks when this page is loaded from anything other than localhost
-      // (the phone's "localhost" isn't the server's).
-      try {
-        await fetch('/api/health');
-      } catch {}
-
-      // Just check via our own health + jobs for now
+      // /api/health proxies the TTS + STT probes — going direct to a
+      // service port breaks when this page is loaded from anything
+      // other than localhost (the phone's "localhost" isn't the
+      // server's). Per-service state lands under `services.{tts,stt}`
+      // as 'ok' or 'down'; absent means the client isn't wired up.
+      const setDot = (id, state) => {
+        const dot = document.getElementById(id + '-dot');
+        const label = document.getElementById(id + '-status');
+        dot.classList.remove('ok', 'err');
+        if (state === 'ok') {
+          dot.classList.add('ok');
+          label.textContent = 'Connected';
+        } else if (state === 'down') {
+          dot.classList.add('err');
+          label.textContent = 'Unavailable';
+        } else {
+          dot.classList.add('err');
+          label.textContent = 'Not configured';
+        }
+      };
       try {
         const res = await fetch('/api/health');
-        if (res.ok) {
-          document.getElementById('tts-dot').classList.add('ok');
-          document.getElementById('tts-status').textContent = 'Connected';
-          document.getElementById('stt-dot').classList.add('ok');
-          document.getElementById('stt-status').textContent = 'Connected';
-        }
+        const j = res.ok ? await res.json() : {};
+        const svc = (j && j.services) || {};
+        setDot('tts', svc.tts);
+        setDot('stt', svc.stt);
       } catch {
-        document.getElementById('tts-dot').classList.add('err');
-        document.getElementById('tts-status').textContent = 'Unavailable';
-        document.getElementById('stt-dot').classList.add('err');
-        document.getElementById('stt-status').textContent = 'Unavailable';
+        setDot('tts', 'down');
+        setDot('stt', 'down');
       }
 
       // Library stats

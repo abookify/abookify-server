@@ -326,8 +326,67 @@ func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
 }
 
+// handleHealth reports server liveness plus the reachability of the
+// upstream TTS and STT services so the Settings page can show honest
+// per-service status dots (the old version always lit both green off
+// the server's own 200). Probes run in parallel and are bounded by
+// probeTimeout so a hung Whisper doesn't stall the response.
+//
+// Shape:
+//
+//	{"status": "ok", "services": {"tts": "ok"|"down", "stt": "ok"|"down"}}
+//
+// A service is omitted from `services` when the client isn't wired up
+// (e.g. no Generator). The top-level `status` always reflects the
+// server itself, not the upstreams — callers that only need liveness
+// (containers, the access-log filter) can keep ignoring `services`.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	const probeTimeout = 2 * time.Second
+	services := map[string]string{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Probe a single upstream via its Health() method. Bounds the wait
+	// with a select; the goroutine can leak briefly if the upstream
+	// has a half-open TCP connection (the underlying http.Client has
+	// no client-level timeout), but Go's transport defaults cap that
+	// at the OS TCP timeout (~30-75s) — bounded and rare in practice.
+	probe := func(name string, check func() error) {
+		defer wg.Done()
+		done := make(chan error, 1)
+		go func() { done <- check() }()
+		var status string
+		select {
+		case err := <-done:
+			if err == nil {
+				status = "ok"
+			} else {
+				status = "down"
+			}
+		case <-time.After(probeTimeout):
+			status = "down"
+		}
+		mu.Lock()
+		services[name] = status
+		mu.Unlock()
+	}
+
+	if s.Generator != nil {
+		if c := s.Generator.TTSClient(); c != nil {
+			wg.Add(1)
+			go probe("tts", c.Health)
+		}
+		if c := s.Generator.STTClient(); c != nil {
+			wg.Add(1)
+			go probe("stt", c.Health)
+		}
+	}
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"services": services,
+	})
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
