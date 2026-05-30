@@ -396,6 +396,20 @@
         <div id="disk-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading…</div>
       </div>
       <div class="field">
+        <label>RAG embeddings</label>
+        <div id="embed-coverage" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:6px;">Loading…</div>
+        <button type="button" id="embed-refresh-btn" onclick="refreshEmbeddings()"
+          style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
+          Refresh embeddings
+        </button>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          Backfills the vector index for any chunk missing an embedding.
+          Without embeddings, Q&amp;A falls back to keyword search.
+          Requires an LLM provider with embedding support (OpenAI or Ollama).
+        </div>
+        <div id="embed-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
+      </div>
+      <div class="field">
         <label>Rescan library</label>
         <button type="button" id="rescan-btn" onclick="rescanLibrary()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
@@ -822,6 +836,7 @@
     }
     refreshPairing();
     setInterval(refreshPairing, 9 * 60 * 1000);
+    loadEmbeddingCoverage();
 
     async function rotateTunnel() {
       if (!confirm(
@@ -851,6 +866,72 @@
       } finally {
         btn.disabled = false;
         btn.textContent = 'Rotate tunnel URL';
+      }
+    }
+
+    async function loadEmbeddingCoverage() {
+      try {
+        const r = await fetch('/api/embeddings/coverage');
+        const j = await r.json();
+        const el = document.getElementById('embed-coverage');
+        const btn = document.getElementById('embed-refresh-btn');
+        const pct = j.percent.toFixed(1);
+        const fmt = n => n.toLocaleString();
+        el.textContent = `${fmt(j.embedded)} of ${fmt(j.total)} chunks embedded (${pct}%)`;
+        // Threshold colors: same scheme as disk + coverage pill.
+        el.style.color = '';
+        if (j.total > 0) {
+          if (j.percent < 30) el.style.color = 'var(--danger)';
+          else if (j.percent < 80) el.style.color = 'var(--ebook-only, #f0a500)';
+          else el.style.color = 'var(--success)';
+        }
+        // Disable refresh when no LLM is configured — the button would
+        // just 503. Keep it visible so the user knows the feature exists.
+        if (!j.llm_configured) {
+          btn.disabled = true;
+          btn.title = 'Configure an LLM provider in Book Q&A first';
+          btn.style.opacity = '0.5';
+          btn.style.cursor = 'not-allowed';
+        } else {
+          btn.disabled = false;
+          btn.title = '';
+          btn.style.opacity = '';
+          btn.style.cursor = 'pointer';
+        }
+      } catch {}
+    }
+
+    async function refreshEmbeddings() {
+      const btn = document.getElementById('embed-refresh-btn');
+      const msg = document.getElementById('embed-msg');
+      btn.disabled = true;
+      btn.textContent = 'Queueing…';
+      msg.style.display = 'none';
+      msg.style.borderLeftColor = 'var(--accent)';
+      try {
+        const res = await fetch('/api/embeddings/refresh', { method: 'POST' });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || ('HTTP ' + res.status));
+        }
+        const d = await res.json();
+        msg.style.display = 'block';
+        msg.innerHTML =
+          'Queued <b>' + d.works_queued + '</b> works for backfill. ' +
+          'Progress lands in the System Console (embed/rag).';
+        // Coverage updates as embeds complete — poll a few times then back off.
+        let attempts = 0;
+        const tick = setInterval(() => {
+          loadEmbeddingCoverage();
+          if (++attempts > 8) clearInterval(tick);
+        }, 15000);
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.style.borderLeftColor = 'var(--danger)';
+        msg.textContent = 'Refresh failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Refresh embeddings';
       }
     }
 

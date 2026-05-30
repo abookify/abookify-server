@@ -295,6 +295,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("GET /api/disk", s.handleDiskUsage)
 	mux.HandleFunc("POST /api/library/rescan", s.handleLibraryRescan)
+	mux.HandleFunc("GET /api/embeddings/coverage", s.handleEmbeddingsCoverage)
+	mux.HandleFunc("POST /api/embeddings/refresh", s.handleEmbeddingsRefresh)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/works/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
@@ -1748,6 +1750,70 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleEmbeddingsCoverage reports how much of the chunk table has
+// embeddings populated. RAG silently falls back to keyword search for
+// any chunk missing an embedding — so a low percentage means most of
+// the library's Q&A is degraded even when the LLM is configured.
+// Settings surfaces this so the gap is visible.
+//
+// Shape:
+//
+//	{"total": 57039, "embedded": 10234, "percent": 17.9, "llm_configured": true}
+//
+// llm_configured tells the UI whether the "Refresh embeddings" button
+// is actionable (no LLM → no embeddings can be computed).
+func (s *Server) handleEmbeddingsCoverage(w http.ResponseWriter, r *http.Request) {
+	total, embedded, err := s.store.EmbeddingCoverage()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	pct := 0.0
+	if total > 0 {
+		pct = float64(embedded) / float64(total) * 100
+	}
+	llmReady := false
+	if rag := s.RAG(); rag != nil && rag.Client() != nil {
+		llmReady = true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":          total,
+		"embedded":       embedded,
+		"percent":        pct,
+		"llm_configured": llmReady,
+	})
+}
+
+// handleEmbeddingsRefresh kicks off a backfill across every work in
+// the library. Each per-work embed short-circuits when all the work's
+// chunks already have embeddings, so re-running is cheap. Returns the
+// number of works queued; actual progress lands in the System Console
+// via applog (embed/rag component).
+//
+// Pre-existing infrastructure: embedAllWorks runs the same loop on
+// nil→client LLM transitions (#159), so a fresh key auto-backfills.
+// This endpoint is the manual button for "I want to backfill now"
+// without needing to re-enter the key.
+func (s *Server) handleEmbeddingsRefresh(w http.ResponseWriter, r *http.Request) {
+	rag := s.RAG()
+	if rag == nil || rag.Client() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "no LLM configured — set a provider/key in Settings",
+		})
+		return
+	}
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	go s.embedAllWorks()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"works_queued": len(works),
+		"status":       "started",
+	})
 }
 
 // handleLibraryRescan runs library.Rescan synchronously and returns

@@ -1192,6 +1192,15 @@ func (s *Store) ChunkCount(bookID int64) (int, error) {
 	return count, err
 }
 
+// EmbeddingCoverage returns the total chunk count and the count with a
+// non-NULL embedding column. Used by the Settings page to surface how
+// much of the library's RAG corpus is vector-searchable vs the
+// keyword-only fallback. Both numbers are repo-wide (not per-book).
+func (s *Store) EmbeddingCoverage() (total, withEmbedding int, err error) {
+	err = s.db.QueryRow(`SELECT COUNT(*), COUNT(embedding) FROM chunks`).Scan(&total, &withEmbedding)
+	return
+}
+
 // DeleteChunksByBook removes every chunk row for a book — used when a
 // reprocess pass invalidates chapter boundaries and the chunks need to
 // be rebuilt against new chapter splits.
