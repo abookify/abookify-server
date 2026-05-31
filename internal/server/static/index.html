@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>abookify</title>
+  <title>Abookify Web</title>
 
   <!-- abookify favicon + icons -->
   <link rel="icon" href="/icons/favicon.ico" sizes="any">
@@ -176,6 +176,11 @@
       overflow: hidden; transition: border-color 0.15s;
     }
     .work-card:hover { border-color: var(--muted); }
+    /* overflow:hidden keeps the body's rounded corners, but it also clips
+       the header's ... popover when the card is collapsed (the popover
+       spills below the header, outside the card box). Let an open menu
+       escape so the trigger works in both collapsed and expanded states. */
+    .work-card:has(.work-menu-popover.open) { overflow: visible; }
 
     .work-header {
       padding: var(--space-5) var(--space-6); cursor: pointer; user-select: none;
