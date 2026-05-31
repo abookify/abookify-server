@@ -1,52 +1,42 @@
 package abook
 
-// Manifest is the top-level manifest.json in an .abook file.
+// BookDBSchemaVersion is the current shape of the per-work book.db carved
+// into a .abook v2 container. Bump this whenever the book.db tables/columns
+// change; mobile compares its installed copy's stamp against the server's
+// (via GET /api/works/{id}/version) to decide whether to re-pull. This is
+// independent of the manifest's container Version (which stays 2).
+const BookDBSchemaVersion = 1
+
+// Manifest is manifest.json — the lightweight identity + version + asset map
+// at the root of a .abook v2 container. The heavy per-work detail lives in
+// book.db; this file is what mobile reads first to decide install/update.
 type Manifest struct {
-	Format    string    `json:"format"`
-	Version   int       `json:"version"`
-	Title     string    `json:"title"`
-	Author    string    `json:"author"`
-	Language  string    `json:"language"`
-	Created   string    `json:"created"`
-	Generator string    `json:"generator"`
-	Chapters  []Chapter `json:"chapters"`
-	TTSVoice  string    `json:"tts_voice,omitempty"`
-	STTModel  string    `json:"stt_model,omitempty"`
-	Source    *Source   `json:"source,omitempty"`
-	// v2 additions — backward compatible
-	Series      string   `json:"series,omitempty"`
-	SeriesIndex float64  `json:"series_index,omitempty"`
-	Cover       string   `json:"cover,omitempty"`       // path within zip, e.g. "cover.jpg"
-	Bookmarks   string   `json:"bookmarks,omitempty"`   // "bookmarks.json" if present
-	Alignments  []string `json:"alignments,omitempty"`  // paths to alignment JSON files
-	Origin      string   `json:"origin,omitempty"`      // origin tag of primary source
+	Format   string `json:"format"`  // always "abook"
+	Version  int    `json:"version"` // container format version (2)
+	WorkID   int64  `json:"work_id"`
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+	Language string `json:"language"`
+	// SourceKind summarizes what this work is: "aligned" | "transcript" |
+	// "text-only" | "audio-only". Drives the library listing badge.
+	SourceKind string `json:"source_kind"`
+	// Version stamps mirrored from works (and into book.db.meta). SchemaVersion
+	// is the book.db shape; ContentVersion is the RFC3339 UTC last-process time.
+	SchemaVersion  int    `json:"schema_version"`
+	ContentVersion string `json:"content_version"`
+	Generator      string `json:"generator"`
+	// Alignment summary — null when the work has no alignment.
+	CoveragePct *float64 `json:"coverage_pct"`
+	AlignMethod *string  `json:"align_method"`
+	AlignUnit   *string  `json:"align_unit"`
+	Assets      Assets   `json:"assets"`
+	// Checksums maps in-zip asset path -> "sha256:<hex>". Currently book.db.
+	Checksums map[string]string `json:"checksums"`
 }
 
-type Chapter struct {
-	Index       int     `json:"index"`
-	Title       string  `json:"title"`
-	Text        string  `json:"text,omitempty"`
-	Audio       string  `json:"audio,omitempty"`
-	Sync        string  `json:"sync,omitempty"`
-	DurationSec float64 `json:"duration_secs,omitempty"`
-	WordCount   int     `json:"word_count,omitempty"`
-}
-
-type Source struct {
-	TextOrigin  string `json:"text_origin,omitempty"`
-	AudioOrigin string `json:"audio_origin,omitempty"`
-}
-
-// SyncData holds word-level timestamps for a chapter.
-type SyncData struct {
-	Format  string      `json:"format"`
-	Version int         `json:"version"`
-	Words   []SyncWord  `json:"words"`
-}
-
-// SyncWord is [start, end, "word"] — but we use a struct for Go, serialize as array.
-type SyncWord struct {
-	Start float64
-	End   float64
-	Word  string
+// Assets maps the logical assets to their paths inside the zip.
+type Assets struct {
+	DB       string `json:"db"`        // "book.db"
+	AudioDir string `json:"audio_dir"` // "audio/"
+	Cover    string `json:"cover"`     // "cover.jpg" ("" when absent)
 }

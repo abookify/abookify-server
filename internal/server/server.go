@@ -192,6 +192,7 @@ func (s *Server) AlignWorkAsync(workID int64) {
 	if coverage > 0 {
 		applog.Log(applog.LevelInfo, "align", "", workID, "auto-align done",
 			map[string]any{"coverage": coverage, "trigger": "stt-completed"})
+		s.stampWork(workID)
 	}
 	// coverage==0 + nil err means the work has no ebook/transcript pair —
 	// nothing to align, nothing worth logging.
@@ -241,6 +242,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/books/{id}/stream", s.handleStreamBook)
 	mux.HandleFunc("GET /api/works", s.handleListWorks)
 	mux.HandleFunc("GET /api/works/{id}", s.handleGetWork)
+	mux.HandleFunc("GET /api/works/{id}/version", s.handleWorkVersion)
+	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
 	mux.HandleFunc("POST /api/works/{id}/fetch-cover", s.handleFetchCover)
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
@@ -302,6 +305,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)
 	mux.HandleFunc("DELETE /api/bookmarks/{id}", s.handleDeleteBookmark)
 	mux.HandleFunc("GET /api/works/{id}/export.abook", s.handleExportAbook)
+	mux.HandleFunc("POST /api/export-all", s.handleExportAll)
 	mux.HandleFunc("POST /api/import", s.handleImportAbook)
 	mux.HandleFunc("POST /api/devices/register", s.handleRegisterDevice)
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
@@ -522,6 +526,90 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		resp.DisplayAudioID = &da.ID
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleWorkVersion is the cheap update-check endpoint: mobile stores the
+// versions it installed and polls this to decide whether to re-pull the
+// .abook. See design/local-first-sync.md.
+func (s *Server) handleWorkVersion(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	schemaVersion, contentVersion, found, err := s.store.GetVersions(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schema_version":  schemaVersion,
+		"content_version": contentVersion,
+	})
+}
+
+// handleCatalog returns library-listing summaries only — no chapters, content,
+// or alignment pairs. This is the read shape that mirrors the device's
+// catalog.db so the home screen never cracks open per-book detail.
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	type catalogEntry struct {
+		ID             int64    `json:"id"`
+		Title          string   `json:"title"`
+		Author         string   `json:"author"`
+		Language       string   `json:"language"`
+		CoverPath      string   `json:"cover_path"`
+		HasAudio       bool     `json:"has_audio"`
+		HasText        bool     `json:"has_text"`
+		SourceKind     string   `json:"source_kind"`
+		CoveragePct    *float64 `json:"coverage_pct"`
+		AlignMethod    *string  `json:"align_method"`
+		AlignUnit      *string  `json:"align_unit"`
+		ContentVersion string   `json:"content_version"`
+		SchemaVersion  int      `json:"schema_version"`
+		UpdatedAt      string   `json:"updated_at"`
+	}
+	out := make([]catalogEntry, 0, len(works))
+	for i := range works {
+		wk := &works[i]
+		sum := abook.SummarizeWork(s.store, wk)
+		out = append(out, catalogEntry{
+			ID:             wk.ID,
+			Title:          wk.Title,
+			Author:         wk.Author,
+			Language:       "en",
+			CoverPath:      fmt.Sprintf("/api/works/%d/cover", wk.ID),
+			HasAudio:       wk.HasAudio,
+			HasText:        wk.HasText,
+			SourceKind:     sum.SourceKind,
+			CoveragePct:    sum.CoveragePct,
+			AlignMethod:    sum.AlignMethod,
+			AlignUnit:      sum.AlignUnit,
+			ContentVersion: wk.ContentVersion,
+			SchemaVersion:  wk.SchemaVersion,
+			UpdatedAt:      wk.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// stampWork records that a work's exportable data just changed, bumping its
+// content_version (and re-stamping schema_version to the current book.db
+// shape) so mobile's update-check sees it. Best-effort: a stamp failure is
+// logged but never fails the originating request.
+func (s *Server) stampWork(workID int64) {
+	if err := s.store.StampVersions(workID, abook.BookDBSchemaVersion); err != nil {
+		applog.Log(applog.LevelWarn, "server", "", workID, "version stamp failed",
+			map[string]any{"error": err.Error()})
+	}
 }
 
 func (s *Server) handleListChapters(w http.ResponseWriter, r *http.Request) {
@@ -1082,6 +1170,7 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.stampWork(workID)
 	if s.Events != nil {
 		s.Events.Broadcast(Event{Type: "library_updated"})
 	}
@@ -1414,6 +1503,7 @@ func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
 	}
 	applog.Log(applog.LevelInfo, "align", "", workID, "anchor align done",
 		map[string]any{"coverage": coverage})
+	s.stampWork(workID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"method":   "anchor",
 		"coverage": coverage,
@@ -1449,6 +1539,7 @@ func (s *Server) handleAlignAll(w http.ResponseWriter, r *http.Request) {
 		}
 		aligned++
 		totalCov += cov
+		s.stampWork(wk.ID)
 		applog.Log(applog.LevelInfo, "align", "", wk.ID, "align-all: work done",
 			map[string]any{"coverage": cov})
 	}
@@ -1596,6 +1687,54 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-abook+zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.abook"`, safeName))
 	http.ServeFile(w, r, tmpPath)
+}
+
+// handleExportAll regenerates the derived v2 .abook set for every aligned
+// work into {libraryDir}/exports/work-{id}.abook. Audio is omitted (book.db +
+// manifest + cover only) so a full sweep stays small; audio streams from the
+// server or is pulled separately. Idempotent — overwrites existing files.
+func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	exportDir := filepath.Join(s.LibraryDir, "exports")
+	if err := os.MkdirAll(exportDir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var exported, skipped, failed int
+	for i := range works {
+		wk := &works[i]
+		if abook.SummarizeWork(s.store, wk).SourceKind != "aligned" {
+			skipped++
+			continue
+		}
+		// GetWork loads the audio/text book rows the carve needs.
+		full, err := s.store.GetWork(wk.ID)
+		if err != nil || full == nil {
+			failed++
+			continue
+		}
+		out := filepath.Join(exportDir, fmt.Sprintf("work-%d.abook", wk.ID))
+		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: false}); err != nil {
+			applog.Log(applog.LevelError, "server", "", wk.ID, "export-all: work failed",
+				map[string]any{"error": err.Error()})
+			failed++
+			continue
+		}
+		exported++
+	}
+	applog.Info("server", fmt.Sprintf("export-all: exported=%d skipped=%d failed=%d dir=%s",
+		exported, skipped, failed, exportDir))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"exported": exported,
+		"skipped":  skipped,
+		"failed":   failed,
+		"dir":      exportDir,
+	})
 }
 
 func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {

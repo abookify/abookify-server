@@ -35,6 +35,11 @@ type Work struct {
 	TextFiles    []Book         `json:"text_files,omitempty"`
 	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
 	TotalSize    int64          `json:"total_size"`
+	// Local-first sync stamps. SchemaVersion is the book.db shape this work
+	// would export under; ContentVersion is the RFC3339 UTC time of its last
+	// (re)process. See StampVersions and design/local-first-sync.md.
+	SchemaVersion  int    `json:"schema_version"`
+	ContentVersion string `json:"content_version"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
@@ -479,6 +484,13 @@ func migrate(db *sql.DB) error {
 		// wants the transcript even though a publisher EPUB is present
 		// (e.g. comparing narration line-by-line to the printed text).
 		`ALTER TABLE works ADD COLUMN display_text_book_id INTEGER NOT NULL DEFAULT 0`,
+		// Local-first sync version stamps (design/local-first-sync.md).
+		// schema_version = shape of the exported book.db (a code constant,
+		// abook.BookDBSchemaVersion); content_version = RFC3339 UTC timestamp
+		// of the last (re)process. Mobile compares these to its installed
+		// copy to drive "Update available". Both are stamped by StampVersions.
+		`ALTER TABLE works ADD COLUMN schema_version  INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE works ADD COLUMN content_version TEXT    NOT NULL DEFAULT ''`,
 		// Per-message Q&A scope snapshot — the QueryScope that shaped
 		// retrieval for this turn. Empty = whole book (legacy / default).
 		// Lets the chat history show "asked about Chapter 6" badges
@@ -510,6 +522,12 @@ func migrate(db *sql.DB) error {
 	} {
 		db.Exec(backfill) // best-effort; no-op once origins are correct
 	}
+
+	// Backfill content_version for works created before the column existed,
+	// so the version endpoint / catalog never report an empty stamp. Uses
+	// updated_at as the best available proxy for "last processed". No-op once
+	// every row has a non-empty stamp (set by StampVersions thereafter).
+	db.Exec(`UPDATE works SET content_version = strftime('%Y-%m-%dT%H:%M:%SZ', updated_at) WHERE content_version = ''`)
 	return nil
 }
 
@@ -738,6 +756,39 @@ func (s *Store) SetDisplayTextBook(workID, bookID int64) error {
 	return err
 }
 
+// StampVersions records that a work was just (re)processed: it sets
+// schema_version to the given current book.db shape and content_version to
+// the current UTC time (RFC3339). Call this at the end of any operation that
+// changes a work's exportable data — alignment, metadata edit, chapter
+// extraction, TTS/STT regeneration — so mobile's "Update available" check
+// (GET /api/works/{id}/version) sees the new stamp. See local-first-sync.md.
+func (s *Store) StampVersions(workID int64, schemaVersion int) error {
+	_, err := s.db.Exec(`
+		UPDATE works
+		SET schema_version = ?,
+		    content_version = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, schemaVersion, workID)
+	return err
+}
+
+// GetVersions returns the work's (schema_version, content_version) stamps.
+// found is false when no such work exists. This is the read side of the
+// cheap update-check endpoint.
+func (s *Store) GetVersions(workID int64) (schemaVersion int, contentVersion string, found bool, err error) {
+	err = s.db.QueryRow(
+		`SELECT schema_version, content_version FROM works WHERE id = ?`, workID,
+	).Scan(&schemaVersion, &contentVersion)
+	if err == sql.ErrNoRows {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, err
+	}
+	return schemaVersion, contentVersion, true, nil
+}
+
 // UpdateWork updates the title and author of a work. Empty strings are
 // treated as "no change" (keeps existing value).
 func (s *Store) UpdateWork(id int64, title, author string) error {
@@ -826,7 +877,7 @@ func (s *Store) GetBook(id int64) (*Book, error) {
 
 func (s *Store) ListWorks() ([]Work, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, author, series, series_index, display_text_book_id, created_at, updated_at
+		SELECT id, title, author, series, series_index, display_text_book_id, schema_version, content_version, created_at, updated_at
 		FROM works ORDER BY series, series_index, title
 	`)
 	if err != nil {
@@ -837,7 +888,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -874,8 +925,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, series, series_index, display_text_book_id, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, display_text_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1637,6 +1688,38 @@ func (s *Store) GetSyncData(workID, audioBookID int64, chapterIdx int) (string, 
 		return "[]", nil
 	}
 	return timestamps, err
+}
+
+// SyncRow is one chapter's word-timing blob for a given audio book. Returned
+// by ListSyncForWork so the .abook exporter can carve every sync row for a
+// work in one query.
+type SyncRow struct {
+	ID          int64
+	AudioBookID int64
+	ChapterIdx  int
+	Timestamps  string
+}
+
+// ListSyncForWork returns every sync_data row for a work (all audio books,
+// all chapters). Used by the book.db carve.
+func (s *Store) ListSyncForWork(workID int64) ([]SyncRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, audio_book_id, chapter_idx, timestamps
+		FROM sync_data WHERE work_id = ? ORDER BY audio_book_id, chapter_idx
+	`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SyncRow
+	for rows.Next() {
+		var sr SyncRow
+		if err := rows.Scan(&sr.ID, &sr.AudioBookID, &sr.ChapterIdx, &sr.Timestamps); err != nil {
+			return nil, err
+		}
+		out = append(out, sr)
+	}
+	return out, rows.Err()
 }
 
 // --- Alignments CRUD ---

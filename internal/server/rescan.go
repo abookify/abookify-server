@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 
+	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
@@ -67,13 +68,24 @@ func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 		}
 	}
 
+	// Works whose exportable data changed this pass — stamped at the end so
+	// mobile's update-check sees a fresh content_version.
+	touched := map[int64]bool{}
+
 	worksBefore, _ := store.ListWorks()
+	beforeIDs := map[int64]bool{}
+	for _, wk := range worksBefore {
+		beforeIDs[wk.ID] = true
+	}
 	if err := library.MatchAndCreateWorks(store); err != nil {
 		applog.Warnf("system", "rescan: matching failed: %v", err)
 	}
 	worksAfter, _ := store.ListWorks()
-	if delta := len(worksAfter) - len(worksBefore); delta > 0 {
-		res.NewWorks = delta
+	for _, wk := range worksAfter {
+		if !beforeIDs[wk.ID] {
+			res.NewWorks++
+			touched[wk.ID] = true
+		}
 	}
 
 	library.ImportSidecars(store, libraryRoot)
@@ -97,7 +109,16 @@ func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 		for _, ch := range chapters {
 			if err := store.InsertChapter(ch); err == nil {
 				res.ChaptersExtracted++
+				if b.WorkID != 0 {
+					touched[b.WorkID] = true
+				}
 			}
+		}
+	}
+
+	for workID := range touched {
+		if err := store.StampVersions(workID, abook.BookDBSchemaVersion); err != nil {
+			applog.Warnf("system", "rescan: version stamp failed for work %d: %v", workID, err)
 		}
 	}
 
