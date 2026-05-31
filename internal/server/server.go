@@ -318,6 +318,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("DELETE /api/bookmarks/{id}", s.handleDeleteBookmark)
 	mux.HandleFunc("GET /api/works/{id}/export.abook", s.handleExportAbook)
 	mux.HandleFunc("POST /api/export-all", s.handleExportAll)
+	mux.HandleFunc("GET /api/exports", s.handleListExports)
+	mux.HandleFunc("GET /api/exports/{file}", s.handleGetExport)
 	mux.HandleFunc("POST /api/import", s.handleImportAbook)
 	mux.HandleFunc("POST /api/devices/register", s.handleRegisterDevice)
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
@@ -1760,6 +1762,71 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 		"failed":   failed,
 		"dir":      exportDir,
 	})
+}
+
+// handleListExports lists the pre-generated v2 .abook set written by
+// export-all to {libraryDir}/exports/. Each entry carries the manifest's
+// identity + version stamps + on-disk size so a client can decide what to
+// pull. Returns an empty array when the dir is absent (export-all not run).
+func (s *Server) handleListExports(w http.ResponseWriter, r *http.Request) {
+	exportDir := filepath.Join(s.LibraryDir, "exports")
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		// No exports yet (dir missing) is not an error — return empty.
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	type exportEntry struct {
+		File           string   `json:"file"`
+		WorkID         int64    `json:"work_id"`
+		Title          string   `json:"title"`
+		Author         string   `json:"author"`
+		SourceKind     string   `json:"source_kind"`
+		SchemaVersion  int      `json:"schema_version"`
+		ContentVersion string   `json:"content_version"`
+		CoveragePct    *float64 `json:"coverage_pct"`
+		SizeBytes      int64    `json:"size_bytes"`
+	}
+	out := []exportEntry{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".abook") {
+			continue
+		}
+		full := filepath.Join(exportDir, e.Name())
+		entry := exportEntry{File: e.Name()}
+		if info, err := e.Info(); err == nil {
+			entry.SizeBytes = info.Size()
+		}
+		if m, err := abook.ReadManifest(full); err == nil {
+			entry.WorkID = m.WorkID
+			entry.Title = m.Title
+			entry.Author = m.Author
+			entry.SourceKind = m.SourceKind
+			entry.SchemaVersion = m.SchemaVersion
+			entry.ContentVersion = m.ContentVersion
+			entry.CoveragePct = m.CoveragePct
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleGetExport serves a single file from the exports dir. The {file} path
+// value is reduced to its base name so it can't escape the directory.
+func (s *Server) handleGetExport(w http.ResponseWriter, r *http.Request) {
+	name := filepath.Base(r.PathValue("file"))
+	if name == "." || name == "/" || !strings.HasSuffix(name, ".abook") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid file"})
+		return
+	}
+	path := filepath.Join(s.LibraryDir, "exports", name)
+	if _, err := os.Stat(path); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-abook+zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {

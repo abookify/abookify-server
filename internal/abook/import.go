@@ -384,6 +384,26 @@ func verifyChecksum(path, want string) error {
 	return nil
 }
 
+// ReadManifest reads and parses just the manifest.json from a .abook without
+// extracting the rest. Used to list an export set's identity/version stamps
+// cheaply.
+func ReadManifest(abookPath string) (*Manifest, error) {
+	r, err := zip.OpenReader(abookPath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	data, err := readFromZip(&r.Reader, "manifest.json")
+	if err != nil {
+		return nil, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 func readFromZip(r *zip.Reader, name string) ([]byte, error) {
 	for _, f := range r.File {
 		if f.Name == name {
