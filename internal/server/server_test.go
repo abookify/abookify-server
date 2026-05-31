@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -236,6 +238,71 @@ func TestHandleListExportsEmpty(t *testing.T) {
 	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
 		t.Errorf("body = %q, want []", got)
 	}
+}
+
+// zipEntries returns the set of entry names in a zip held in body.
+func zipEntries(t *testing.T, body []byte) map[string]bool {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("open zip from response: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	return names
+}
+
+func TestHandleExportAbookAudioToggle(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	workID := seedAligned(t, store, dir)
+	audioEntry := "audio/book-" + itoa(bookIDByPath(t, store, filepath.Join(dir, "ch01.mp3"))) + ".mp3"
+
+	// Default: audio bundled.
+	req := httptest.NewRequest("GET", "/api/works/x/export.abook", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleExportAbook(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default export status = %d", rec.Code)
+	}
+	full := zipEntries(t, rec.Body.Bytes())
+	if !full["book.db"] || !full["manifest.json"] {
+		t.Errorf("default export missing core entries: %v", full)
+	}
+	if !full[audioEntry] {
+		t.Errorf("default export should bundle audio (%s); have %v", audioEntry, full)
+	}
+
+	// audio=0: lightweight, no audio dir.
+	req = httptest.NewRequest("GET", "/api/works/x/export.abook?audio=0", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec = httptest.NewRecorder()
+	srv.handleExportAbook(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-audio export status = %d", rec.Code)
+	}
+	lite := zipEntries(t, rec.Body.Bytes())
+	if !lite["book.db"] || !lite["manifest.json"] {
+		t.Errorf("no-audio export missing core entries: %v", lite)
+	}
+	if lite[audioEntry] {
+		t.Errorf("no-audio export should not bundle audio; have %v", lite)
+	}
+}
+
+// bookIDByPath resolves a book's server id by its unique path.
+func bookIDByPath(t *testing.T, store *db.Store, path string) int64 {
+	t.Helper()
+	books, _ := store.ListBooks()
+	for _, b := range books {
+		if b.Path == path {
+			return b.ID
+		}
+	}
+	t.Fatalf("book not found for path %q", path)
+	return 0
 }
 
 // itoa avoids importing strconv solely for path-value formatting in tests.
