@@ -258,6 +258,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
 	mux.HandleFunc("POST /api/works/{id}/fetch-cover", s.handleFetchCover)
+	mux.HandleFunc("POST /api/covers/fetch-missing", s.handleFetchMissingCovers)
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
@@ -976,6 +977,40 @@ func (s *Server) handleFetchCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "path": path})
+}
+
+// handleFetchMissingCovers backfills cover art from OpenLibrary for every work
+// that has no cover file yet. Sequential + best-effort (one work's failure
+// doesn't stop the rest); OpenLibrary won't resolve junk-title/no-author works
+// and those just count as "not found". User-triggered from Settings.
+func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request) {
+	works, err := s.store.ListWorks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	coversDir := filepath.Join(s.LibraryDir, "covers")
+	var fetched, missing, skipped int
+	for i := range works {
+		wk := &works[i]
+		if _, err := os.Stat(filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", wk.ID))); err == nil {
+			continue // already has a cover
+		}
+		if strings.TrimSpace(wk.Title) == "" {
+			skipped++
+			continue
+		}
+		if library.FetchCoverFromOpenLibrary(wk.Title, wk.Author, coversDir, wk.ID) != "" {
+			fetched++
+		} else {
+			missing++
+		}
+	}
+	applog.Info("server", fmt.Sprintf("fetch-missing-covers: fetched=%d not_found=%d skipped=%d", fetched, missing, skipped))
+	if fetched > 0 && s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"fetched": fetched, "not_found": missing, "skipped": skipped})
 }
 
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {

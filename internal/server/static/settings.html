@@ -449,6 +449,18 @@
         <div id="exports-list" style="display:none; margin-top:8px; font-size:0.8rem; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;"></div>
         <div id="export-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
+      <div class="field">
+        <label>Cover art</label>
+        <button type="button" id="fetch-covers-btn" onclick="fetchMissingCovers()"
+          style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
+          Fetch missing covers
+        </button>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          Looks up cover art on OpenLibrary for any work that has none. Best-effort —
+          works with a junk title or no author may not resolve. Safe to re-run.
+        </div>
+        <div id="fetch-covers-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
+      </div>
     </div>
 
     <div style="display:flex; align-items:center;">
@@ -1072,6 +1084,32 @@
       } finally {
         btn.disabled = false;
         btn.textContent = 'Regenerate exports';
+      }
+    }
+
+    async function fetchMissingCovers() {
+      const btn = document.getElementById('fetch-covers-btn');
+      const msg = document.getElementById('fetch-covers-msg');
+      btn.disabled = true;
+      btn.textContent = 'Fetching…';
+      msg.style.display = 'none';
+      msg.style.borderLeftColor = 'var(--accent)';
+      try {
+        const res = await fetch('/api/covers/fetch-missing', { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        msg.style.display = 'block';
+        msg.innerHTML =
+          'Fetched <b>' + d.fetched + '</b> covers · ' +
+          'not found ' + d.not_found + ' · ' +
+          'skipped ' + d.skipped + ' (no title).';
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.style.borderLeftColor = 'var(--danger)';
+        msg.textContent = 'Fetch failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Fetch missing covers';
       }
     }
 
