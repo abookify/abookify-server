@@ -1672,7 +1672,11 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	if err := abook.ExportWithDirs(s.store, work, tmpPath, s.LibraryDir); err != nil {
+	// audio=0 produces a lightweight container (book.db + manifest + cover,
+	// no bundled audio) — shareable/inspectable, audio streams from the
+	// server. Default bundles audio for a self-contained offline copy.
+	includeAudio := r.URL.Query().Get("audio") != "0"
+	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1683,6 +1687,9 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 		}
 		return r
 	}, work.Title)
+	if !includeAudio {
+		safeName += " (text+sync)"
+	}
 
 	w.Header().Set("Content-Type", "application/x-abook+zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.abook"`, safeName))

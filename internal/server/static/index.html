@@ -1763,8 +1763,13 @@
         <span class="icon">&#9432;</span>.abook summary
       </button>`);
       items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); downloadAbookFromMenu(${work.id});">
-        <span class="icon">&#11015;</span>Download .abook
+        <span class="icon">&#11015;</span>Download .abook${work.has_audio ? ' (with audio)' : ''}
       </button>`);
+      if (work.has_audio) {
+        items.push(`<button class="work-menu-item" onclick="closeAllWorkMenus(); downloadAbookFromMenu(${work.id}, true);">
+          <span class="icon">&#11015;</span>Download .abook (text + sync)
+        </button>`);
+      }
       items.push(`<div class="work-menu-divider"></div>`);
       items.push(`<button class="work-menu-item danger" onclick="closeAllWorkMenus(); deleteWork(${work.id});">
         <span class="icon">&#128465;</span>Delete work
@@ -1854,17 +1859,17 @@
 
     // Menu version of downloadAbook: no pill element to mutate, so just
     // trigger the download and let the browser handle progress.
-    async function downloadAbookFromMenu(workId) {
+    async function downloadAbookFromMenu(workId, noAudio) {
       const status = document.getElementById('work-progress-' + workId);
       const orig = status ? status.textContent : '';
       if (status) { status.style.display = ''; status.textContent = 'Zipping .abook…'; }
       try {
-        const res = await fetch(`/api/works/${workId}/export.abook`);
+        const res = await fetch(`/api/works/${workId}/export.abook${noAudio ? '?audio=0' : ''}`);
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `work-${workId}.abook`;
+        a.download = `work-${workId}${noAudio ? '-text-sync' : ''}.abook`;
         a.click();
         URL.revokeObjectURL(url);
         if (status) status.textContent = 'Downloaded';
