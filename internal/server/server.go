@@ -111,6 +111,18 @@ func (s *Server) ReloadLLM() {
 // audiobook becomes searchable without a manual /api/works/{id}/embed.
 func (s *Server) OnJobUpdate(job library.JobStatus) {
 	s.Events.Broadcast(Event{Type: "job_update", Data: job})
+	if job.Status == "completed" && job.WorkID > 0 {
+		// Content-producing jobs change the work's exportable data
+		// (transcript+sync for STT, audio+chapters for TTS), so bump
+		// content_version for mobile's update-check. Embedding jobs are
+		// excluded — embeddings are omitted from book.db, so the exported
+		// slice is unchanged. The STT auto-align below may stamp again
+		// (harmless) but this covers STT with no ebook peer to align to.
+		switch job.Type {
+		case "stt", "stt-redo", "tts":
+			s.stampWork(job.WorkID)
+		}
+	}
 	if job.Type == "stt" && job.Status == "completed" && job.WorkID > 0 {
 		go s.EmbedWorkAsync(job.WorkID)
 		go s.AlignWorkAsync(job.WorkID)
@@ -1206,6 +1218,9 @@ func (s *Server) handleAddChapter(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if bk, _ := s.store.GetBook(bookID); bk != nil && bk.WorkID > 0 {
+		s.stampWork(bk.WorkID)
+	}
 	writeJSON(w, http.StatusOK, ch)
 }
 
@@ -1568,6 +1583,9 @@ func (s *Server) handleDetectChapters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	if n > 0 {
+		s.stampWork(workID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"chapters_detected": n})
 }
