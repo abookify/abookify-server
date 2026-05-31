@@ -434,6 +434,21 @@
         </div>
         <div id="align-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
+      <div class="field">
+        <label>Offline export set</label>
+        <div id="exports-summary" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:6px;">Loading…</div>
+        <button type="button" id="export-all-btn" onclick="regenerateExports()"
+          style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
+          Regenerate exports
+        </button>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          Writes a per-work <code>.abook</code> (book.db + cover, no audio) for every aligned
+          work to <code>library/exports/</code> — the offline bundles mobile can sideload.
+          Safe to re-run; overwrites in place. Audio streams from the server.
+        </div>
+        <div id="exports-list" style="display:none; margin-top:8px; font-size:0.8rem; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;"></div>
+        <div id="export-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
+      </div>
     </div>
 
     <div style="display:flex; align-items:center;">
@@ -837,6 +852,7 @@
     refreshPairing();
     setInterval(refreshPairing, 9 * 60 * 1000);
     loadEmbeddingCoverage();
+    loadExports();
 
     async function rotateTunnel() {
       if (!confirm(
@@ -989,6 +1005,73 @@
       } finally {
         btn.disabled = false;
         btn.textContent = 'Re-align all works';
+      }
+    }
+
+    function fmtBytes(b) {
+      if (!b && b !== 0) return '?';
+      if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(1) + ' GB';
+      if (b >= 1024*1024) return (b / (1024*1024)).toFixed(0) + ' MB';
+      return Math.max(1, Math.round(b/1024)) + ' KB';
+    }
+
+    async function loadExports() {
+      const summary = document.getElementById('exports-summary');
+      const list = document.getElementById('exports-list');
+      try {
+        const items = await fetch('/api/exports').then(r => r.json());
+        if (!Array.isArray(items) || items.length === 0) {
+          summary.textContent = 'No exports yet — click Regenerate to build the offline set.';
+          list.style.display = 'none';
+          return;
+        }
+        const totalBytes = items.reduce((s, e) => s + (e.size_bytes || 0), 0);
+        summary.textContent = `${items.length} bundles · ${fmtBytes(totalBytes)} in library/exports/`;
+        list.style.display = 'block';
+        list.innerHTML = items
+          .sort((a, b) => (a.title || '').localeCompare(b.title || ''))
+          .map(e => {
+            const cov = (e.coverage_pct != null) ? ` · ${e.coverage_pct.toFixed(0)}%` : '';
+            return `<div style="display:flex; justify-content:space-between; gap:10px; padding:5px 10px; border-bottom:1px solid var(--border);">
+              <a href="/api/exports/${encodeURIComponent(e.file)}" download
+                 style="color:var(--text); text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                 title="Download ${escAttr(e.title || e.file)}">${escHtml(e.title || e.file)}</a>
+              <span style="color:var(--text-muted); white-space:nowrap;">${fmtBytes(e.size_bytes)}${cov}</span>
+            </div>`;
+          }).join('');
+      } catch {
+        summary.textContent = 'Could not load exports.';
+        list.style.display = 'none';
+      }
+    }
+
+    function escHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+    function escAttr(s) { return (s || '').replace(/"/g, '&quot;'); }
+
+    async function regenerateExports() {
+      const btn = document.getElementById('export-all-btn');
+      const msg = document.getElementById('export-all-msg');
+      btn.disabled = true;
+      btn.textContent = 'Exporting…';
+      msg.style.display = 'none';
+      msg.style.borderLeftColor = 'var(--accent)';
+      try {
+        const res = await fetch('/api/export-all', { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        msg.style.display = 'block';
+        msg.innerHTML =
+          'Exported <b>' + d.exported + '</b> aligned works · ' +
+          'skipped ' + d.skipped + ' (not aligned) · ' +
+          'failed ' + d.failed + '.';
+        loadExports();
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.style.borderLeftColor = 'var(--danger)';
+        msg.textContent = 'Export failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Regenerate exports';
       }
     }
 
