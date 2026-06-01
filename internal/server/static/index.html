@@ -297,6 +297,7 @@
     .meld-open-btn:hover { background: rgba(59,130,246,0.1); }
     .meld-head { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; margin-bottom: 0.7rem; }
     .meld-sources { font-size: 0.85rem; color: var(--text); display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+    .meld-toolbar { margin: 0.4rem 0 0.2rem; }
     .meld-rows { margin-top: 0.5rem; max-height: 60vh; overflow-y: auto; }
     .meld-aligned {
       text-align: center; font-size: 0.72rem; color: var(--muted); text-transform: uppercase;
@@ -2802,11 +2803,25 @@
     // "N words aligned" dividers. Divergence-focused so the comparison is
     // legible even when most of the book aligns.
     const MELD_MAX_CARDS = 500;
+    const MELD_MIN_WORDS = 3; // substantive threshold (hides STT-noise + tiny artifacts)
+    let _meldData = null, _meldWorkId = null, _meldShowAll = false;
+
+    // A divergence is "noise" (hidden by default) when it's tiny on both
+    // sides, OR a "replace" whose two sides are identical ignoring case (a
+    // false divergence the aligner emits between anchors). Real content
+    // divergences — skipped passages, intros/outros, reworded runs — survive.
+    function meldIsNoise(s) {
+      if (s.kind === 'replace') {
+        const a = (s.a_text || '').toLowerCase(), b = (s.b_text || '').toLowerCase();
+        if (a && a === b) return true; // pure case/punctuation difference
+      }
+      return Math.max(s.a_words || 0, s.b_words || 0) < MELD_MIN_WORDS;
+    }
+
     async function openMeld(workId) {
       const body = document.getElementById('abs-body');
       if (!body) return;
       body.innerHTML = `<p style="color:var(--text-muted)">Comparing sources…</p>`;
-      let d;
       try {
         const res = await fetch(`/api/works/${workId}/diff`);
         if (res.status === 404) {
@@ -2815,20 +2830,32 @@
           return;
         }
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        d = await res.json();
+        _meldData = await res.json();
+        _meldWorkId = workId;
+        _meldShowAll = false;
       } catch (e) {
         body.innerHTML = `<p style="color:var(--danger)">Couldn't load the comparison.</p>
           <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>`;
         return;
       }
-      body.innerHTML = renderMeld(workId, d);
+      body.innerHTML = renderMeld(_meldWorkId, _meldData, _meldShowAll);
     }
 
-    function renderMeld(workId, d) {
+    function toggleMeldAll() {
+      _meldShowAll = !_meldShowAll;
+      const body = document.getElementById('abs-body');
+      if (body && _meldData) body.innerHTML = renderMeld(_meldWorkId, _meldData, _meldShowAll);
+    }
+
+    function renderMeld(workId, d, showAll) {
       const cov = Math.round((d.coverage || 0) * 100);
       const covClass = d.coverage >= 0.9 ? 'good' : (d.coverage >= 0.3 ? 'warn' : 'bad');
       const aLabel = escapeHtml(d.source_a?.label || 'Ebook');
       const bLabel = escapeHtml(d.source_b?.label || 'Transcript');
+
+      const allDiv = (d.spans || []).filter(s => s.kind !== 'aligned');
+      const totalDiv = allDiv.length;
+      const substantive = allDiv.filter(s => !meldIsNoise(s)).length;
 
       const rows = [];
       let alignedRun = 0, cards = 0, omitted = 0;
@@ -2840,6 +2867,7 @@
       };
       for (const s of (d.spans || [])) {
         if (s.kind === 'aligned') { alignedRun += (s.a_words || 0); continue; }
+        if (!showAll && meldIsNoise(s)) continue; // filtered, not counted as a card
         if (cards >= MELD_MAX_CARDS) { omitted++; continue; }
         flushAligned();
         const at = s.a_text ? escapeHtml(s.a_text) : '';
@@ -2857,8 +2885,15 @@
         cards++;
       }
       flushAligned();
+
+      const shownTotal = showAll ? totalDiv : substantive;
       const omittedNote = omitted > 0
-        ? `<div class="abs-extra">Showing the first ${MELD_MAX_CARDS} of ${cards + omitted} divergences.</div>` : '';
+        ? `<div class="abs-extra">Showing the first ${MELD_MAX_CARDS} of ${shownTotal} divergences.</div>` : '';
+      const toggle = totalDiv > substantive
+        ? `<button class="meld-open-btn" onclick="toggleMeldAll()">${showAll
+            ? `Substantive only (${substantive})`
+            : `Show all ${totalDiv} (incl. minor)`}</button>`
+        : '';
 
       return `
         <div class="meld-head">
@@ -2868,8 +2903,9 @@
         <div class="meld-sources"><span class="abs-badge" style="background:rgba(78,204,163,0.14);color:var(--epub,#4ecca3)">Ebook</span> ${aLabel}
           <span style="color:var(--muted)">vs</span>
           <span class="abs-badge" style="background:rgba(240,165,0,0.14);color:var(--mp3,#f0a500)">Audio</span> ${bLabel}</div>
-        <p class="abs-intro">Where the narration and the ebook diverge. Aligned passages are summarized; skipped and differing runs show the actual text.</p>
-        <div class="meld-rows">${rows.join('') || '<div class="abs-empty">No divergences — the sources align throughout.</div>'}</div>
+        <p class="abs-intro">Where the narration and the ebook diverge. Aligned passages are summarized; skipped and differing runs show the actual text. ${showAll ? '' : 'Minor word-level mishears are hidden.'}</p>
+        <div class="meld-toolbar">${toggle}</div>
+        <div class="meld-rows">${rows.join('') || '<div class="abs-empty">No substantive divergences — the sources track closely.</div>'}</div>
         ${omittedNote}`;
     }
 
