@@ -289,6 +289,31 @@
     .abs-note { font-size: 0.82rem; color: var(--text); margin-top: 0.7rem; line-height: 1.45; }
     .abs-extra { font-size: 0.74rem; color: var(--muted); margin-top: 0.6rem; line-height: 1.4; }
 
+    /* Meld / source-comparison view (#200) */
+    .meld-open-btn {
+      background: transparent; color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 6px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer; font-weight: 600;
+    }
+    .meld-open-btn:hover { background: rgba(59,130,246,0.1); }
+    .meld-head { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; margin-bottom: 0.7rem; }
+    .meld-sources { font-size: 0.85rem; color: var(--text); display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+    .meld-rows { margin-top: 0.5rem; max-height: 60vh; overflow-y: auto; }
+    .meld-aligned {
+      text-align: center; font-size: 0.72rem; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.06em; padding: 6px 0; position: relative;
+    }
+    .meld-card { border-left: 3px solid var(--border); border-radius: 0 6px 6px 0; padding: 8px 12px; margin: 8px 0; background: var(--surface-2); }
+    .meld-card.ebook { border-left-color: var(--ebook-only, #f0a500); }
+    .meld-card.trans { border-left-color: var(--danger); }
+    .meld-tag { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .meld-tag.ebook { color: var(--ebook-only, #f0a500); }
+    .meld-tag.trans { color: var(--danger); }
+    .meld-text { font-size: 0.85rem; line-height: 1.5; color: var(--text); word-break: break-word; }
+    .meld-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .meld-side { font-size: 0.82rem; line-height: 1.45; color: var(--text); }
+    .meld-side-label { display: block; font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
+    @media (max-width: 560px) { .meld-pair { grid-template-columns: 1fr; } }
+
     .abs-diff {
       border-left: 3px solid var(--border); border-radius: 8px;
       padding: 0.55rem 0.7rem; margin-bottom: 0.35rem;
@@ -2739,6 +2764,11 @@
       let alignmentHtml;
       if (payload) {
         alignmentHtml = renderAbsAlignment(payload);
+        // "Compare sources" opens the meld view (#200) against /diff when a
+        // word-level cross-source alignment exists.
+        if (payload.method === 'anchor' || payload.method === 'edit-distance') {
+          alignmentHtml += `<div class="abs-section"><button class="meld-open-btn" onclick="openMeld(${workId})">Compare sources &rarr;</button></div>`;
+        }
       } else {
         const msg = (audioFiles.length && textFiles.length)
           ? 'Not aligned yet. Once the audio is transcribed and aligned on the server, you’ll see here how closely it tracks the ebook.'
@@ -2764,6 +2794,83 @@
       if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
       const host = document.getElementById('abook-summary-host');
       if (host) host.remove();
+    }
+
+    // Meld / source-comparison view (#200). Renders the /diff paired text
+    // spans in reading order: divergences as cards (amber "Skipped" /
+    // danger "Differs"/"Not in ebook"), aligned runs collapsed into calm
+    // "N words aligned" dividers. Divergence-focused so the comparison is
+    // legible even when most of the book aligns.
+    const MELD_MAX_CARDS = 500;
+    async function openMeld(workId) {
+      const body = document.getElementById('abs-body');
+      if (!body) return;
+      body.innerHTML = `<p style="color:var(--text-muted)">Comparing sources…</p>`;
+      let d;
+      try {
+        const res = await fetch(`/api/works/${workId}/diff`);
+        if (res.status === 404) {
+          body.innerHTML = `<p style="color:var(--text-muted)">No source comparison available for this work.</p>
+            <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>`;
+          return;
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        d = await res.json();
+      } catch (e) {
+        body.innerHTML = `<p style="color:var(--danger)">Couldn't load the comparison.</p>
+          <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>`;
+        return;
+      }
+      body.innerHTML = renderMeld(workId, d);
+    }
+
+    function renderMeld(workId, d) {
+      const cov = Math.round((d.coverage || 0) * 100);
+      const covClass = d.coverage >= 0.9 ? 'good' : (d.coverage >= 0.3 ? 'warn' : 'bad');
+      const aLabel = escapeHtml(d.source_a?.label || 'Ebook');
+      const bLabel = escapeHtml(d.source_b?.label || 'Transcript');
+
+      const rows = [];
+      let alignedRun = 0, cards = 0, omitted = 0;
+      const flushAligned = () => {
+        if (alignedRun > 0) {
+          rows.push(`<div class="meld-aligned">${formatWords(alignedRun).replace(' words','')} words aligned</div>`);
+          alignedRun = 0;
+        }
+      };
+      for (const s of (d.spans || [])) {
+        if (s.kind === 'aligned') { alignedRun += (s.a_words || 0); continue; }
+        if (cards >= MELD_MAX_CARDS) { omitted++; continue; }
+        flushAligned();
+        const at = s.a_text ? escapeHtml(s.a_text) : '';
+        const bt = s.b_text ? escapeHtml(s.b_text) : '';
+        const loc = `${Math.round((s.a_pct || 0) * 100)}% in`;
+        if (s.kind === 'ebook-only') {
+          rows.push(`<div class="meld-card ebook"><div class="meld-tag ebook">Skipped in audio · ${loc}</div><div class="meld-text">${at}</div></div>`);
+        } else if (s.kind === 'trans-only') {
+          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Not in ebook · ${loc}</div><div class="meld-text">${bt}</div></div>`);
+        } else { // replace
+          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Differs · ${loc}</div>
+            <div class="meld-pair"><div class="meld-side"><span class="meld-side-label">Ebook</span>${at || '<em>—</em>'}</div>
+            <div class="meld-side"><span class="meld-side-label">Audio</span>${bt || '<em>—</em>'}</div></div></div>`);
+        }
+        cards++;
+      }
+      flushAligned();
+      const omittedNote = omitted > 0
+        ? `<div class="abs-extra">Showing the first ${MELD_MAX_CARDS} of ${cards + omitted} divergences.</div>` : '';
+
+      return `
+        <div class="meld-head">
+          <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>
+          <span class="abs-pill ${covClass}">${cov}% aligned</span>
+        </div>
+        <div class="meld-sources"><span class="abs-badge" style="background:rgba(78,204,163,0.14);color:var(--epub,#4ecca3)">Ebook</span> ${aLabel}
+          <span style="color:var(--muted)">vs</span>
+          <span class="abs-badge" style="background:rgba(240,165,0,0.14);color:var(--mp3,#f0a500)">Audio</span> ${bLabel}</div>
+        <p class="abs-intro">Where the narration and the ebook diverge. Aligned passages are summarized; skipped and differing runs show the actual text.</p>
+        <div class="meld-rows">${rows.join('') || '<div class="abs-empty">No divergences — the sources align throughout.</div>'}</div>
+        ${omittedNote}`;
     }
 
     async function toggleWork(cardId, workId) {
