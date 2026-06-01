@@ -15,6 +15,7 @@ services:
       - ABOOKIFY_PORT=7654
       - ABOOKIFY_TTS_URL=http://kokoro:8880
       - ABOOKIFY_STT_URL=http://whisper:5200
+      - ABOOKIFY_BOOKNLP_URL=http://booknlp:5300
       - ABOOKIFY_GENERATED_PATH=/generated
       - NULLBORE_BASE_DOMAIN=abookify.nullbore.com
       - ABOOKIFY_PUBLIC_URL=${ABOOKIFY_PUBLIC_URL:-}
@@ -41,6 +42,21 @@ services:
       - WHISPER_COMPUTE_TYPE=int8
     ports:
       - "5200:5200"
+
+  # Cast-of-characters extraction (EXPERIMENTAL). Large image (~6.5 GB) and
+  # CPU-heavy, so it's opt-in via the `booknlp` profile:
+  #   docker compose --profile booknlp up -d booknlp
+  # The server reaches it at ABOOKIFY_BOOKNLP_URL; when the service is down,
+  # cast extraction simply fails and the UI shows no cast (graceful).
+  booknlp:
+    build: ./services/booknlp
+    environment:
+      - BOOKNLP_MODEL=${BOOKNLP_MODEL:-small}
+      - PORT=5300
+    ports:
+      - "5300:5300"
+    profiles:
+      - booknlp
 
   # Relay tunnel — exposes the local server through a NullBore relay VPS.
   # Optional: only runs when NULLBORE_API_KEY is set in .env.

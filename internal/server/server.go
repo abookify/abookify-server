@@ -40,6 +40,9 @@ type Server struct {
 	Ingest     *library.IngestQueue
 	LibraryDir   string
 	GeneratedDir string
+	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
+	// Empty when the booknlp compose profile isn't running.
+	BookNLPURL string
 
 	// embedding dedupe — guards against re-entry when multiple STT jobs
 	// finish back-to-back for the same work, or when ReloadLLM kicks off
@@ -256,6 +259,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}", s.handleGetWork)
 	mux.HandleFunc("GET /api/works/{id}/version", s.handleWorkVersion)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
+	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
+	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
 	mux.HandleFunc("POST /api/works/{id}/fetch-cover", s.handleFetchCover)
 	mux.HandleFunc("POST /api/covers/fetch-missing", s.handleFetchMissingCovers)
@@ -614,6 +619,64 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleGetCast returns a work's cast of characters (EXPERIMENTAL). Always
+// includes experimental:true and enabled (the feature flag) so the UI can
+// render the mandatory badge and decide whether to offer extraction. An
+// absent cast is an empty list, not an error — consumers degrade gracefully.
+func (s *Server) handleGetCast(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	chars, err := s.store.ListCharactersForWork(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if chars == nil {
+		chars = []db.Character{}
+	}
+	settings, _ := s.store.GetAllSettings()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"experimental": true,
+		"enabled":      settings["booknlp_enabled"] == "true" && s.BookNLPURL != "",
+		"characters":   chars,
+	})
+}
+
+// handleExtractCast runs the booknlp service over the work's EPUB and stores
+// the cast. Gated behind the booknlp_enabled feature flag + a configured
+// service URL. Synchronous: BookNLP takes minutes, so the client should show
+// a spinner. EXPERIMENTAL.
+func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	settings, _ := s.store.GetAllSettings()
+	if settings["booknlp_enabled"] != "true" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cast extraction is disabled (enable the experimental BookNLP feature in Settings)"})
+		return
+	}
+	if s.BookNLPURL == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "booknlp service not configured — start the booknlp compose profile"})
+		return
+	}
+	n, err := library.ExtractCast(s.store, s.BookNLPURL, id)
+	if err != nil {
+		applog.Log(applog.LevelError, "booknlp", "", id, "cast extraction failed",
+			map[string]any{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"characters": n})
 }
 
 // stampWork records that a work's exportable data just changed, bumping its

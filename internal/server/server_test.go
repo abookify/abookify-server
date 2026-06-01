@@ -240,6 +240,60 @@ func TestHandleListExportsEmpty(t *testing.T) {
 	}
 }
 
+func TestHandleGetCastGracefulDefault(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	workID := seedAligned(t, store, dir)
+
+	req := httptest.NewRequest("GET", "/api/works/x/cast", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleGetCast(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got struct {
+		Experimental bool          `json:"experimental"`
+		Enabled      bool          `json:"enabled"`
+		Characters   []db.Character `json:"characters"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Experimental {
+		t.Errorf("experimental should always be true")
+	}
+	if got.Enabled {
+		t.Errorf("enabled should be false by default (no flag, no service)")
+	}
+	if len(got.Characters) != 0 {
+		t.Errorf("characters should be empty by default, got %d", len(got.Characters))
+	}
+}
+
+func TestHandleExtractCastGatedByFlag(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	workID := seedAligned(t, store, dir)
+
+	// Flag off → 403 regardless of service URL.
+	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleExtractCast(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("flag-off status = %d, want 403", rec.Code)
+	}
+
+	// Flag on but no service URL → 503.
+	store.SetSetting("booknlp_enabled", "true")
+	req = httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec = httptest.NewRecorder()
+	srv.handleExtractCast(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("no-service status = %d, want 503", rec.Code)
+	}
+}
+
 // zipEntries returns the set of entry names in a zip held in body.
 func zipEntries(t *testing.T, body []byte) map[string]bool {
 	t.Helper()

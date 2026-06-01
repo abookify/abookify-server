@@ -393,6 +393,30 @@
     .work-menu-item .icon { width: 16px; text-align: center; opacity: 0.8; }
     .work-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
 
+    /* Cast of characters (EXPERIMENTAL). The experimental chip is mandatory
+       on every surface that shows a cast. Panel is hidden unless the feature
+       flag is on (degrades gracefully when off / no data). */
+    .cast-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 6px; }
+    .cast-title { font-size: 0.75rem; font-weight: 600; color: #f0a500; text-transform: uppercase; letter-spacing: 1px; }
+    .cast-exp {
+      padding: 1px 7px; border-radius: 999px; font-size: 0.6rem; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      background: rgba(240,165,0,0.18); color: #f0a500; border: 1px solid rgba(240,165,0,0.4);
+    }
+    .cast-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .cast-chip {
+      display: inline-flex; align-items: baseline; gap: 5px;
+      padding: 3px 10px; border-radius: 999px; font-size: 0.8rem;
+      background: var(--surface-hover); border: 1px solid var(--border); color: var(--text);
+    }
+    .cast-chip .cast-count { font-size: 0.7rem; color: var(--text-muted); }
+    .cast-empty { font-size: 0.8rem; color: var(--text-muted); }
+    .cast-extract-btn {
+      background: transparent; color: var(--text); border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+    }
+    .cast-extract-btn:hover { background: var(--surface-hover); }
+
     .work-body { display: none; border-top: 1px solid var(--border); }
     .work-card.expanded .work-body { display: block; }
 
@@ -1984,6 +2008,13 @@
                 </div>
                 <div id="bookmarks-list-${work.id}" style="font-size:0.8rem;color:var(--text-muted);">Loading...</div>
               </div>
+              <div class="cast-panel" id="cast-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
+                <div class="cast-head">
+                  <span class="cast-title">Cast of characters</span>
+                  <span class="cast-exp" title="Extraction quality varies by genre/translation; aliases may over-split.">experimental</span>
+                </div>
+                <div id="cast-list-${work.id}" class="cast-list"></div>
+              </div>
               ${work.has_text ? (llmConfigured ? `
               <div class="qa-panel">
                 <div class="qa-header">Ask about this book</div>
@@ -2762,6 +2793,60 @@
         if (work && work.has_text && llmConfigured && document.getElementById('chat-tabs-' + workId)) {
           loadChatSessions(workId);
         }
+        // Cast of characters (experimental). Only for works with an EPUB
+        // text source; the panel stays hidden when the feature is disabled
+        // and there's no extracted cast.
+        if (work && (work.text_files || []).some(tf => tf.format === 'epub')) {
+          loadCast(workId);
+        }
+      }
+    }
+
+    // Load + render a work's cast (experimental). Shows the panel only when
+    // there's a cast OR the feature is enabled (so the extract button is
+    // reachable); otherwise stays hidden so disabled installs see nothing.
+    async function loadCast(workId) {
+      const panel = document.getElementById('cast-panel-' + workId);
+      const list = document.getElementById('cast-list-' + workId);
+      if (!panel || !list) return;
+      try {
+        const data = await fetch(`/api/works/${workId}/cast`).then(r => r.json());
+        const chars = data.characters || [];
+        if (chars.length === 0 && !data.enabled) {
+          panel.style.display = 'none';   // feature off, nothing to show
+          return;
+        }
+        panel.style.display = '';
+        if (chars.length === 0) {
+          list.innerHTML = `<span class="cast-empty">No cast extracted yet.</span>
+            <button class="cast-extract-btn" onclick="extractCast(${workId})">Extract cast</button>`;
+          return;
+        }
+        const chips = chars.map(c => {
+          const title = (c.aliases && c.aliases.length > 1) ? ` title="${escapeHtml(c.aliases.join(', '))}"` : '';
+          return `<span class="cast-chip"${title}>${escapeHtml(c.name)}<span class="cast-count">${c.mention_count}</span></span>`;
+        }).join('');
+        const reextract = data.enabled
+          ? `<button class="cast-extract-btn" onclick="extractCast(${workId})">Re-extract</button>` : '';
+        list.innerHTML = chips + reextract;
+      } catch {
+        panel.style.display = 'none';
+      }
+    }
+
+    async function extractCast(workId) {
+      const list = document.getElementById('cast-list-' + workId);
+      if (list) list.innerHTML = '<span class="cast-empty">Extracting cast… (BookNLP can take a few minutes)</span>';
+      try {
+        const res = await fetch(`/api/works/${workId}/extract-cast`, { method: 'POST' });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || ('HTTP ' + res.status));
+        }
+        await loadCast(workId);
+      } catch (e) {
+        if (list) list.innerHTML = `<span class="cast-empty">Extraction failed: ${escapeHtml(e.message)}</span>
+          <button class="cast-extract-btn" onclick="extractCast(${workId})">Retry</button>`;
       }
     }
 

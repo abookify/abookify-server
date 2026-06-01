@@ -476,6 +476,21 @@
         </div>
         <div id="fetch-covers-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
+      <div class="field">
+        <label>Cast of characters
+          <span style="display:inline-block; margin-left:6px; padding:1px 7px; border-radius:999px; font-size:0.62rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; background:rgba(240,165,0,0.18); color:#f0a500; border:1px solid rgba(240,165,0,0.4); vertical-align:middle;">experimental</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text); cursor:pointer;">
+          <input type="checkbox" id="booknlp-enabled" style="width:auto; min-height:0;">
+          Enable BookNLP cast extraction
+        </label>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          Extracts a named cast from a work's EPUB via the optional <code>booknlp</code> service
+          (<code>docker compose --profile booknlp up -d booknlp</code>). Extraction quality varies by
+          genre/translation and aliases that share no tokens may over-split — hence the
+          experimental label. Disabled by default; cast panels stay hidden until enabled.
+        </div>
+      </div>
     </div>
 
     <div style="display:flex; align-items:center;">
@@ -666,6 +681,7 @@
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
         if (settings.voice_api_key) showSavedKey('voice-api-key', settings.voice_api_key);
+        document.getElementById('booknlp-enabled').checked = settings.booknlp_enabled === 'true';
         // Now that provider+model are loaded, populate the model <select>.
         onProviderChange();
       } catch {}
@@ -693,6 +709,7 @@
         voice_provider: document.getElementById('voice-provider').value,
         voice_api_key: keyFieldValue('voice-api-key'),
         auth_username: document.getElementById('auth-username').value.trim(),
+        booknlp_enabled: document.getElementById('booknlp-enabled').checked ? 'true' : 'false',
       };
       // Only send auth_password when the user actually typed one. Blank
       // means "keep current" — sending "" would clear it and disable

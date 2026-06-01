@@ -448,6 +448,41 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
+
+		-- Cast of characters (EXPERIMENTAL, #booknlp). Derived from an EPUB
+		-- text book by the optional booknlp service; additive and fully
+		-- removable. A work with no rows here simply has no cast (the UI
+		-- degrades gracefully). Re-extraction replaces a book's rows.
+		CREATE TABLE IF NOT EXISTS characters (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_id       INTEGER NOT NULL,
+			book_id       INTEGER NOT NULL,   -- the EPUB text book the cast came from
+			name          TEXT NOT NULL DEFAULT '',  -- canonical display name
+			aliases       TEXT NOT NULL DEFAULT '[]', -- JSON array of variant names
+			gender        TEXT NOT NULL DEFAULT '',   -- BookNLP argmax gender or ''
+			mention_count INTEGER NOT NULL DEFAULT 0,
+			rank          INTEGER NOT NULL DEFAULT 0, -- 0-based, by mention_count desc
+			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (work_id) REFERENCES works(id),
+			FOREIGN KEY (book_id) REFERENCES books(id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_characters_work ON characters(work_id);
+		CREATE INDEX IF NOT EXISTS idx_characters_book ON characters(book_id);
+
+		-- Per-character mention positions (token offset within the book).
+		-- Stored for future "where does X appear" features; the MVP cast
+		-- panel reads only the characters table.
+		CREATE TABLE IF NOT EXISTS character_mentions (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			character_id INTEGER NOT NULL,
+			book_id      INTEGER NOT NULL,
+			offset       INTEGER NOT NULL DEFAULT 0,
+			surface      TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (character_id) REFERENCES characters(id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_character_mentions_char ON character_mentions(character_id);
 	`)
 	if err != nil {
 		return err
@@ -1338,6 +1373,84 @@ func (s *Store) ListAllChunksWithEmbeddings(workID int64) ([]Chunk, error) {
 		chunks = append(chunks, c)
 	}
 	return chunks, rows.Err()
+}
+
+// Character is one entry in a work's cast of characters (EXPERIMENTAL).
+// Derived from an EPUB by the optional booknlp service. Aliases is the set of
+// surface-name variants BookNLP clustered under this character.
+type Character struct {
+	ID           int64    `json:"id"`
+	WorkID       int64    `json:"work_id"`
+	BookID       int64    `json:"book_id"`
+	Name         string   `json:"name"`
+	Aliases      []string `json:"aliases"`
+	Gender       string   `json:"gender,omitempty"`
+	MentionCount int      `json:"mention_count"`
+	Rank         int      `json:"rank"`
+}
+
+// ReplaceCharactersForBook atomically swaps a book's cast (delete + insert).
+// Re-extraction is idempotent: the prior cast for this book is removed first,
+// including its mentions. Characters are stored in the given order with rank
+// assigned by slice position.
+func (s *Store) ReplaceCharactersForBook(workID, bookID int64, chars []Character) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Drop mentions for this book's existing characters, then the characters.
+	if _, err := tx.Exec(`DELETE FROM character_mentions WHERE character_id IN (SELECT id FROM characters WHERE book_id = ?)`, bookID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM characters WHERE book_id = ?`, bookID); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO characters (work_id, book_id, name, aliases, gender, mention_count, rank)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for i, c := range chars {
+		aliases, _ := json.Marshal(c.Aliases)
+		if c.Aliases == nil {
+			aliases = []byte("[]")
+		}
+		if _, err := stmt.Exec(workID, bookID, c.Name, string(aliases), c.Gender, c.MentionCount, i); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ListCharactersForWork returns the cast for a work (all its EPUB books),
+// ordered by rank. Empty slice when no cast has been extracted.
+func (s *Store) ListCharactersForWork(workID int64) ([]Character, error) {
+	rows, err := s.db.Query(`
+		SELECT id, work_id, book_id, name, aliases, gender, mention_count, rank
+		FROM characters WHERE work_id = ? ORDER BY rank, mention_count DESC
+	`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Character
+	for rows.Next() {
+		var c Character
+		var aliasesJSON string
+		if err := rows.Scan(&c.ID, &c.WorkID, &c.BookID, &c.Name, &aliasesJSON, &c.Gender, &c.MentionCount, &c.Rank); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(aliasesJSON), &c.Aliases)
+		if c.Aliases == nil {
+			c.Aliases = []string{}
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 type Bookmark struct {
