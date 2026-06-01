@@ -37,6 +37,16 @@ def _toks(name):
     return [t for t in n.split() if t and t not in STRIP and len(t) > 1]
 
 
+# A real character surface form is short. BookNLP's coref occasionally captures
+# a whole clause as a "proper" mention (e.g. "Elizabeth, who agreed in wishing,
+# for the sake of their sister's feelings…"); reject those so they can't
+# pollute aliases or, worse, win the display name (which favors token count).
+def _namelike(s):
+    s = s.strip()
+    return len(s) <= 40 and len(s.split()) <= 5
+
+
+
 def extract_cast(book_path):
     """Return a ranked list of characters from a BookNLP .book JSON file.
 
@@ -52,7 +62,7 @@ def extract_cast(book_path):
         if c.get("count", 0) < MIN_COUNT:
             continue
         m = c.get("mentions", {})
-        proper = [x["n"] for x in m.get("proper", [])]
+        proper = [x["n"] for x in m.get("proper", []) if _namelike(x["n"])]
         if not proper:
             continue  # MVP: named characters only
         C[c["id"]] = {
