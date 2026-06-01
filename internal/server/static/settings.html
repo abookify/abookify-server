@@ -157,6 +157,21 @@
     .save-btn:hover { opacity: 0.9; }
     .save-msg { font-size: 0.8rem; color: var(--success); margin-left: 1rem; display: none; }
 
+    /* Always-visible global save. The page is long enough that the bottom
+       Save button gets missed; this floats over the content and triggers
+       the same whole-page saveSettings(). The per-section saves still work. */
+    .floating-save {
+      position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 100;
+      background: var(--accent); border: none; border-radius: 999px;
+      color: white; padding: 0.7rem 1.4rem; font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      transition: opacity 0.1s, transform 0.05s;
+    }
+    .floating-save:hover { opacity: 0.92; }
+    .floating-save:active { transform: scale(0.97); }
+    .floating-save.saved { background: var(--success); }
+
     /* Pairing row layout — desktop default keeps QR + text side by side. */
     .pairing-row {
       display: flex; gap: 1.5rem; align-items: flex-start;
@@ -469,6 +484,9 @@
     </div>
   </div>
 
+  <button type="button" class="floating-save" id="floating-save" onclick="saveSettings()"
+    title="Save all settings">&#128190; Save Settings</button>
+
   <script>
     let allModels = {}; // { provider → [{id, label}, ...] }
 
@@ -690,6 +708,14 @@
         const msg = document.getElementById('save-msg');
         msg.style.display = 'inline';
         setTimeout(() => msg.style.display = 'none', 2000);
+        // Mirror the confirmation on the floating button, which is the one
+        // actually on-screen when the page is scrolled.
+        const fab = document.getElementById('floating-save');
+        if (fab) {
+          fab.classList.add('saved');
+          fab.innerHTML = '✓ Saved';
+          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = '💾 Save Settings'; }, 2000);
+        }
         document.getElementById('auth-password').value = '';
         loadAuthState();
       } catch {}
