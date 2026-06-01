@@ -292,19 +292,22 @@ func TestCleanupOrphanedRows(t *testing.T) {
 	store.InsertChapter(Chapter{BookID: liveID, Index: 0, Title: "C1", Content: "kept", WordCount: 1})
 	store.InsertChunk(Chunk{BookID: liveID, ChapterIdx: 0, ChunkIdx: 0, Content: "kept"})
 
-	// Orphaned content: a book_id with no books row (simulates a book deleted
-	// without cascading, e.g. the pre-fix CleanupOrphanedBooks path).
+	// Orphaned content: book_id / work_id with no parent row (simulates a
+	// book/work deleted without cascading, e.g. the pre-fix paths).
 	const orphanBook = 999999
+	const orphanWork = 888888
 	store.InsertChapter(Chapter{BookID: orphanBook, Index: 0, Title: "Gone", Content: "orphan", WordCount: 1})
 	store.InsertChunk(Chunk{BookID: orphanBook, ChapterIdx: 0, ChunkIdx: 0, Content: "orphan"})
 	store.InsertParagraph(Paragraph{BookID: orphanBook, ChapterIdx: 0, ParagraphIdx: 0, Text: "orphan"})
+	store.SaveAlignment(Alignment{WorkID: orphanWork, FromBookID: orphanBook, ToBookID: orphanBook, Unit: "word", Method: "anchor", Pairs: "[]"})
+	store.CreateBookmark(Bookmark{WorkID: orphanWork, BookID: orphanBook, Type: "bookmark"})
 
 	removed, err := store.CleanupOrphanedRows()
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if removed != 3 {
-		t.Errorf("removed = %d, want 3 (1 chunk + 1 paragraph + 1 chapter)", removed)
+	if removed != 5 {
+		t.Errorf("removed = %d, want 5 (chunk+paragraph+chapter+alignment+bookmark)", removed)
 	}
 	// Live book's content survives.
 	if n, _ := store.ChunkCount(liveID); n != 1 {

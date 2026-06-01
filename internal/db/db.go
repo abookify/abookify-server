@@ -1785,11 +1785,25 @@ func (s *Store) CleanupOrphanedBooks() (int, error) {
 // longer exists — debris from earlier book deletions that didn't cascade
 // (pre-fix CleanupOrphanedBooks). Idempotent; returns the row count removed.
 func (s *Store) CleanupOrphanedRows() (int64, error) {
+	// Each statement drops rows whose owning book or work no longer exists.
+	// Order matters only for character_mentions (after orphaned characters).
+	stmts := []string{
+		`DELETE FROM chunks     WHERE book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM paragraphs WHERE book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM chapters   WHERE book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM alignments WHERE work_id NOT IN (SELECT id FROM works) OR from_book_id NOT IN (SELECT id FROM books) OR to_book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM sync_data  WHERE work_id NOT IN (SELECT id FROM works) OR audio_book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM chapter_links WHERE work_id NOT IN (SELECT id FROM works)`,
+		`DELETE FROM bookmarks  WHERE work_id NOT IN (SELECT id FROM works)`,
+		`DELETE FROM playback_positions WHERE work_id NOT IN (SELECT id FROM works)`,
+		`DELETE FROM characters WHERE work_id NOT IN (SELECT id FROM works) OR book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM character_mentions WHERE character_id NOT IN (SELECT id FROM characters)`,
+	}
 	var total int64
-	for _, tbl := range []string{"chunks", "paragraphs", "chapters"} {
-		res, err := s.db.Exec(`DELETE FROM ` + tbl + ` WHERE book_id NOT IN (SELECT id FROM books)`)
+	for _, q := range stmts {
+		res, err := s.db.Exec(q)
 		if err != nil {
-			return total, fmt.Errorf("cleanup orphaned %s: %w", tbl, err)
+			return total, fmt.Errorf("cleanup orphaned rows: %w", err)
 		}
 		n, _ := res.RowsAffected()
 		total += n
@@ -2049,12 +2063,16 @@ func (s *Store) DeleteWork(id int64) error {
 	for _, bid := range bookIDs {
 		tx.Exec(`DELETE FROM chapters WHERE book_id = ?`, bid)
 		tx.Exec(`DELETE FROM chunks WHERE book_id = ?`, bid)
+		tx.Exec(`DELETE FROM paragraphs WHERE book_id = ?`, bid)
 	}
 	tx.Exec(`DELETE FROM books WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM chapter_links WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM sync_data WHERE work_id = ?`, id)
+	tx.Exec(`DELETE FROM alignments WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM bookmarks WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM playback_positions WHERE work_id = ?`, id)
+	tx.Exec(`DELETE FROM character_mentions WHERE character_id IN (SELECT id FROM characters WHERE work_id = ?)`, id)
+	tx.Exec(`DELETE FROM characters WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM jobs WHERE work_id = ?`, id)
 	// Cascade-delete chat sessions + their messages. ON DELETE CASCADE
 	// only fires when foreign_keys=ON, which we don't enable, so we
