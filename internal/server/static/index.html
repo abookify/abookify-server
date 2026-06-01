@@ -214,6 +214,8 @@
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
+    .media-pill.align-clickable { cursor: pointer; }
+    .media-pill.align-clickable:hover { filter: brightness(1.15); text-decoration: underline; }
 
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.45);
@@ -2277,7 +2279,11 @@
       else               { cls = 'align-bad';  label = 'Weak — likely a different edition'; }
       const pct = Math.round(c * 100);
       const m = work.alignment_method ? ` · ${work.alignment_method}` : '';
-      return `<span class="media-pill ${cls}" title="${escapeHtml(label)}${escapeHtml(m)}">${pct}%</span>`;
+      // Clickable → opens the .abook summary (sources + alignment + "Compare
+      // sources" meld), so the comparison is one click from the card.
+      return `<span class="media-pill ${cls} align-clickable"
+        onclick="event.stopPropagation(); openAbookSummary(${work.id})"
+        title="${escapeHtml(label)}${escapeHtml(m)} · click to compare sources">${pct}%</span>`;
     }
 
     function renderGapBadge(workId) {
