@@ -315,6 +315,8 @@
     .meld-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
     .meld-side { font-size: 0.82rem; line-height: 1.45; color: var(--text); }
     .meld-side-label { display: block; font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
+    .meld-del { background: rgba(233,69,96,0.22); border-radius: 3px; padding: 0 2px; text-decoration: line-through; text-decoration-color: rgba(233,69,96,0.7); }
+    .meld-ins { background: rgba(52,211,153,0.22); border-radius: 3px; padding: 0 2px; }
     @media (max-width: 560px) { .meld-pair { grid-template-columns: 1fr; } }
 
     .abs-diff {
@@ -2853,6 +2855,37 @@
       if (body && _meldData) body.innerHTML = renderMeld(_meldWorkId, _meldData, _meldShowAll);
     }
 
+    // Word-level diff of two strings via LCS, returning escaped HTML with
+    // differing words wrapped (.meld-del on the A/ebook side, .meld-ins on
+    // the B/audio side). Capped: above WORDDIFF_MAX words per side the runs
+    // are "different content" not a rewording, so we just show plain text.
+    const WORDDIFF_MAX = 220;
+    function wordDiffHtml(a, b) {
+      const aw = a ? a.split(/\s+/) : [], bw = b ? b.split(/\s+/) : [];
+      if (aw.length > WORDDIFF_MAX || bw.length > WORDDIFF_MAX) {
+        return { a: escapeHtml(a), b: escapeHtml(b) };
+      }
+      const n = aw.length, m = bw.length;
+      // LCS table on lowercased words (case/punct-insensitive match).
+      const norm = w => w.toLowerCase().replace(/[^a-z0-9']/g, '');
+      const A = aw.map(norm), B = bw.map(norm);
+      const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--)
+        for (let j = m - 1; j >= 0; j--)
+          dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      const aOut = [], bOut = [];
+      let i = 0, j = 0;
+      const wrap = (w, cls) => `<span class="${cls}">${escapeHtml(w)}</span>`;
+      while (i < n && j < m) {
+        if (A[i] === B[j]) { aOut.push(escapeHtml(aw[i])); bOut.push(escapeHtml(bw[j])); i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { aOut.push(wrap(aw[i], 'meld-del')); i++; }
+        else { bOut.push(wrap(bw[j], 'meld-ins')); j++; }
+      }
+      while (i < n) aOut.push(wrap(aw[i++], 'meld-del'));
+      while (j < m) bOut.push(wrap(bw[j++], 'meld-ins'));
+      return { a: aOut.join(' '), b: bOut.join(' ') };
+    }
+
     function renderMeld(workId, d, showAll) {
       const cov = Math.round((d.coverage || 0) * 100);
       const covClass = d.coverage >= 0.9 ? 'good' : (d.coverage >= 0.3 ? 'warn' : 'bad');
@@ -2884,9 +2917,13 @@
         } else if (s.kind === 'trans-only') {
           rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Not in ebook · ${loc}</div><div class="meld-text">${bt}</div></div>`);
         } else { // replace
+          // Word-level diff so the actual change pops out of two otherwise
+          // near-identical paragraphs. Skipped for large blocks (different
+          // content, not a rewording) to bound the O(n·m) LCS.
+          const dh = wordDiffHtml(s.a_text || '', s.b_text || '');
           rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Differs · ${loc}</div>
-            <div class="meld-pair"><div class="meld-side"><span class="meld-side-label">Ebook</span>${at || '<em>—</em>'}</div>
-            <div class="meld-side"><span class="meld-side-label">Audio</span>${bt || '<em>—</em>'}</div></div></div>`);
+            <div class="meld-pair"><div class="meld-side"><span class="meld-side-label">Ebook</span>${dh.a || '<em>—</em>'}</div>
+            <div class="meld-side"><span class="meld-side-label">Audio</span>${dh.b || '<em>—</em>'}</div></div></div>`);
         }
         cards++;
       }
