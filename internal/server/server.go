@@ -259,6 +259,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}", s.handleGetWork)
 	mux.HandleFunc("GET /api/works/{id}/version", s.handleWorkVersion)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
+	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
@@ -619,6 +620,28 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleWorkDiff returns the render-ready source comparison for a work (#199):
+// paired TEXT spans in reading order derived from the best word-level
+// alignment. 404 when the work has no such cross-source alignment, so clients
+// fall back to the offset-only AbookSummary view. Contract in SESSION_HANDOFF.
+func (s *Server) handleWorkDiff(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	diff, found, err := library.BuildDiff(s.store, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no cross-source alignment to compare"})
+		return
+	}
+	writeJSON(w, http.StatusOK, diff)
 }
 
 // handleGetCast returns a work's cast of characters (EXPERIMENTAL). Always

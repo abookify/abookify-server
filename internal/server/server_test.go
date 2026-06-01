@@ -13,6 +13,7 @@ import (
 
 	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/db"
+	"github.com/pj/abookify/internal/library"
 )
 
 // newTestServer builds a Server backed by a fresh temp store. LibraryDir
@@ -237,6 +238,81 @@ func TestHandleListExportsEmpty(t *testing.T) {
 	}
 	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
 		t.Errorf("body = %q, want []", got)
+	}
+}
+
+func TestHandleWorkDiff(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	_ = dir
+
+	workID, _ := store.CreateWork("Diff Book", "Author")
+	// EPUB side.
+	store.UpsertBook(db.Book{WorkID: workID, Path: "/tmp/diff-ebook.epub", Filename: "e.epub",
+		Format: "epub", MediaType: "text", Title: "Diff Book", Origin: "publisher_epub"})
+	ebookID := bookIDByPath(t, store, "/tmp/diff-ebook.epub")
+	store.InsertChapter(db.Chapter{BookID: ebookID, Index: 0, Title: "Chapter 1",
+		Content: "alpha bravo charlie delta echo", WordCount: 5})
+	// Transcript side.
+	store.UpsertBook(db.Book{WorkID: workID, Path: "/tmp/diff-trans.txt", Filename: "t.txt",
+		Format: "transcript", MediaType: "text", Title: "Diff Book", Origin: "whisper_transcript"})
+	transID := bookIDByPath(t, store, "/tmp/diff-trans.txt")
+	store.InsertChapter(db.Chapter{BookID: transID, Index: 0, Title: "Chapter 1",
+		Content: "alpha bravo foxtrot", WordCount: 3})
+
+	payload := library.AnchorAlignmentPayload{
+		Method: "anchor", Unit: "word", EbookWords: 5, TransWords: 3, Coverage: 0.4,
+		Segments: []library.Segment{
+			{EbookStart: 0, EbookEnd: 2, TransStart: 0, TransEnd: 2, Kind: library.SegAligned},
+			{EbookStart: 2, EbookEnd: 5, TransStart: 2, TransEnd: 2, Kind: library.SegEbookOnly},
+			{EbookStart: 5, EbookEnd: 5, TransStart: 2, TransEnd: 3, Kind: library.SegTransOnly},
+		},
+	}
+	pj, _ := json.Marshal(payload)
+	if err := store.SaveAlignment(db.Alignment{WorkID: workID, FromBookID: ebookID, ToBookID: transID,
+		Unit: "word", Confidence: 0.4, Method: "anchor", Pairs: string(pj)}); err != nil {
+		t.Fatalf("save alignment: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/works/x/diff", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleWorkDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var d library.WorkDiff
+	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if d.SourceA.Origin != "publisher_epub" || d.SourceB.Origin != "whisper_transcript" {
+		t.Errorf("sources = %q / %q", d.SourceA.Origin, d.SourceB.Origin)
+	}
+	if len(d.Spans) != 3 {
+		t.Fatalf("spans = %d, want 3", len(d.Spans))
+	}
+	// Aligned: text omitted, counts kept.
+	if d.Spans[0].Kind != "aligned" || d.Spans[0].AText != "" || d.Spans[0].AWords != 2 {
+		t.Errorf("aligned span = %+v", d.Spans[0])
+	}
+	// ebook-only: original-case text recovered from offsets.
+	if d.Spans[1].Kind != "ebook-only" || d.Spans[1].AText != "charlie delta echo" || d.Spans[1].BWords != 0 {
+		t.Errorf("ebook-only span = %+v", d.Spans[1])
+	}
+	// trans-only: transcript text recovered.
+	if d.Spans[2].Kind != "trans-only" || d.Spans[2].BText != "foxtrot" {
+		t.Errorf("trans-only span = %+v", d.Spans[2])
+	}
+}
+
+func TestHandleWorkDiff404(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	workID := seedAligned(t, store, dir) // alignment Pairs="[]" → no segments
+	req := httptest.NewRequest("GET", "/api/works/x/diff", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleWorkDiff(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
 
