@@ -202,6 +202,11 @@ func main() {
 	if removed, err := store.CleanupOrphanedBooks(); err == nil && removed > 0 {
 		log.Printf("cleaned up %d orphaned book entries", removed)
 	}
+	// Sweep content rows whose owning book is gone (debris from book
+	// deletions that predate the cascade fix in CleanupOrphanedBooks).
+	if removed, err := store.CleanupOrphanedRows(); err == nil && removed > 0 {
+		log.Printf("cleaned up %d orphaned content rows (chunks/paragraphs/chapters)", removed)
+	}
 
 	// Set up HTTP server
 	srv := server.New(store, *port)

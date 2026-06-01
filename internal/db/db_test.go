@@ -275,3 +275,55 @@ func TestGetBookAndNil(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
+func TestCleanupOrphanedRows(t *testing.T) {
+	store := testStore(t)
+
+	// A live book with content.
+	if err := store.UpsertBook(Book{Path: "/x/live.epub", Filename: "live.epub", Format: "epub", MediaType: "text"}); err != nil {
+		t.Fatal(err)
+	}
+	var liveID int64
+	for _, b := range mustListBooks(t, store) {
+		if b.Path == "/x/live.epub" {
+			liveID = b.ID
+		}
+	}
+	store.InsertChapter(Chapter{BookID: liveID, Index: 0, Title: "C1", Content: "kept", WordCount: 1})
+	store.InsertChunk(Chunk{BookID: liveID, ChapterIdx: 0, ChunkIdx: 0, Content: "kept"})
+
+	// Orphaned content: a book_id with no books row (simulates a book deleted
+	// without cascading, e.g. the pre-fix CleanupOrphanedBooks path).
+	const orphanBook = 999999
+	store.InsertChapter(Chapter{BookID: orphanBook, Index: 0, Title: "Gone", Content: "orphan", WordCount: 1})
+	store.InsertChunk(Chunk{BookID: orphanBook, ChapterIdx: 0, ChunkIdx: 0, Content: "orphan"})
+	store.InsertParagraph(Paragraph{BookID: orphanBook, ChapterIdx: 0, ParagraphIdx: 0, Text: "orphan"})
+
+	removed, err := store.CleanupOrphanedRows()
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if removed != 3 {
+		t.Errorf("removed = %d, want 3 (1 chunk + 1 paragraph + 1 chapter)", removed)
+	}
+	// Live book's content survives.
+	if n, _ := store.ChunkCount(liveID); n != 1 {
+		t.Errorf("live chunks = %d, want 1", n)
+	}
+	if n, _ := store.ChapterCount(liveID); n != 1 {
+		t.Errorf("live chapters = %d, want 1", n)
+	}
+	// Re-running is idempotent (nothing left to remove).
+	if again, _ := store.CleanupOrphanedRows(); again != 0 {
+		t.Errorf("second sweep removed = %d, want 0", again)
+	}
+}
+
+func mustListBooks(t *testing.T, store *Store) []Book {
+	t.Helper()
+	books, err := store.ListBooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return books
+}

@@ -1767,11 +1767,34 @@ func (s *Store) CleanupOrphanedBooks() (int, error) {
 			continue
 		}
 		if _, err := os.Stat(b.Path); os.IsNotExist(err) {
+			// Cascade to the book's content so we don't leave orphaned
+			// chunks/paragraphs/chapters (the embed pass only walks live
+			// books, so orphaned chunks would stay unembedded forever and
+			// inflate the coverage gap).
+			s.db.Exec(`DELETE FROM chunks WHERE book_id = ?`, b.ID)
+			s.db.Exec(`DELETE FROM paragraphs WHERE book_id = ?`, b.ID)
+			s.db.Exec(`DELETE FROM chapters WHERE book_id = ?`, b.ID)
 			s.db.Exec(`DELETE FROM books WHERE id = ?`, b.ID)
 			removed++
 		}
 	}
 	return removed, nil
+}
+
+// CleanupOrphanedRows deletes chunks/paragraphs/chapters whose owning book no
+// longer exists — debris from earlier book deletions that didn't cascade
+// (pre-fix CleanupOrphanedBooks). Idempotent; returns the row count removed.
+func (s *Store) CleanupOrphanedRows() (int64, error) {
+	var total int64
+	for _, tbl := range []string{"chunks", "paragraphs", "chapters"} {
+		res, err := s.db.Exec(`DELETE FROM ` + tbl + ` WHERE book_id NOT IN (SELECT id FROM books)`)
+		if err != nil {
+			return total, fmt.Errorf("cleanup orphaned %s: %w", tbl, err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	return total, nil
 }
 
 type SyncTimestamp struct {
