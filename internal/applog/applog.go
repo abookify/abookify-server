@@ -254,6 +254,17 @@ func classifyLine(msg string) (string, Level) {
 		return "http", LevelDebug
 	}
 	low := strings.ToLower(msg)
+	// An explicit leading severity word wins over keyword scanning. Many lines
+	// read "warning: … failed …" — they contain both "warn" and "fail", and
+	// the author's prefix is the real intent. Without this they'd grade ERROR
+	// off the "fail" substring (the chapter-probe ffprobe warnings did exactly
+	// that — 130 benign warnings flooding the console's error view).
+	switch {
+	case strings.HasPrefix(low, "warning:"), strings.HasPrefix(low, "warn:"), strings.HasPrefix(low, "warn "):
+		return "system", LevelWarn
+	case strings.HasPrefix(low, "error:"), strings.HasPrefix(low, "fatal"), strings.HasPrefix(low, "panic:"):
+		return "system", LevelError
+	}
 	switch {
 	case strings.Contains(low, "fatal"), strings.Contains(low, "panic"),
 		strings.Contains(low, "error"), strings.Contains(low, "fail"):
