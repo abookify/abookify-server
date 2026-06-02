@@ -3495,6 +3495,13 @@
     // or per-file sync, same as currentPlayingId. For multi-file whole-book
     // sync, always the first audio book of the work.
     let currentSyncBookId = null;
+    // Detected-chapter index whose scoped sync_data is currently loaded into
+    // the reader. On a single-file multi-chapter book the sync blob is scoped
+    // to one chapter at a time; when continuous playback crosses into the next
+    // chapter, maybeReloadSyncChapter() re-scopes so karaoke + the reader
+    // follow the audio instead of stranding on the chapter we started in (#211).
+    let currentSyncChapterIdx = null;
+    let syncReloadInFlight = false;
 
     async function playAudio(bookId, audioIndex, workId, title, workTitle, startSec, opts) {
       opts = opts || {};
@@ -3602,11 +3609,13 @@
         : currentAudioOffset;
       const detectedChapters = audioChapterCache[currentSyncBookId];
       let chapterRange = null;
+      currentSyncChapterIdx = null;
       if (detectedChapters && detectedChapters.length > 0) {
         const ch = detectedChapters.find(c =>
           (c.start_sec || 0) <= absTime && (c.end_sec || 1e12) > absTime);
         if (ch) {
           chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
+          currentSyncChapterIdx = ch.index;
         }
       } else if (currentAudioFiles.length > 1) {
         const fileDur = currentAudioFiles[audioIndex]?.duration_secs || 0;
@@ -3861,6 +3870,40 @@
 
       activeSyncData = null;
       return false;
+    }
+
+    // Re-scope the reader text + karaoke sync when continuous playback crosses
+    // into a different detected chapter (#211). The sync blob for a single-file
+    // book is scoped to one chapter's word window at a time; without this the
+    // highlight strands on the chapter we started playback in. Called from the
+    // timeupdate handler (~4Hz) — cheap until the chapter actually changes,
+    // then does one reader reload + sync re-scope. Re-entrancy-guarded.
+    async function maybeReloadSyncChapter(bookSec) {
+      if (syncReloadInFlight) return;
+      if (currentWorkId == null || currentSyncBookId == null) return;
+      if (syncEnabled[currentWorkId] === false) return;
+      const detected = audioChapterCache[currentSyncBookId];
+      if (!detected || detected.length === 0) return; // only detected-chapter single-file books
+      const ch = detected.find(c =>
+        (c.start_sec || 0) <= bookSec && (c.end_sec || 1e12) > bookSec);
+      if (!ch || ch.index === currentSyncChapterIdx) return; // same chapter — nothing to do
+      syncReloadInFlight = true;
+      try {
+        const work = allWorks.find(w => w.id === currentWorkId);
+        const textFile = (work?.text_files || [])[0];
+        if (textFile) {
+          await loadChapterList(textFile.id, currentWorkId);
+          const chs = chapterCache[textFile.id]?.chapters || [];
+          const tmatch = chs.find(c =>
+            (c.start_sec || 0) <= bookSec && (c.end_sec || 1e12) > bookSec);
+          if (tmatch) await loadChapter(textFile.id, tmatch.index, currentWorkId, { skipAudioSeek: true });
+        }
+        const chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
+        await loadSyncData(currentWorkId, currentSyncBookId, 0, chapterRange);
+        currentSyncChapterIdx = ch.index;
+      } finally {
+        syncReloadInFlight = false;
+      }
     }
 
     // Returns true if the text the reader is currently rendering came from a
@@ -4615,6 +4658,9 @@
           updateChapterProgress(tf.id, bookSec, bookTotal);
         });
       }
+      // Follow detected-chapter boundaries during continuous playback so
+      // karaoke + the reader don't strand on the starting chapter (#211).
+      maybeReloadSyncChapter(bookSec);
       updateNpTocActive();
     });
     document.getElementById('audio-player').addEventListener('loadedmetadata', () => {
