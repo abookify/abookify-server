@@ -1796,6 +1796,7 @@ func (s *Store) CleanupOrphanedRows() (int64, error) {
 		`DELETE FROM chapter_links WHERE work_id NOT IN (SELECT id FROM works)`,
 		`DELETE FROM bookmarks  WHERE work_id NOT IN (SELECT id FROM works)`,
 		`DELETE FROM playback_positions WHERE work_id NOT IN (SELECT id FROM works)`,
+		`DELETE FROM playback_events WHERE work_id NOT IN (SELECT id FROM works)`,
 		`DELETE FROM characters WHERE work_id NOT IN (SELECT id FROM works) OR book_id NOT IN (SELECT id FROM books)`,
 		`DELETE FROM character_mentions WHERE character_id NOT IN (SELECT id FROM characters)`,
 	}
@@ -2071,6 +2072,7 @@ func (s *Store) DeleteWork(id int64) error {
 	tx.Exec(`DELETE FROM alignments WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM bookmarks WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM playback_positions WHERE work_id = ?`, id)
+	tx.Exec(`DELETE FROM playback_events WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM character_mentions WHERE character_id IN (SELECT id FROM characters WHERE work_id = ?)`, id)
 	tx.Exec(`DELETE FROM characters WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM jobs WHERE work_id = ?`, id)

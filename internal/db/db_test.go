@@ -301,13 +301,14 @@ func TestCleanupOrphanedRows(t *testing.T) {
 	store.InsertParagraph(Paragraph{BookID: orphanBook, ChapterIdx: 0, ParagraphIdx: 0, Text: "orphan"})
 	store.SaveAlignment(Alignment{WorkID: orphanWork, FromBookID: orphanBook, ToBookID: orphanBook, Unit: "word", Method: "anchor", Pairs: "[]"})
 	store.CreateBookmark(Bookmark{WorkID: orphanWork, BookID: orphanBook, Type: "bookmark"})
+	store.RecordPlayback(orphanWork, "listen", 10) // orphaned playback_event
 
 	removed, err := store.CleanupOrphanedRows()
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if removed != 5 {
-		t.Errorf("removed = %d, want 5 (chunk+paragraph+chapter+alignment+bookmark)", removed)
+	if removed != 6 {
+		t.Errorf("removed = %d, want 6 (chunk+paragraph+chapter+alignment+bookmark+event)", removed)
 	}
 	// Live book's content survives.
 	if n, _ := store.ChunkCount(liveID); n != 1 {
