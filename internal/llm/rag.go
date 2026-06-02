@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -13,6 +14,12 @@ import (
 type RAG struct {
 	store  *db.Store
 	client *Client
+}
+
+// EmbedStore is the write surface saveEmbeddingWithRetry needs — just the
+// embedding upsert. *db.Store satisfies it; a fake drives the retry test.
+type EmbedStore interface {
+	UpdateChunkEmbedding(chunkID int64, embedding []byte) error
 }
 
 func NewRAG(store *db.Store, client *Client) *RAG {
@@ -50,6 +57,23 @@ type Answer struct {
 
 // EmbedBook backfills embeddings for every chunk in a book that doesn't
 // already have one. Returns count of newly-embedded chunks. Idempotent.
+// saveEmbeddingWithRetry persists one chunk's embedding, retrying through
+// brief SQLITE_BUSY/LOCKED windows (#207). busy_timeout covers most
+// contention, but a long concurrent writer during a multi-thousand-chunk
+// backfill can still trip a discrete write; without this, one BUSY aborts the
+// whole run mid-batch and loses progress. Exponential backoff: 50→800ms, 5
+// tries. Non-busy errors return immediately.
+func saveEmbeddingWithRetry(store EmbedStore, chunkID int64, blob []byte) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = store.UpdateChunkEmbedding(chunkID, blob); err == nil || !db.IsBusyErr(err) {
+			return err
+		}
+		time.Sleep(time.Duration(50*(1<<attempt)) * time.Millisecond)
+	}
+	return err
+}
+
 func (r *RAG) EmbedBook(bookID int64) (int, error) {
 	chunks, err := r.store.ListChunks(bookID)
 	if err != nil {
@@ -89,7 +113,7 @@ func (r *RAG) EmbedBook(bookID int64) (int, error) {
 			if len(vec) == 0 {
 				continue
 			}
-			if err := r.store.UpdateChunkEmbedding(todo[i+k].ID, EncodeEmbedding(vec)); err != nil {
+			if err := saveEmbeddingWithRetry(r.store, todo[i+k].ID, EncodeEmbedding(vec)); err != nil {
 				return embedded, fmt.Errorf("save embedding %d: %w", todo[i+k].ID, err)
 			}
 			embedded++

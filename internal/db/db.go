@@ -152,6 +152,22 @@ type Book struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// IsBusyErr reports whether err is a SQLite lock-contention error
+// (SQLITE_BUSY / SQLITE_LOCKED). busy_timeout absorbs most contention, but a
+// caller doing many discrete writes under a long concurrent writer can still
+// see it — those writes should be retried. Detected by message since
+// modernc.org/sqlite doesn't export a stable typed code we depend on here.
+func IsBusyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "database table is locked") ||
+		strings.Contains(s, "sqlite_busy") ||
+		strings.Contains(s, "sqlite_locked")
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db directory: %w", err)
@@ -162,7 +178,11 @@ func Open(path string) (*Store, error) {
 	// the db ran in rollback-journal mode where a writer takes an
 	// exclusive lock and readers get SQLITE_BUSY. WAL lets readers run
 	// concurrently with a writer; busy_timeout waits out brief contention.
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	// 15s (raised from 5s, #207): a long cross-process writer (stt-cli /
+	// sidecar import / a big embed backfill against an external process) can
+	// hold the lock past 5s; the higher ceiling lets callers wait it out
+	// rather than surface SQLITE_BUSY.
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(15000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
