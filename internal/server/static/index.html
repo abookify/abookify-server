@@ -490,11 +490,11 @@
     }
     .logs-line {
       display: grid; grid-template-columns: 5.6rem 3.6rem 6rem 1fr; gap: 0.6rem;
-      padding: 0.3rem 0.7rem; border-bottom: 1px solid rgba(255,255,255,0.04);
+      padding: 0.3rem 0.7rem; border-bottom: 1px solid var(--border);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.76rem;
       align-items: baseline;
     }
-    .logs-line:hover { background: rgba(255,255,255,0.03); }
+    .logs-line:hover { background: var(--surface-2); }
     .logs-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .logs-lvl { font-weight: 700; text-transform: uppercase; font-size: 0.64rem; letter-spacing: 0.04em; }
     .logs-lvl.debug { color: var(--muted); }
@@ -504,8 +504,8 @@
     .logs-comp { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .logs-msg { color: var(--text); word-break: break-word; white-space: pre-wrap; }
     .logs-meta { color: var(--muted); }
-    .logs-line.lvl-error .logs-msg { color: #fca5a5; }
-    .logs-line.lvl-warn .logs-msg { color: #fcd9a5; }
+    .logs-line.lvl-error .logs-msg { color: var(--danger); }
+    .logs-line.lvl-warn .logs-msg { color: var(--ebook-only); }
     .logs-filter-link { color: inherit; text-decoration: none; cursor: pointer; border-bottom: 1px dotted currentColor; }
     .logs-filter-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
     .logs-empty { padding: 2.2rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
@@ -665,8 +665,8 @@
     /* Header above chapter list — shows "Chapter X of Y · Q% complete". */
     .toc-summary {
       padding: 0.4rem 1.25rem; font-size: 0.72rem;
-      color: var(--text-muted); border-bottom: 1px solid rgba(42,58,92,0.4);
-      background: rgba(255,255,255,0.02); display: flex; gap: 0.5rem; align-items: center;
+      color: var(--text-muted); border-bottom: 1px solid var(--border);
+      background: var(--surface-2); display: flex; gap: 0.5rem; align-items: center;
     }
     .toc-summary .pos { font-variant-numeric: tabular-nums; }
     .toc-summary .pct { margin-left: auto; font-variant-numeric: tabular-nums; }
@@ -709,7 +709,7 @@
     .sync-panel {
       display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
       padding: 0.5rem 1.25rem; border-bottom: 1px solid var(--border);
-      font-size: 0.8rem; color: var(--text-muted); background: rgba(255,255,255,0.02);
+      font-size: 0.8rem; color: var(--text-muted); background: var(--surface-2);
     }
     .sync-panel-item { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
     .sync-panel-item input[type=checkbox] { accent-color: var(--epub); }
@@ -1245,7 +1245,7 @@
       border-radius: 0 14px 14px 0;
     }
     .chat-tab.active .chat-tab-menu-btn { border-left-color: rgba(240,165,0,0.35); color: #f0a500; }
-    .chat-tab-menu-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+    .chat-tab-menu-btn:hover { background: var(--surface-2); color: var(--text); }
     .chat-tab-popover {
       display: none; position: absolute; top: calc(100% + 4px); right: 0;
       background: var(--surface); border: 1px solid var(--border);
@@ -2901,8 +2901,10 @@
       </div>`;
     }
 
-    async function openAbookSummary(workId) {
-      closeAllWorkMenus();
+    // Build the .abook summary modal shell (the #abs-body host the meld and
+    // summary views both render into). Idempotent: reuses an open one.
+    function ensureAbookSummaryHost() {
+      if (document.getElementById('abs-body')) return;
       const host = document.createElement('div');
       host.id = 'abook-summary-host';
       host.innerHTML = `<div class="modal-backdrop" onclick="closeAbookSummary(event)">
@@ -2912,6 +2914,21 @@
         </div>
       </div>`;
       document.body.appendChild(host);
+    }
+
+    // Open the source-comparison (meld) view directly in its modal (#200).
+    // openMeld renders into #abs-body, which lives in this modal — so the
+    // work-detail "Compare" button stands the modal up first, then jumps
+    // straight to the comparison (vs. summary → "Compare sources →").
+    async function openMeldModal(workId) {
+      closeAllWorkMenus();
+      ensureAbookSummaryHost();
+      await openMeld(workId);
+    }
+
+    async function openAbookSummary(workId) {
+      closeAllWorkMenus();
+      ensureAbookSummaryHost();
       const body = document.getElementById('abs-body');
 
       let work, alignments = [];
@@ -3155,7 +3172,7 @@
           <button class="detail-back" onclick="closeWorkDetail()">&#8592; Library</button>
           <span class="detail-crumb"><b>${escapeHtml(work.title)}</b>${work.author ? ' &middot; ' + escapeHtml(work.author) : ''}</span>
           <span class="detail-spacer"></span>
-          ${(work.has_audio && work.has_text) ? `<button class="detail-act" onclick="openMeld(${work.id})" title="Compare sources">&#8644; Compare</button>` : ''}
+          ${(work.has_audio && work.has_text) ? `<button class="detail-act" onclick="openMeldModal(${work.id})" title="Compare sources">&#8644; Compare</button>` : ''}
           <button class="detail-act" onclick="openAbookSummary(${work.id})" title=".abook summary">&#9432; Summary</button>
           <button class="detail-act" id="menu-btn-d-${work.id}"
             onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
