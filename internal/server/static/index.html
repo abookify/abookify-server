@@ -184,33 +184,155 @@
 
     .stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); }
 
-    /* Library surface (#205) — border-first cards on the design tokens,
-       per design/design-system-mock.html. Structure unchanged (cards stay
-       expandable); only the visual language is rolled onto the system. */
-    .works-list { padding: 0 var(--space-7) var(--space-7); display: flex; flex-direction: column; gap: var(--space-4); }
+    /* Library heading (#213). Sits above the poster grid; serif display
+       title per the warm-bookish mock. Hidden while a work detail is open. */
+    .library-head { padding: var(--space-6) var(--space-7) 0; }
+    .library-head h2 {
+      font-family: var(--serif); font-weight: 500; font-size: 1.9rem;
+      letter-spacing: -0.01em; color: var(--text);
+    }
+    .library-head .library-sub { margin-top: 4px; color: var(--muted); font-size: 0.9rem; }
 
+    /* Library surface (#213) — warm-bookish cover-poster grid
+       (design/explore/library-warm.html). Each card is a book poster that
+       opens a SEPARATE work-detail view (no inline accordion). Auto-fills
+       columns at a 184px min track; collapses to fewer columns on narrow
+       viewports. */
+    .works-list {
+      padding: var(--space-5) var(--space-7) var(--space-8);
+      display: grid; gap: 22px;
+      grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+      align-items: start;
+    }
+
+    /* Poster card (#213). A book cover with a meta block below; the whole
+       card is the click target into the work-detail view. Border-first with
+       a soft lift on hover (shadow reserved for this floating-on-hover cue). */
     .work-card {
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-md); box-shadow: var(--shadow);
-      overflow: hidden; transition: border-color 0.15s;
+      border-radius: var(--radius-lg); padding: 14px;
+      display: flex; flex-direction: column; gap: 12px;
+      cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s;
     }
-    .work-card:hover { border-color: var(--muted); }
-    /* overflow:hidden keeps the body's rounded corners, but it also clips
-       the header's ... popover when the card is collapsed (the popover
-       spills below the header, outside the card box). Let an open menu
-       escape so the trigger works in both collapsed and expanded states. */
-    .work-card:has(.work-menu-popover.open) { overflow: visible; }
+    .work-card:hover { border-color: #D8CBB4; transform: translateY(-2px); box-shadow: var(--shadow); }
 
-    .work-header {
-      padding: var(--space-5) var(--space-6); cursor: pointer; user-select: none;
-      display: flex; align-items: center; gap: var(--space-4);
+    /* Cover: real cover art when present; a warm gradient + serif title
+       overlay as the fallback (covers the ~no-cover works gracefully). The
+       play + ⋯ controls live in the cover corners. */
+    .work-cover {
+      position: relative; width: 100%; aspect-ratio: .72;
+      border-radius: 12px; overflow: hidden;
+      border: 1px solid rgba(60,40,20,.10);
+      background: linear-gradient(150deg, #5B4636, #2E2218);
     }
-    .work-title-block { flex: 1; min-width: 0; }
-    .work-title { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: var(--space-1); }
-    .work-author { font-size: 0.85rem; color: var(--muted); }
+    .work-cover img {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; display: block;
+    }
+    .work-cover .cover-fallback {
+      position: absolute; inset: 0; display: flex; align-items: flex-end;
+      padding: 12px; pointer-events: none;
+    }
+    .work-cover .cover-fallback .ct {
+      font-family: var(--serif); font-weight: 600; color: #fff; font-size: 15px;
+      line-height: 1.2; text-shadow: 0 1px 8px rgba(0,0,0,.4);
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    /* Hide the fallback title once the real cover image has loaded. */
+    .work-cover.has-art .cover-fallback { display: none; }
+    .work-cover.has-art { background: var(--surface-2); }
+
+    .work-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .work-title {
+      font-family: var(--serif); font-weight: 600; font-size: 1rem; line-height: 1.25;
+      letter-spacing: -0.01em; color: var(--text);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .work-author {
+      font-size: 0.8rem; color: var(--muted); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
     .work-processed { color: var(--text-muted); opacity: 0.8; }
 
-    .work-badges { display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0; }
+    /* Thin progress bar (replaces the row's "◷ Xh of Yh" text in the grid). */
+    .work-progressbar { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 1px; }
+    .work-progressbar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+    .work-badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+    /* Cover-corner controls (#213). The card itself is the click target into
+       the detail view; play + ⋯ stop propagation. The ⋯ popover anchors to
+       the card (position:relative) and the card no longer clips overflow, so
+       the menu opens correctly from the grid — this fixes the old collision
+       where overflow:hidden hid the popover unless the row was expanded. */
+    .work-card { position: relative; }
+    .work-cover .work-play-btn {
+      position: absolute; left: 8px; bottom: 8px; z-index: 2;
+      width: 38px; height: 38px; font-size: 0.9rem;
+    }
+    .work-card > .work-menu-btn {
+      position: absolute; top: 9px; right: 9px; z-index: 3;
+      width: 30px; height: 30px; font-size: 1rem;
+      background: rgba(255,255,255,0.92); color: var(--text);
+      border-color: rgba(60,40,20,0.16); backdrop-filter: blur(2px);
+    }
+    .work-card > .work-menu-btn:hover { background: #fff; }
+    .work-card > .work-menu-popover { top: 42px; right: 9px; left: auto; }
+
+    /* Work-detail view (#213) — the separate view a poster card opens.
+       A back/breadcrumb top bar, a hero (cover + meta + CTA), then the work
+       body (chapters / cast / Q&A). Mirrors design/explore/work-detail-warm. */
+    .work-detail { max-width: 1180px; margin: 0 auto; padding: 0 var(--space-7) var(--space-8); }
+    .detail-topbar { display: flex; align-items: center; gap: 12px; padding: var(--space-5) 0 var(--space-3); flex-wrap: wrap; position: relative; }
+    .detail-back {
+      display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+      color: var(--text); border: 1px solid var(--border); background: var(--surface);
+      padding: 7px 13px; border-radius: var(--radius-md); font-size: 0.85rem; font-weight: 500;
+    }
+    .detail-back:hover { border-color: #D8CBB4; }
+    .detail-crumb { color: var(--muted); font-size: 0.85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-crumb b { color: var(--text); font-weight: 600; }
+    .detail-spacer { flex: 1; }
+    .detail-act {
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      height: 36px; padding: 0 13px; border-radius: var(--radius-md); cursor: pointer;
+      font-size: 0.85rem; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .detail-act:hover { border-color: #D8CBB4; }
+
+    .detail-hero { display: flex; gap: 24px; padding: var(--space-3) 0 var(--space-6); align-items: flex-start; }
+    .detail-hero .cover {
+      position: relative; width: 138px; flex: 0 0 auto; aspect-ratio: .72;
+      border-radius: 14px; overflow: hidden; border: 1px solid rgba(60,40,20,.12);
+      box-shadow: var(--shadow); background: linear-gradient(150deg, #5B4636, #2E2218);
+    }
+    .detail-hero .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .detail-hero .cover .ct {
+      position: absolute; inset: 0; display: flex; align-items: flex-end; padding: 12px;
+      font-family: var(--serif); font-weight: 600; color: #fff; font-size: 16px; line-height: 1.2;
+      text-shadow: 0 1px 8px rgba(0,0,0,.4);
+    }
+    .detail-hero .cover.has-art .ct { display: none; }
+    .detail-info { flex: 1; min-width: 0; }
+    .detail-info h1 { font-family: var(--serif); font-weight: 600; font-size: 1.9rem; letter-spacing: -0.01em; line-height: 1.1; color: var(--text); }
+    .detail-by { margin-top: 6px; color: var(--muted); font-size: 0.9rem; }
+    .detail-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+    .detail-progline { margin-top: 14px; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+    .detail-cta { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+    .detail-btn {
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      padding: 9px 16px; border-radius: var(--radius-md); font-weight: 600; font-size: 0.85rem; cursor: pointer;
+    }
+    .detail-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .detail-btn:hover { filter: brightness(.97); }
+    /* The work body inside the detail view drops the card chrome — it sits
+       directly in the page column. */
+    .work-detail .work-body { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+    @media (max-width: 640px) {
+      .detail-hero { gap: 16px; }
+      .detail-hero .cover { width: 104px; }
+      .detail-info h1 { font-size: 1.5rem; }
+    }
 
     /* Pill badges follow the mock badge shape (full pill, 11px/700). The
        per-media-type colors are kept rather than the mock's uniform accent
@@ -1441,7 +1563,17 @@
   <div id="toast" style="display:none; position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:200; padding:10px 16px; border-radius:8px; font-size:0.85rem; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
   <div class="library-search-panel" id="library-search-panel" style="display:none;"></div>
+  <div class="library-head" id="library-head">
+    <h2>Library</h2>
+    <p class="library-sub">Your books, on your own hardware — read, listen, and follow along.</p>
+  </div>
   <div class="works-list" id="works-list"></div>
+
+  <!-- Work-detail view (#213): a separate full-width view that replaces the
+       grid when a poster card is opened. Holds the hero header + the work
+       body (chapters / cast / Q&A). The reader opens in the now-playing
+       overlay as before. -->
+  <div class="work-detail" id="work-detail" style="display:none;"></div>
 
   <!-- The old reader-fs-topbar + fullscreen-np elements were subsumed by
        the now-playing overlay's toolbar + maximize state. -->
@@ -1715,16 +1847,26 @@
           elapsed += pos.position_secs || 0;
           if (elapsed <= 1) return; // ignore unstarted books
           const pct = Math.min(100, Math.round((elapsed / total) * 100));
+          // Poster grid: thin progress bar under the title.
+          const bar = document.getElementById('work-progressbar-' + w.id);
+          if (bar) {
+            bar.style.display = '';
+            const fill = bar.querySelector('i');
+            if (fill) fill.style.width = pct + '%';
+          }
+          // Work-detail hero: textual "listened of total" line (only present
+          // when a detail view is open).
           const el = document.getElementById('work-progress-' + w.id);
-          if (!el) return;
-          el.style.display = '';
-          if (pct >= 99) {
-            el.classList.add('complete');
-            el.textContent = `✓ Finished · ${formatTimeHuman(total)}`;
-          } else {
-            // Clock glyph (not a play triangle) so this reads as "time
-            // listened", distinct from the row's play button (#213).
-            el.textContent = `◷ ${formatTimeHuman(elapsed)} of ${formatTimeHuman(total)} · ${pct}%`;
+          if (el) {
+            el.style.display = '';
+            if (pct >= 99) {
+              el.classList.add('complete');
+              el.textContent = `✓ Finished · ${formatTimeHuman(total)}`;
+            } else {
+              // Clock glyph (not a play triangle) so this reads as "time
+              // listened", distinct from the play button (#213).
+              el.textContent = `◷ ${formatTimeHuman(elapsed)} of ${formatTimeHuman(total)} · ${pct}%`;
+            }
           }
         } catch {}
       }));
@@ -1858,9 +2000,14 @@
       });
     }
 
+    // Element-based so the same handler works for the grid poster card AND
+    // the work-detail top bar (both render a ⋯ button with its popover as an
+    // immediate sibling). Avoids getElementById, which would collide now that
+    // the open detail keeps the (hidden) grid card in the DOM with the same
+    // work id.
     function toggleWorkMenu(workId, ev) {
-      const pop = document.getElementById('menu-pop-' + workId);
-      const btn = document.getElementById('menu-btn-' + workId);
+      const btn = ev && ev.currentTarget;
+      const pop = btn && btn.parentElement.querySelector('.work-menu-popover');
       const wasOpen = pop && pop.classList.contains('open');
       closeAllWorkMenus();
       if (!wasOpen && pop && btn) {
@@ -1983,6 +2130,7 @@
       if (!confirm(`Delete "${name}"? This removes the work from the library (files on disk are kept).`)) return;
       const res = await fetch(`/api/works/${workId}`, { method: 'DELETE' });
       if (!res.ok) { alert('Delete failed: ' + (await res.text())); return; }
+      if (currentDetailWorkId === workId) closeWorkDetail();
       loadWorks();
     }
 
@@ -2008,97 +2156,114 @@
         return;
       }
 
-      el.innerHTML = filtered.map(work => {
-        const audioFiles = work.audio_files || [];
-        const textFiles = work.text_files || [];
-        const cardId = 'work-' + work.id;
+      el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
+    }
 
-        return `
-          <div class="work-card" id="${cardId}">
-            <div class="work-header" onclick="toggleWork('${cardId}', ${work.id})">
-              <img src="/api/works/${work.id}/cover" onerror="this.style.display='none'"
-                style="width:48px; height:64px; border-radius:4px; object-fit:cover; flex-shrink:0; background:var(--border);">
-              ${work.has_audio ? `
-                <button class="work-play-btn" id="play-btn-${work.id}"
-                  onclick="event.stopPropagation(); resumeOrPlay(${work.id})"
-                  title="Resume / pause">&#9654;</button>` : ''}
-              <div class="work-title-block">
-                <div class="work-title">${escapeHtml(work.title)}</div>
-                <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span class="work-processed" title="Last processed ${work.content_version}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
-                <div class="work-progress" id="work-progress-${work.id}" style="display:none;"></div>
-              </div>
-              <div class="work-badges">
-                ${work.has_audio
-                  ? `<span class="media-pill audio">${audioFiles.length} audio</span>`
-                  : `<span class="media-pill missing">no audio</span>`}
-                ${work.has_text
-                  ? `<span class="media-pill text">${textFiles.length} text</span>`
-                  : `<span class="media-pill missing">no text</span>`}
-                ${renderGapBadge(work.id)}
-                ${renderAlignBadge(work)}
-              </div>
-              <button class="work-menu-btn" id="menu-btn-${work.id}"
-                onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
-                title="More actions" aria-haspopup="menu" aria-expanded="false">&#8943;</button>
-              <div class="work-menu-popover" id="menu-pop-${work.id}" role="menu"
-                onclick="event.stopPropagation();">
-                ${renderWorkMenu(work)}
-              </div>
+    // A single poster card for the library grid (#213). The whole card is the
+    // click target into the work-detail view; the play + ⋯ controls
+    // stopPropagation so they don't trigger the open. The cover shows real
+    // art when it loads (.has-art), else a warm gradient + serif title.
+    function posterCardHtml(work) {
+      const audioFiles = work.audio_files || [];
+      const textFiles = work.text_files || [];
+      const cardId = 'work-' + work.id;
+      return `
+        <div class="work-card" id="${cardId}" onclick="openWorkDetail(${work.id})"
+             title="${escapeHtml(work.title)}">
+          <div class="work-cover">
+            <img src="/api/works/${work.id}/cover" alt=""
+                 onload="this.closest('.work-cover').classList.add('has-art')"
+                 onerror="this.remove()">
+            <div class="cover-fallback"><div class="ct">${escapeHtml(work.title)}</div></div>
+            ${work.has_audio ? `
+              <button class="work-play-btn" id="play-btn-${work.id}"
+                onclick="event.stopPropagation(); resumeOrPlay(${work.id})"
+                title="Resume / pause">&#9654;</button>` : ''}
+          </div>
+          <button class="work-menu-btn" id="menu-btn-${work.id}"
+            onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
+            title="More actions" aria-haspopup="menu" aria-expanded="false">&#8943;</button>
+          <div class="work-menu-popover" id="menu-pop-${work.id}" role="menu"
+            onclick="event.stopPropagation();">
+            ${renderWorkMenu(work)}
+          </div>
+          <div class="work-meta">
+            <div class="work-title">${escapeHtml(work.title)}</div>
+            <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'}</div>
+            <div class="work-progressbar" id="work-progressbar-${work.id}" style="display:none;"><i style="width:0%"></i></div>
+            <div class="work-badges">
+              ${work.has_audio
+                ? `<span class="media-pill audio">${audioFiles.length} audio</span>`
+                : `<span class="media-pill missing">no audio</span>`}
+              ${work.has_text
+                ? `<span class="media-pill text">${textFiles.length} text</span>`
+                : `<span class="media-pill missing">no text</span>`}
+              ${renderGapBadge(work.id)}
+              ${renderAlignBadge(work)}
             </div>
-            <div class="work-body">
-              <div class="split-view">
-                ${renderAudioPane(work, audioFiles)}
-                ${renderTextPane(work, textFiles)}
-              </div>
-              <div class="bookmarks-panel" id="bookmarks-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                  <span style="font-size:0.75rem;font-weight:600;color:#f0a500;text-transform:uppercase;letter-spacing:1px;">Bookmarks</span>
-                  <button onclick="toggleBookmarks(${work.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.7rem;">hide</button>
-                </div>
-                <div id="bookmarks-list-${work.id}" style="font-size:0.8rem;color:var(--text-muted);">Loading...</div>
-              </div>
-              <div class="cast-panel" id="cast-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
-                <div class="cast-head">
-                  <span class="cast-title">Cast of characters</span>
-                  <span class="cast-exp" title="Extraction quality varies by genre/translation; aliases may over-split.">experimental</span>
-                </div>
-                <div id="cast-list-${work.id}" class="cast-list"></div>
-              </div>
-              ${work.has_text ? (llmConfigured ? `
-              <div class="qa-panel">
-                <div class="qa-header">Ask about this book</div>
-                <div class="chat-tabs" id="chat-tabs-${work.id}">
-                  <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
-                </div>
-                <div class="chat-thread" id="chat-thread-${work.id}">
-                  <div class="qa-empty">Pick a chat or start a new one to begin.</div>
-                </div>
-                <div class="qa-scope-row">
-                  <span>Scope:</span>
-                  <select id="qa-scope-${work.id}" onchange="onScopeChange(${work.id})" title="What part of the book the LLM may use to answer">
-                    <option value="book">Whole book</option>
-                    <option value="up_to_chapter">Up to here (no spoilers)</option>
-                    <option value="chapter">This chapter only</option>
-                  </select>
-                  <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
-                </div>
-                <div class="qa-input-row">
-                  <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
-                    data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
-                    onkeydown="if(event.key==='Enter')chatSend(${work.id})">
-                  <button onclick="chatSend(${work.id})">Ask</button>
-                </div>
-              </div>` : `
-              <div class="qa-panel">
-                <div class="qa-header">Ask about this book</div>
-                <div style="padding:0.8rem 1rem; font-size:0.8rem; color:var(--text-muted); text-align:center;">
-                  ✨ Natural-language Q&amp;A is available with an AI provider.
-                  <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
-                </div>
-              </div>`) : ''}
+          </div>
+        </div>`;
+    }
+
+    // The body shared by the work-detail view: chapter panes + bookmarks +
+    // cast + Q&A. Extracted from the old inline-accordion card so the detail
+    // view can reuse it verbatim (same element IDs the hydration helpers and
+    // playback code already target). The reader itself lives in the
+    // now-playing overlay (#213), not here.
+    function workBodyHtml(work, audioFiles, textFiles) {
+      return `
+        <div class="work-body" style="display:block; border-top:none;">
+          <div class="split-view">
+            ${renderAudioPane(work, audioFiles)}
+            ${renderTextPane(work, textFiles)}
+          </div>
+          <div class="bookmarks-panel" id="bookmarks-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <span style="font-size:0.75rem;font-weight:600;color:var(--mp3);text-transform:uppercase;letter-spacing:1px;">Bookmarks</span>
+              <button onclick="toggleBookmarks(${work.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.7rem;">hide</button>
             </div>
-          </div>`;
-      }).join('');
+            <div id="bookmarks-list-${work.id}" style="font-size:0.8rem;color:var(--text-muted);">Loading...</div>
+          </div>
+          <div class="cast-panel" id="cast-panel-${work.id}" style="display:none;padding:8px 16px;border-top:1px solid var(--border);">
+            <div class="cast-head">
+              <span class="cast-title">Cast of characters</span>
+              <span class="cast-exp" title="Extraction quality varies by genre/translation; aliases may over-split.">experimental</span>
+            </div>
+            <div id="cast-list-${work.id}" class="cast-list"></div>
+          </div>
+          ${work.has_text ? (llmConfigured ? `
+          <div class="qa-panel">
+            <div class="qa-header">Ask about this book</div>
+            <div class="chat-tabs" id="chat-tabs-${work.id}">
+              <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
+            </div>
+            <div class="chat-thread" id="chat-thread-${work.id}">
+              <div class="qa-empty">Pick a chat or start a new one to begin.</div>
+            </div>
+            <div class="qa-scope-row">
+              <span>Scope:</span>
+              <select id="qa-scope-${work.id}" onchange="onScopeChange(${work.id})" title="What part of the book the LLM may use to answer">
+                <option value="book">Whole book</option>
+                <option value="up_to_chapter">Up to here (no spoilers)</option>
+                <option value="chapter">This chapter only</option>
+              </select>
+              <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
+            </div>
+            <div class="qa-input-row">
+              <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
+                data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
+                onkeydown="if(event.key==='Enter')chatSend(${work.id})">
+              <button onclick="chatSend(${work.id})">Ask</button>
+            </div>
+          </div>` : `
+          <div class="qa-panel">
+            <div class="qa-header">Ask about this book</div>
+            <div style="padding:0.8rem 1rem; font-size:0.8rem; color:var(--text-muted); text-align:center;">
+              ✨ Natural-language Q&amp;A is available with an AI provider.
+              <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
+            </div>
+          </div>`) : ''}
+        </div>`;
     }
 
     function renderAudioPane(work, files) {
@@ -2971,40 +3136,105 @@
         ${omittedNote}`;
     }
 
-    async function toggleWork(cardId, workId) {
-      const card = document.getElementById(cardId);
-      card.classList.toggle('expanded');
+    // The work id whose detail view is currently open (null on the grid).
+    let currentDetailWorkId = null;
 
-      if (card.classList.contains('expanded')) {
-        // Load chapter lists for text books
-        const work = allWorks.find(w => w.id === workId);
-        if (work && work.text_files) {
-          for (const tf of work.text_files) {
-            if (tf.chapter_count > 0) {
-              await loadChapterList(tf.id, workId);
-            }
-          }
-        }
-        // Show resume indicator if there's a saved position. resumeIfSaved
-        // decorates the audio-file rows; markResumeOnTextToc decorates the
-        // visible ebook-pane TOC (the authoritative list for time-synced
-        // multi-file books, where the audio rows are hidden).
-        if (work && work.has_audio) {
-          resumeIfSaved(workId);
-          markResumeOnTextToc(workId);
-        }
-        // Hydrate chat sessions for the Q&A panel (no-op when LLM
-        // isn't configured — the chat panel doesn't render).
-        if (work && work.has_text && llmConfigured && document.getElementById('chat-tabs-' + workId)) {
-          loadChatSessions(workId);
-        }
-        // Cast of characters (experimental). Only for works with an EPUB
-        // text source; the panel stays hidden when the feature is disabled
-        // and there's no extracted cast.
-        if (work && (work.text_files || []).some(tf => tf.format === 'epub')) {
-          loadCast(workId);
+    // Open a work in the full-width detail view (#213). Replaces the old
+    // inline-accordion toggleWork: builds the hero + body, swaps the grid out,
+    // and runs the same hydration the accordion did on expand.
+    function openWorkDetail(workId) {
+      closeAllWorkMenus();
+      const work = (allWorks || []).find(w => w.id === workId);
+      if (!work) return;
+      currentDetailWorkId = workId;
+      const audioFiles = work.audio_files || [];
+      const textFiles = work.text_files || [];
+      const detail = document.getElementById('work-detail');
+      detail.innerHTML = `
+        <div class="detail-topbar">
+          <button class="detail-back" onclick="closeWorkDetail()">&#8592; Library</button>
+          <span class="detail-crumb"><b>${escapeHtml(work.title)}</b>${work.author ? ' &middot; ' + escapeHtml(work.author) : ''}</span>
+          <span class="detail-spacer"></span>
+          ${(work.has_audio && work.has_text) ? `<button class="detail-act" onclick="openMeld(${work.id})" title="Compare sources">&#8644; Compare</button>` : ''}
+          <button class="detail-act" onclick="openAbookSummary(${work.id})" title=".abook summary">&#9432; Summary</button>
+          <button class="detail-act" id="menu-btn-d-${work.id}"
+            onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
+            aria-haspopup="menu" aria-expanded="false" title="More actions">&#8943;</button>
+          <div class="work-menu-popover" id="menu-pop-d-${work.id}" role="menu"
+            onclick="event.stopPropagation();" style="top:46px; right:0; left:auto;">
+            ${renderWorkMenu(work)}
+          </div>
+        </div>
+        <div class="detail-hero">
+          <div class="cover">
+            <img src="/api/works/${work.id}/cover" alt=""
+                 onload="this.closest('.cover').classList.add('has-art')" onerror="this.remove()">
+            <div class="ct">${escapeHtml(work.title)}</div>
+          </div>
+          <div class="detail-info">
+            <h1>${escapeHtml(work.title)}</h1>
+            <div class="detail-by">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span title="Last processed ${work.content_version}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
+            <div class="detail-row work-badges">
+              ${work.has_audio ? `<span class="media-pill audio">${audioFiles.length} audio</span>` : `<span class="media-pill missing">no audio</span>`}
+              ${work.has_text ? `<span class="media-pill text">${textFiles.length} text</span>` : `<span class="media-pill missing">no text</span>`}
+              ${renderGapBadge(work.id)}
+              ${renderAlignBadge(work)}
+            </div>
+            <div class="detail-progline work-progress" id="work-progress-${work.id}" style="display:none;"></div>
+            <div class="detail-cta">
+              ${work.has_audio ? `<button class="detail-btn primary" onclick="resumeOrPlay(${work.id})">&#9654; Resume listening</button>` : ''}
+              ${(work.has_text && !work.has_audio) ? `<button class="detail-btn primary" onclick="generateAudio(${work.id})">Generate audio (TTS)</button>` : ''}
+            </div>
+          </div>
+        </div>
+        ${workBodyHtml(work, audioFiles, textFiles)}
+      `;
+      // Swap the library grid out for the detail view.
+      document.getElementById('library-head').style.display = 'none';
+      document.getElementById('works-list').style.display = 'none';
+      const toolbar = document.querySelector('.toolbar');
+      if (toolbar) toolbar.style.display = 'none';
+      detail.style.display = '';
+      window.scrollTo(0, 0);
+      // Hydrate the panes (same work the accordion expand used to do).
+      hydrateWorkDetail(work);
+      hydrateWorkProgress();
+    }
+
+    function hydrateWorkDetail(work) {
+      const workId = work.id;
+      if (work.text_files) {
+        for (const tf of work.text_files) {
+          if (tf.chapter_count > 0) loadChapterList(tf.id, workId);
         }
       }
+      // resumeIfSaved decorates the audio-file rows; markResumeOnTextToc
+      // decorates the visible ebook-pane TOC (authoritative for time-synced
+      // multi-file books, where the audio rows are hidden).
+      if (work.has_audio) {
+        resumeIfSaved(workId);
+        markResumeOnTextToc(workId);
+      }
+      // Q&A chat sessions (no-op when LLM isn't configured).
+      if (work.has_text && llmConfigured && document.getElementById('chat-tabs-' + workId)) {
+        loadChatSessions(workId);
+      }
+      // Cast of characters (experimental) — EPUB text sources only.
+      if ((work.text_files || []).some(tf => tf.format === 'epub')) {
+        loadCast(workId);
+      }
+    }
+
+    function closeWorkDetail() {
+      closeAllWorkMenus();
+      currentDetailWorkId = null;
+      const detail = document.getElementById('work-detail');
+      detail.style.display = 'none';
+      detail.innerHTML = '';
+      document.getElementById('library-head').style.display = '';
+      document.getElementById('works-list').style.display = '';
+      const toolbar = document.querySelector('.toolbar');
+      if (toolbar) toolbar.style.display = '';
     }
 
     // Load + render a work's cast (experimental). Shows the panel only when
