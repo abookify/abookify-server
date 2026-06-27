@@ -778,22 +778,20 @@
       --reader-measure: 33rem;   /* ~66 CPL at 18px */
       --reader-font: "Iowan Old Style", "Charter", Georgia, ui-serif, serif;
 
-      /* Theme-aware "paper" (#205). The reader keeps a warm reading
-         surface that follows the theme instead of a fixed cream page:
-         warm-dark paper in dark mode (current), warm cream in light
-         (added when light activates at the end of the rollout).
+      /* Warm-bookish "paper" (#213) — the reader follows the warm theme
+         (design/explore/now-playing-warm.html): cream page, warm near-black
+         prose, the karaoke window picked out on it.
          --reader-ink = full-strength text + the just-read word window;
-         --reader-dim = upcoming words; --reader-faded = words already
-         passed; --reader-active = the currently-spoken word — a soft,
-         light tint of the app accent (not the full-saturation blue,
-         which is too harsh for long-form reading) and NOT bold, so the
-         karaoke highlight never changes a word's width and reflows the
-         paragraph under the reader. */
-      --reader-bg: #1b1813;
-      --reader-ink: #e9e2d4;
-      --reader-dim: #8f8676;
-      --reader-faded: #5f5950;
-      --reader-active: #9bbcf2;
+         --reader-dim = upcoming words (gently dimmed, mock .ahead);
+         --reader-faded = words already passed (faded toward the page);
+         --reader-active = the currently-spoken word — the app accent, NOT
+         bold, so the karaoke highlight never changes a word's width and
+         reflows the paragraph under the reader. */
+      --reader-bg: #FBF8F3;
+      --reader-ink: #2A241D;
+      --reader-dim: #9A8F7E;
+      --reader-faded: #BCB2A1;
+      --reader-active: #1D4ED8;
     }
     .reader-content {
       padding: 1.5rem 2rem;
@@ -918,11 +916,15 @@
       transition: color 0.15s;
       color: var(--reader-dim);
     }
-    /* The active (currently-spoken) word pops in a soft light tint on
-       the warm paper. NO font-weight change — bolding reflows the line
-       and makes the karaoke feel jumpy / out of sync. */
+    /* The active (currently-spoken) word pops in the accent with a soft
+       accent-soft halo on the warm paper (per now-playing-warm.html). Color +
+       box-shadow only — NO font-weight/size change — so the karaoke highlight
+       never changes a word's width and reflows the line. */
     .reader-content .sync-word.read {
       color: var(--reader-active);
+      background: var(--accent-soft);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+      border-radius: 4px;
     }
     .reader-content .sync-word.past {
       color: var(--reader-faded);
@@ -1052,7 +1054,7 @@
       padding: var(--space-2) var(--space-5);
       background: var(--surface);
       border-top: 1px solid var(--border);
-      box-shadow: 0 -2px 8px rgba(0,0,0,0.3);
+      box-shadow: 0 -10px 30px rgba(60,40,20,0.07);
     }
     .now-playing.visible { display: grid; }
     .np-bigplay {
@@ -1083,7 +1085,7 @@
       height: 360px;
       background: var(--reader-bg);
       border-top: 1px solid var(--border);
-      box-shadow: 0 -4px 14px rgba(0,0,0,0.35);
+      box-shadow: 0 -12px 34px rgba(60,40,20,0.08);
       display: none; flex-direction: column;
     }
     .np-overlay.visible { display: flex; }
