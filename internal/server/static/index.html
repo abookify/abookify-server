@@ -12,7 +12,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/icons/png/favicon-16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/png/apple-touch-icon.png">
   <link rel="manifest" href="/icons/site.webmanifest">
-  <meta name="theme-color" content="#1D4ED8">
+  <meta name="theme-color" content="#FBF8F3">
+
+  <!-- Fraunces = display/heading serif for the warm-bookish theme (#213).
+       Loaded from Google Fonts for visual fidelity with the mock; falls
+       back gracefully to Georgia offline (self-hosters with no network
+       still get a serif). Follow-up: bundle Fraunces locally via `make css`
+       the way Inter already is, to honor the offline/no-CDN principle. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap" rel="stylesheet">
 
   <!--
     Design-system stylesheet (#205 / Phase 1 #144): Tailwind v3 compiled
@@ -26,18 +35,24 @@
 
   <style>
     :root {
-      /* Design system tokens (#205) — canonical reference is
-         design/design-system-mock.html + STYLE_GUIDE.md. Dark is the
-         base here (the app is dark-today; light-theme activation via
-         prefers-color-scheme lands at the end of the surface rollout,
-         once each surface is fully token-driven and free of hardcoded
-         dark-assumption colors). Accent #3b82f6 = AA-safe on #0B1020
-         (brand #1D4ED8 from #191). */
-      color-scheme: dark;
+      /* Warm-bookish light theme (#213 / #205 rollout — decided 2026-06-27).
+         Canonical reference: STYLE_GUIDE.md "Direction — warm-bookish light
+         theme" + design/explore/library-warm.html / work-detail-warm.html.
+         This surface (library listing + work detail) is the first real
+         implementation; the token NAMES below are the contract every other
+         surface reuses as the refresh rolls on. Paper warmth, serif display
+         type (Fraunces), border-first (--bg and --surface differ only
+         slightly; the --border hairline does the structuring; shadow is
+         reserved for genuinely-floating elements). The reader inside the
+         now-playing overlay keeps its own scoped --reader-* dark vars for
+         now — re-theming that consumption surface is a separate step. */
+      color-scheme: light;
 
-      /* Typography */
+      /* Typography — two-serif strategy: Fraunces for display/titles,
+         Georgia for the ebook reader prose, Inter for everything else. */
       --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-reader: Georgia, "Iowan Old Style", "Charter", ui-serif, serif;
+      --serif: "Fraunces", Georgia, "Iowan Old Style", serif;
 
       /* Spacing scale 4→40 */
       --space-1: 4px;
@@ -49,42 +64,46 @@
       --space-7: 32px;
       --space-8: 40px;
 
-      /* Radius scale */
+      /* Radius scale (warm: sm 10 / md 16 / lg 22) */
       --radius-sm: 10px;
       --radius-md: 16px;
-      --radius-lg: 24px;
+      --radius-lg: 22px;
 
-      /* Dark palette (mock canonical) */
-      --bg: #0B1020;
-      --surface: #141A2E;
-      --surface-2: #111827;
-      --surface-hover: #1c2438; /* hover tint, between surface + bg */
-      --border: #1F2937;
-      --text: #F3F4F6;
-      --muted: #9AA0B0;
+      /* Warm-bookish light palette (STYLE_GUIDE token table). The legacy
+         app-specific tokens (--surface-hover, --*-soft, --epub/--mp3/
+         --generate, --ebook-only, --muted-2/--text-soft) are remapped to
+         warm, light-legible equivalents so every existing reference keeps
+         working without per-call-site edits. */
+      --bg: #FBF8F3;          /* warm paper page */
+      --surface: #FFFFFF;     /* cards/raised — slightly brighter than page */
+      --surface-2: #F4EEE4;   /* warm inset (inputs, card bodies, headers) */
+      --surface-hover: #F1E8DA;/* hover tint on white surfaces */
+      --border: #E7DDCD;      /* warm hairline — primary structuring device */
+      --text: #241E17;        /* warm near-black */
+      --muted: #7C7163;       /* warm secondary */
       --text-muted: var(--muted); /* alias — existing refs */
-      --accent: #3B82F6;
-      --accent-soft: rgba(59,130,246,.16);
+      --accent: #1D4ED8;      /* brand blue (unchanged anchor; AA on white) */
+      --accent-soft: rgba(29,78,216,.10);
       --danger: #E94560;
       --danger-soft: rgba(233,69,96,.12);
-      --success: #34D399;
-      --success-soft: rgba(52,211,153,.14);
-      --highlight: #172554;
-      --ebook-only: #F59E0B; /* amber — ebook-only alignment rows (#199/#200) */
-      --ebook-only-soft: rgba(245,158,11,.12);
-      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 18px 48px rgba(0,0,0,.45);
+      --success: #0F766E;     /* coverage pill teal */
+      --success-soft: rgba(15,118,110,.12);
+      --highlight: #E6EEFB;   /* karaoke current-sentence band (soft blue) */
+      --ebook-only: #B45309; /* amber-700 — ebook-only rows, legible on light */
+      --ebook-only-soft: rgba(180,83,9,.12);
+      --shadow: 0 1px 2px rgba(60,40,20,.05), 0 18px 44px rgba(60,40,20,.07);
 
-      /* Secondary text tints (#205 legacy-color tokenization 2026-05-29) */
-      --muted-2: #55607a;
-      --text-soft: #c0c8d8;
+      /* Secondary text tints */
+      --muted-2: #A99E8C;
+      --text-soft: #4A4136;
 
-      /* Media-type accents */
-      --epub: #4ecca3;
-      --epub-soft: rgba(78,204,163,.15);
-      --mp3: #f0a500;
-      --generate: #7b68ee;
+      /* Media-type accents (light-legible) */
+      --epub: #15803D;        /* text/ebook green */
+      --epub-soft: rgba(21,128,61,.14);
+      --mp3: #B45309;         /* audio amber */
+      --generate: #6D28D9;    /* TTS/generate violet */
 
-      /* Karaoke reading-window tints (#205 legacy-color tokenization 2026-05-29) */
+      /* Karaoke reading-window tints (used over the dark reader overlay) */
       --karaoke-read: #e8eaf0;
       --karaoke-past: #3a4260;
     }
