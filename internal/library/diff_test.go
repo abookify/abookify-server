@@ -43,6 +43,62 @@ func TestDisplayTokenizeMatchesTokenize(t *testing.T) {
 	}
 }
 
+// Directional coverage (#199) must read BOTH ways out of one payload: scope
+// (ebook→audio) = aligned_ebook/ebook, and quality (audio→ebook) =
+// aligned_trans/trans, where aligned = words NOT in an {ebook,trans}-only
+// segment. Locks the Heart of Darkness shape (the bug a single number caused):
+// 33% scope but 92% quality.
+func TestDirectionalFromHeartOfDarkness(t *testing.T) {
+	p := AnchorAlignmentPayload{
+		EbookWords: 109728,
+		TransWords: 39822,
+		Divergence: DivergenceSummary{
+			EbookOnlyWords: 73246,
+			TransOnlyWords: 3232,
+		},
+	}
+	d := directionalFrom(p, 0, 0)
+	if d.AlignedEbookWords != 36482 {
+		t.Errorf("aligned_ebook_words = %d, want 36482", d.AlignedEbookWords)
+	}
+	if d.AlignedTransWords != 36590 {
+		t.Errorf("aligned_trans_words = %d, want 36590", d.AlignedTransWords)
+	}
+	if got := round2(d.EbookToAudio); got != 0.33 {
+		t.Errorf("ebook_to_audio (scope) = %.4f, want ~0.33", d.EbookToAudio)
+	}
+	if got := round2(d.AudioToEbook); got != 0.92 {
+		t.Errorf("audio_to_ebook (quality) = %.4f, want ~0.92", d.AudioToEbook)
+	}
+}
+
+// directionalFrom must not divide by zero or report negative aligned counts
+// when a payload is empty or self-inconsistent (older/partial rows).
+func TestDirectionalFromDegenerate(t *testing.T) {
+	// Empty payload → all zero, no NaN/Inf.
+	d := directionalFrom(AnchorAlignmentPayload{}, 0, 0)
+	if d.AudioToEbook != 0 || d.EbookToAudio != 0 {
+		t.Errorf("empty payload should give 0 ratios, got %+v", d)
+	}
+	// only_words exceeding totals must clamp aligned to 0, not go negative.
+	d = directionalFrom(AnchorAlignmentPayload{
+		EbookWords: 100, TransWords: 100,
+		Divergence: DivergenceSummary{EbookOnlyWords: 250, TransOnlyWords: 250},
+	}, 0, 0)
+	if d.AlignedEbookWords != 0 || d.AlignedTransWords != 0 {
+		t.Errorf("aligned counts should clamp to 0, got ebook=%d trans=%d", d.AlignedEbookWords, d.AlignedTransWords)
+	}
+	// Fallbacks fill missing word counts.
+	d = directionalFrom(AnchorAlignmentPayload{}, 50, 80)
+	if d.EbookWords != 50 || d.TransWords != 80 {
+		t.Errorf("fallbacks not applied: ebook=%d trans=%d", d.EbookWords, d.TransWords)
+	}
+}
+
+func round2(f float64) float64 {
+	return float64(int(f*100+0.5)) / 100
+}
+
 // lower mirrors Tokenize's only case transform (ToLower) for the position check.
 func lower(s string) string {
 	b := []rune(s)

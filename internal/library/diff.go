@@ -29,14 +29,97 @@ type DiffSpan struct {
 	BPct   float64 `json:"b_pct"`
 }
 
+// DirectionalCoverage expresses an alignment pair's coverage in BOTH
+// directions, which mean different things (the #199 fix — a single number was
+// the whole bug). The math lives in the anchor payload (transcription owns it);
+// this only forms the two ratios:
+//   AudioToEbook (QUALITY) = aligned_trans_words / trans_words — how much of the
+//     narration is backed by ebook text. High ⇒ a clean, trustworthy alignment.
+//   EbookToAudio (SCOPE)   = aligned_ebook_words / ebook_words — how much of the
+//     ebook is actually narrated. Low is normal/expected for a collection or
+//     abridgement (e.g. Heart of Darkness: 92% quality, 33% scope).
+// aligned_*_words derive from the divergence tally: the words NOT in an
+// {ebook,trans}-only segment (i.e. aligned + replace runs).
+type DirectionalCoverage struct {
+	EbookWords        int     `json:"ebook_words"`
+	TransWords        int     `json:"trans_words"`
+	AlignedEbookWords int     `json:"aligned_ebook_words"`
+	AlignedTransWords int     `json:"aligned_trans_words"`
+	EbookOnlyWords    int     `json:"ebook_only_words"`
+	TransOnlyWords    int     `json:"trans_only_words"`
+	AudioToEbook      float64 `json:"audio_to_ebook"` // quality
+	EbookToAudio      float64 `json:"ebook_to_audio"` // scope
+}
+
+// directionalFrom forms both-direction coverage from a payload. ebookFallback/
+// transFallback are token-stream lengths used only when the payload omits the
+// word counts (older rows); pass 0 to skip.
+func directionalFrom(p AnchorAlignmentPayload, ebookFallback, transFallback int) DirectionalCoverage {
+	eb := p.EbookWords
+	if eb == 0 {
+		eb = ebookFallback
+	}
+	tr := p.TransWords
+	if tr == 0 {
+		tr = transFallback
+	}
+	alignedEb := eb - p.Divergence.EbookOnlyWords
+	if alignedEb < 0 {
+		alignedEb = 0
+	}
+	alignedTr := tr - p.Divergence.TransOnlyWords
+	if alignedTr < 0 {
+		alignedTr = 0
+	}
+	ratio := func(n, d int) float64 {
+		if d <= 0 {
+			return 0
+		}
+		return float64(n) / float64(d)
+	}
+	return DirectionalCoverage{
+		EbookWords:        eb,
+		TransWords:        tr,
+		AlignedEbookWords: alignedEb,
+		AlignedTransWords: alignedTr,
+		EbookOnlyWords:    p.Divergence.EbookOnlyWords,
+		TransOnlyWords:    p.Divergence.TransOnlyWords,
+		AudioToEbook:      ratio(alignedTr, tr),
+		EbookToAudio:      ratio(alignedEb, eb),
+	}
+}
+
+// PairCoverage is one source-pair's directional coverage, with both sides
+// labeled. The /coverage endpoint returns a list of these so the UI can show
+// N ebook/mobi editions as column-pairs (extensible beyond one edition).
+type PairCoverage struct {
+	Ebook      DiffSource `json:"ebook"`
+	Transcript DiffSource `json:"transcript"`
+	Method     string     `json:"method"`
+	Unit       string     `json:"unit"`
+	DirectionalCoverage
+}
+
+// WorkCoverage is the GET /api/works/{id}/coverage payload (#199): per-pair
+// directional coverage with no span detail. Cheap enough for the listing/work
+// readouts; the heavy span breakdown stays in /diff. Contract documented in
+// engineering/handoff/server-web.md.
+type WorkCoverage struct {
+	WorkID int64          `json:"work_id"`
+	Pairs  []PairCoverage `json:"pairs"`
+}
+
 // WorkDiff is the GET /api/works/{id}/diff payload (contract in
-// SESSION_HANDOFF.md — mobile's MeldScreen consumes this shape).
+// handoff/server-web.md — mobile's MeldScreen consumes this shape). Coverage
+// stays the single ebook→audio (scope) number for back-compat; Directional
+// carries BOTH directions for the shown pair (#199/#200).
 type WorkDiff struct {
-	SourceA  DiffSource `json:"source_a"`
-	SourceB  DiffSource `json:"source_b"`
-	Coverage float64    `json:"coverage"`
-	Method   string     `json:"method"`
-	Spans    []DiffSpan `json:"spans"`
+	SourceA     DiffSource           `json:"source_a"`
+	SourceB     DiffSource           `json:"source_b"`
+	Coverage    float64              `json:"coverage"`
+	Method      string               `json:"method"`
+	Directional *DirectionalCoverage `json:"directional,omitempty"`
+	Spans       []DiffSpan           `json:"spans"`
 }
 
 // maxSpanWords caps each side of a divergent span so a single large skip /
@@ -191,13 +274,47 @@ func BuildDiff(store *db.Store, workID int64) (*WorkDiff, bool, error) {
 		spans = append(spans, span)
 	}
 
+	dir := directionalFrom(bestPayload, len(ebookToks), len(transToks))
 	return &WorkDiff{
-		SourceA:  DiffSource{BookID: best.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
-		SourceB:  DiffSource{BookID: best.ToBookID, Origin: originOf(trans), Label: bookLabel(trans)},
-		Coverage: best.Confidence,
-		Method:   best.Method,
-		Spans:    spans,
+		SourceA:     DiffSource{BookID: best.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
+		SourceB:     DiffSource{BookID: best.ToBookID, Origin: originOf(trans), Label: bookLabel(trans)},
+		Coverage:    best.Confidence,
+		Method:      best.Method,
+		Directional: &dir,
+		Spans:       spans,
 	}, true, nil
+}
+
+// BuildCoverage returns per-source-pair directional coverage for a work (#199),
+// one PairCoverage per word-unit alignment that carries a divergence tally. No
+// span detail — cheap for the listing/work readouts. Empty pairs (not an error)
+// when the work has no word-level alignment yet.
+func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
+	aligns, err := store.ListAlignmentsForWork(workID)
+	if err != nil {
+		return nil, err
+	}
+	out := &WorkCoverage{WorkID: workID, Pairs: []PairCoverage{}}
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Unit != "word" {
+			continue // embedding/paragraph offsets aren't word counts we can split
+		}
+		var p AnchorAlignmentPayload
+		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+			continue
+		}
+		ebook, _ := store.GetBook(a.FromBookID)
+		trans, _ := store.GetBook(a.ToBookID)
+		out.Pairs = append(out.Pairs, PairCoverage{
+			Ebook:               DiffSource{BookID: a.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
+			Transcript:          DiffSource{BookID: a.ToBookID, Origin: originOf(trans), Label: bookLabel(trans)},
+			Method:              a.Method,
+			Unit:                a.Unit,
+			DirectionalCoverage: directionalFrom(p, 0, 0),
+		})
+	}
+	return out, nil
 }
 
 func originOf(b *db.Book) string {

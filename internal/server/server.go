@@ -260,6 +260,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/version", s.handleWorkVersion)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
+	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
@@ -642,6 +643,26 @@ func (s *Server) handleWorkDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, diff)
+}
+
+// handleWorkCoverage returns per-source-pair DIRECTIONAL coverage (#199): for
+// each ebook↔transcript pair, both the audio→ebook (quality) and ebook→audio
+// (scope) ratios plus the raw word counts. No span detail (that's /diff). The
+// pairs list is the column-pair contract the #200 readout + mobile #201 build
+// against — see engineering/handoff/server-web.md. Always 200 with a (possibly
+// empty) pairs array so consumers degrade gracefully.
+func (s *Server) handleWorkCoverage(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	cov, err := library.BuildCoverage(s.store, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, cov)
 }
 
 // handleGetCast returns a work's cast of characters (EXPERIMENTAL). Always
