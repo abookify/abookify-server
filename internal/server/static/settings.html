@@ -12,31 +12,33 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/icons/png/favicon-16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/png/apple-touch-icon.png">
   <link rel="manifest" href="/icons/site.webmanifest">
-  <meta name="theme-color" content="#1D4ED8">
+  <meta name="theme-color" content="#FBF8F3">
 
   <!-- Design-system stylesheet (#205): bundled Inter @font-face + shared
        component classes. Built offline via `make css`. -->
   <link rel="stylesheet" href="/app.css">
   <style>
     :root {
-      /* Design system tokens (#205) — see design/design-system-mock.html.
-         Dark base; light activation deferred to end of rollout. */
-      color-scheme: dark;
+      /* Warm-bookish light theme (#213) — MUST match index.html's token table
+         (STYLE_GUIDE "Direction — warm-bookish light theme"). Settings is a
+         capability surface: same warm palette, denser/control-forward. */
+      color-scheme: light;
       --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-reader: Georgia, "Iowan Old Style", "Charter", ui-serif, serif;
+      --serif: "Fraunces", Georgia, "Iowan Old Style", serif;
       --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
       --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 40px;
-      --radius-sm: 10px; --radius-md: 16px; --radius-lg: 24px;
-      --bg: #0B1020; --surface: #141A2E; --surface-2: #111827; --surface-hover: #1c2438;
-      --border: #1F2937; --text: #F3F4F6; --muted: #9AA0B0; --text-muted: var(--muted);
-      --accent: #3b82f6; --accent-soft: rgba(59,130,246,.16);
+      --radius-sm: 10px; --radius-md: 16px; --radius-lg: 22px;
+      --bg: #FBF8F3; --surface: #FFFFFF; --surface-2: #F4EEE4; --surface-hover: #F1E8DA;
+      --border: #E7DDCD; --text: #241E17; --muted: #7C7163; --text-muted: var(--muted);
+      --accent: #1D4ED8; --accent-soft: rgba(29,78,216,.10);
       --danger: #e94560; --danger-soft: rgba(233,69,96,.12);
-      --success: #34D399; --success-soft: rgba(52,211,153,.14);
-      --highlight: #172554; --ebook-only: #F59E0B; --ebook-only-soft: rgba(245,158,11,.12);
-      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 18px 48px rgba(0,0,0,.45);
-      --muted-2: #55607a; --text-soft: #c0c8d8;
-      --epub: #4ecca3; --epub-soft: rgba(78,204,163,.15);
-      --mp3: #f0a500; --generate: #7b68ee;
+      --success: #0F766E; --success-soft: rgba(15,118,110,.12);
+      --highlight: #E6EEFB; --ebook-only: #B45309; --ebook-only-soft: rgba(180,83,9,.12);
+      --shadow: 0 1px 2px rgba(60,40,20,.05), 0 18px 44px rgba(60,40,20,.07);
+      --muted-2: #A99E8C; --text-soft: #4A4136;
+      --epub: #15803D; --epub-soft: rgba(21,128,61,.14);
+      --mp3: #B45309; --generate: #6D28D9;
       --karaoke-read: #e8eaf0; --karaoke-past: #3a4260;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -164,7 +166,7 @@
       position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 100;
       background: var(--accent); border: none; border-radius: 999px;
       color: white; padding: 0.7rem 1.4rem; font-size: 0.9rem; font-weight: 600;
-      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      cursor: pointer; box-shadow: 0 8px 24px rgba(29,78,216,0.30);
       display: inline-flex; align-items: center; gap: 0.4rem;
       transition: opacity 0.1s, transform 0.05s;
     }
