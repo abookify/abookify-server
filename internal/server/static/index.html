@@ -460,6 +460,37 @@
     .meld-ins { background: rgba(52,211,153,0.22); border-radius: 3px; padding: 0 2px; }
     @media (max-width: 560px) { .meld-pair { grid-template-columns: 1fr; } }
 
+    /* Directional coverage readout (#199/#200): two columns per source-pair —
+       QUALITY (audiobook→ebook, traffic-lit: is the alignment trustworthy) and
+       SCOPE (ebook→audiobook, neutral: how much is narrated — low is normal for
+       a collection/abridgement, not a fault). Stacks one block per ebook
+       edition (column-pairs). Warm-bookish, border-first. */
+    .dir-edition {
+      font-size: 0.72rem; font-weight: 700; color: var(--text);
+      margin: 0.6rem 0 0.35rem; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .dir-cov {
+      display: grid; grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      overflow: hidden; background: var(--surface);
+    }
+    .dir-cov + .dir-cov { margin-top: 0.6rem; }
+    .dir-col { padding: 0.7rem 0.85rem; }
+    .dir-col + .dir-col { border-left: 1px solid var(--border); }
+    .dir-dir { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+    .dir-pct { font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; margin-top: 5px; color: var(--accent); }
+    .dir-pct.good { color: var(--success); }
+    .dir-pct.warn { color: var(--ebook-only); }
+    .dir-pct.bad { color: var(--danger); }
+    .dir-pct.neutral { color: var(--accent); }
+    .dir-kind { font-size: 0.72rem; color: var(--muted); margin-top: 5px; }
+    .dir-kind b { color: var(--text); font-weight: 600; }
+    .dir-words { font-size: 0.68rem; color: var(--muted-2); margin-top: 3px; font-variant-numeric: tabular-nums; }
+    @media (max-width: 480px) {
+      .dir-cov { grid-template-columns: 1fr; }
+      .dir-col + .dir-col { border-left: 0; border-top: 1px solid var(--border); }
+    }
+
     .abs-diff {
       border-left: 3px solid var(--border); border-radius: 8px;
       padding: 0.55rem 0.7rem; margin-bottom: 0.35rem;
@@ -2782,6 +2813,54 @@
       try { return JSON.parse(a.pairs); } catch { return null; }
     }
 
+    // Map a raw anchor payload to the directional-coverage shape the API's
+    // /coverage + /diff.directional return — so the readout renders the same
+    // whether it's fed a payload (summary, where we already have it) or the
+    // API's directional object (meld). aligned = words NOT in an
+    // {ebook,trans}-only segment.
+    function dirFromPayload(p) {
+      if (!p) return null;
+      const eb = p.ebook_words || 0, tr = p.trans_words || 0;
+      const div = p.divergence || {};
+      const ebo = div.ebook_only_words || 0, tro = div.trans_only_words || 0;
+      const ae = Math.max(0, eb - ebo), at = Math.max(0, tr - tro);
+      return {
+        ebook_words: eb, trans_words: tr,
+        aligned_ebook_words: ae, aligned_trans_words: at,
+        ebook_only_words: ebo, trans_only_words: tro,
+        audio_to_ebook: tr ? at / tr : 0,
+        ebook_to_audio: eb ? ae / eb : 0,
+      };
+    }
+
+    // Two-column directional coverage readout (#199/#200). `dir` is a
+    // directional/PairCoverage-shaped object. QUALITY (audio→ebook) gets the
+    // good/warn/bad color — it answers "is this alignment trustworthy". SCOPE
+    // (ebook→audio) stays neutral: a low scope is normal for a collection or
+    // abridgement, not an alarm (single-direction display was the whole bug).
+    function directionalReadoutHtml(dir, editionLabel) {
+      if (!dir) return '';
+      const q = Math.round((dir.audio_to_ebook || 0) * 100);
+      const sc = Math.round((dir.ebook_to_audio || 0) * 100);
+      const qClass = q >= 85 ? 'good' : (q >= 50 ? 'warn' : 'bad');
+      const w = n => Number(n || 0).toLocaleString();
+      const ed = editionLabel ? `<div class="dir-edition">${escapeHtml(editionLabel)}</div>` : '';
+      return `${ed}<div class="dir-cov">
+        <div class="dir-col">
+          <div class="dir-dir">&#9654; Audiobook &rarr; Ebook</div>
+          <div class="dir-pct ${qClass}">${q}%</div>
+          <div class="dir-kind"><b>quality</b> — narration backed by ebook text</div>
+          <div class="dir-words">${w(dir.aligned_trans_words)} of ${w(dir.trans_words)} narrated words matched</div>
+        </div>
+        <div class="dir-col">
+          <div class="dir-dir">&#128214; Ebook &rarr; Audiobook</div>
+          <div class="dir-pct neutral">${sc}%</div>
+          <div class="dir-kind"><b>scope</b> — how much of the book is narrated</div>
+          <div class="dir-words">${w(dir.aligned_ebook_words)} of ${w(dir.ebook_words)} ebook words narrated</div>
+        </div>
+      </div>`;
+    }
+
     function absOriginLabel(b) {
       switch (b.origin) {
         case 'publisher_epub': return 'EPUB · publisher';
@@ -2887,10 +2966,14 @@
            ${top.map(s => renderAbsDiffRow(s, payload)).join('')}`
         : '';
 
+      // Two-direction readout headlines the section (#200): quality vs scope,
+      // computed from the same payload. The bar/legend below detail the SCOPE
+      // breakdown (where the ebook's words went: aligned / skipped / differs).
+      const dir = dirFromPayload(payload);
       return `<div class="abs-section">
-        <div class="abs-label">Alignment</div>
-        <div class="abs-cov-head">
-          <span class="abs-pill ${pillCls}">${pct}% aligned</span>
+        <div class="abs-label">Alignment — both directions</div>
+        ${directionalReadoutHtml(dir)}
+        <div class="abs-cov-head" style="margin-top:0.9rem">
           <span class="abs-quality">${escapeHtml(quality)}</span>
         </div>
         ${bar}
@@ -3139,14 +3222,19 @@
             : `Show all ${totalDiv} (incl. minor)`}</button>`
         : '';
 
+      // Directional readout headlines the meld (#200) — from /diff's directional
+      // (falls back to the legacy single scope number if an old payload lacks it).
+      const dirReadout = d.directional
+        ? directionalReadoutHtml(d.directional)
+        : `<span class="abs-pill ${covClass}">${cov}% aligned</span>`;
       return `
         <div class="meld-head">
           <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>
-          <span class="abs-pill ${covClass}">${cov}% aligned</span>
         </div>
-        <div class="meld-sources"><span class="abs-badge" style="background:rgba(78,204,163,0.14);color:var(--epub,#4ecca3)">Ebook</span> ${aLabel}
+        ${dirReadout}
+        <div class="meld-sources" style="margin-top:0.7rem"><span class="abs-badge" style="background:var(--epub-soft);color:var(--epub)">Ebook</span> ${aLabel}
           <span style="color:var(--muted)">vs</span>
-          <span class="abs-badge" style="background:rgba(240,165,0,0.14);color:var(--mp3,#f0a500)">Audio</span> ${bLabel}</div>
+          <span class="abs-badge" style="background:rgba(180,83,9,0.12);color:var(--mp3)">Audio</span> ${bLabel}</div>
         <p class="abs-intro">Where the narration and the ebook diverge. Aligned passages are summarized; skipped and differing runs show the actual text. ${showAll ? '' : 'Minor word-level mishears are hidden.'}</p>
         <div class="meld-toolbar">${toggle}</div>
         <div class="meld-rows">${rows.join('') || '<div class="abs-empty">No substantive divergences — the sources track closely.</div>'}</div>
