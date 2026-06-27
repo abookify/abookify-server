@@ -304,6 +304,78 @@ func TestHandleWorkDiff(t *testing.T) {
 	}
 }
 
+// TestHandleWorkCoverage locks the #199 directional contract: per-pair
+// audio→ebook (quality) and ebook→audio (scope) derived from the payload's
+// word counts + divergence tally, and that /diff carries the same `directional`.
+func TestHandleWorkCoverage(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+
+	workID, _ := store.CreateWork("Cov Book", "Author")
+	store.UpsertBook(db.Book{WorkID: workID, Path: "/tmp/cov-ebook.epub", Filename: "e.epub",
+		Format: "epub", MediaType: "text", Title: "Cov Book", Origin: "publisher_epub"})
+	ebookID := bookIDByPath(t, store, "/tmp/cov-ebook.epub")
+	store.UpsertBook(db.Book{WorkID: workID, Path: "/tmp/cov-trans.txt", Filename: "t.txt",
+		Format: "transcript", MediaType: "text", Title: "Cov Book", Origin: "whisper_transcript"})
+	transID := bookIDByPath(t, store, "/tmp/cov-trans.txt")
+
+	// HoD-shaped: lots of ebook-only (collection), little trans-only.
+	payload := library.AnchorAlignmentPayload{
+		Method: "anchor", Unit: "word", EbookWords: 1000, TransWords: 400, Coverage: 0.3,
+		Segments: []library.Segment{{EbookStart: 0, EbookEnd: 1, TransStart: 0, TransEnd: 1, Kind: library.SegAligned}},
+		Divergence: library.DivergenceSummary{EbookOnlyWords: 700, TransOnlyWords: 40},
+	}
+	pj, _ := json.Marshal(payload)
+	if err := store.SaveAlignment(db.Alignment{WorkID: workID, FromBookID: ebookID, ToBookID: transID,
+		Unit: "word", Confidence: 0.3, Method: "anchor", Pairs: string(pj)}); err != nil {
+		t.Fatalf("save alignment: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/works/x/coverage", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleWorkCoverage(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var cov library.WorkCoverage
+	if err := json.Unmarshal(rec.Body.Bytes(), &cov); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cov.Pairs) != 1 {
+		t.Fatalf("pairs = %d, want 1", len(cov.Pairs))
+	}
+	p := cov.Pairs[0]
+	if p.Ebook.Origin != "publisher_epub" || p.Transcript.Origin != "whisper_transcript" {
+		t.Errorf("sides = %q / %q", p.Ebook.Origin, p.Transcript.Origin)
+	}
+	if p.AlignedEbookWords != 300 || p.AlignedTransWords != 360 {
+		t.Errorf("aligned = ebook %d trans %d, want 300/360", p.AlignedEbookWords, p.AlignedTransWords)
+	}
+	// scope 300/1000 = 0.30; quality 360/400 = 0.90.
+	if p.EbookToAudio < 0.299 || p.EbookToAudio > 0.301 {
+		t.Errorf("ebook_to_audio (scope) = %.4f, want 0.30", p.EbookToAudio)
+	}
+	if p.AudioToEbook < 0.899 || p.AudioToEbook > 0.901 {
+		t.Errorf("audio_to_ebook (quality) = %.4f, want 0.90", p.AudioToEbook)
+	}
+
+	// /diff must carry the same directional object for the shown pair.
+	dreq := httptest.NewRequest("GET", "/api/works/x/diff", nil)
+	dreq.SetPathValue("id", itoa(workID))
+	drec := httptest.NewRecorder()
+	srv.handleWorkDiff(drec, dreq)
+	var d library.WorkDiff
+	if err := json.Unmarshal(drec.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if d.Directional == nil {
+		t.Fatal("diff.directional is nil, want populated")
+	}
+	if d.Directional.AudioToEbook < 0.899 || d.Directional.AudioToEbook > 0.901 {
+		t.Errorf("diff directional quality = %.4f, want 0.90", d.Directional.AudioToEbook)
+	}
+}
+
 func TestHandleWorkDiff404(t *testing.T) {
 	srv, store, dir := newTestServer(t)
 	workID := seedAligned(t, store, dir) // alignment Pairs="[]" → no segments
