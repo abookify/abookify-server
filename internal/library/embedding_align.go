@@ -132,6 +132,7 @@ func ComputeEmbeddingAlignment(store *db.Store, embedder ChunkEmbedder, workID i
 		MatchQuality:  matchQuality,
 		Divergence:    summarizeAnchorDivergence(segs),
 	}
+	buildRenderTimeline(&payload) // #209: per-chapter position→time map (paragraph anchors)
 	pairsJSON, err := json.Marshal(payload)
 	if err != nil {
 		return coverage, matchQuality, fmt.Errorf("marshal payload: %w", err)

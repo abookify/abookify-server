@@ -66,6 +66,11 @@ type AnchorAlignmentPayload struct {
 	// the lexical anchor path.
 	MatchQuality float64           `json:"match_quality,omitempty"`
 	Divergence   DivergenceSummary `json:"divergence"`
+	// Timeline is the render-ready, per-ebook-chapter position→time map (#209):
+	// monotonic (word-offset → book-continuous audio second) control points the
+	// reader (#210) looks up directly instead of recomputing from Segments. Dense
+	// for word-anchor, sparse anchors for embedding/paragraph. See render_timeline.go.
+	Timeline []ChapterTimeline `json:"timeline,omitempty"`
 }
 
 // anchorNGram is the n-gram length used for anchoring. 4 is the empirical
@@ -137,6 +142,7 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 		Coverage:      coverage,
 		Divergence:    summarizeAnchorDivergence(aln.Segments),
 	}
+	buildRenderTimeline(&payload) // #209: bake the per-chapter position→time map
 	pairsJSON, err := json.Marshal(payload)
 	if err != nil {
 		return 0, fmt.Errorf("marshal payload: %w", err)
