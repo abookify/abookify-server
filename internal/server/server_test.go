@@ -304,6 +304,60 @@ func TestHandleWorkDiff(t *testing.T) {
 	}
 }
 
+// TestHandleReady locks the desktop-shell readiness contract (#56): 503 while
+// warming, 200 once SetReady, version echoed both ways.
+func TestHandleReady(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.Version = "v9.9.9"
+
+	rec := httptest.NewRecorder()
+	srv.handleReady(rec, httptest.NewRequest("GET", "/api/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("pre-boot status = %d, want 503", rec.Code)
+	}
+
+	srv.SetReady(true)
+	rec = httptest.NewRecorder()
+	srv.handleReady(rec, httptest.NewRequest("GET", "/api/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ready"] != true || body["version"] != "v9.9.9" {
+		t.Errorf("ready body = %v", body)
+	}
+}
+
+// TestHandleSetup locks the First-Launch state contract (#56): with no speech
+// engine wired, needs_setup is true and any_available is false.
+func TestHandleSetup(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.Version = "v1"
+	srv.DataDir = "/tmp/ab"
+	srv.ModelsDir = "/tmp/ab/models"
+
+	rec := httptest.NewRecorder()
+	srv.handleSetup(rec, httptest.NewRequest("GET", "/api/setup", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var b map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b["needs_setup"] != true {
+		t.Errorf("needs_setup = %v, want true (no engines wired)", b["needs_setup"])
+	}
+	speech, _ := b["speech"].(map[string]any)
+	if speech == nil || speech["any_available"] != false {
+		t.Errorf("speech.any_available = %v, want false", speech["any_available"])
+	}
+	if b["models_dir"] != "/tmp/ab/models" {
+		t.Errorf("models_dir = %v", b["models_dir"])
+	}
+}
+
 // TestHandleWorkCoverage locks the #199 directional contract: per-pair
 // audio→ebook (quality) and ebook→audio (scope) derived from the payload's
 // word counts + divergence tally, and that /diff carries the same `directional`.
