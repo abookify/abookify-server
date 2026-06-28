@@ -924,6 +924,16 @@
     .reader-content .sync-word.past {
       color: var(--reader-faded);
     }
+    /* Paragraph-follow (#210): the paragraph currently being narrated when the
+       displayed ebook aligns only by paragraph/embedding (a different
+       translation, no word correspondence). A soft band on the warm paper —
+       the coarser counterpart to the word reading-window. */
+    .reader-content .para-reading {
+      background: var(--highlight);
+      box-shadow: 0 0 0 6px var(--highlight);
+      border-radius: 6px;
+      transition: background 0.2s ease;
+    }
     /* Paragraph anchor — tap a paragraph in the reader to set Q&A
        scope to "this paragraph". Subtle hover hint so the gesture is
        discoverable without shouting. */
@@ -3585,6 +3595,64 @@
       }
     }
 
+    // Paragraph-follow state (#210): for an ebook aligned to the audio only by
+    // paragraph/embedding, the per-paragraph audio time windows for the chapter
+    // currently in the reader. Null when the displayed source uses word-by-word
+    // (transcript/word-anchor) or has no alignment.
+    let paraSync = null; // { workId, bookId, chapterIdx, spans:[{p,s,e}], lastIdx }
+
+    // Resolve the follow mode for the displayed source, paint the indicator,
+    // and (paragraph mode only) load the per-paragraph time windows so the
+    // reader can follow the narration by paragraph.
+    async function setupReaderFollow(workId, bookId, chapterIdx) {
+      updateSyncModeIndicator(workId, bookId);
+      const work = allWorks.find(w => w.id === workId);
+      if (!work) { clearParagraphFollow(); paraSync = null; return; }
+      const aligns = await getAlignments(workId);
+      const m = resolveReaderSyncMode(work, bookId, aligns);
+      if (m.mode !== 'paragraph') { clearParagraphFollow(); paraSync = null; return; }
+      try {
+        const ts = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}`).then(r => r.json());
+        if (ts && ts.mode === 'paragraph' && (ts.spans || []).length) {
+          paraSync = { workId, bookId, chapterIdx, spans: ts.spans, lastIdx: -2 };
+        } else { clearParagraphFollow(); paraSync = null; }
+      } catch { clearParagraphFollow(); paraSync = null; }
+    }
+
+    function clearParagraphFollow() {
+      document.querySelectorAll('.reader-content .para-reading')
+        .forEach(el => el.classList.remove('para-reading'));
+    }
+
+    // Highlight + scroll to the paragraph being narrated. Called from the audio
+    // timeupdate handler with the book-absolute second. Cheap: only touches the
+    // DOM when the active paragraph changes. Honors the per-work sync toggle +
+    // the shared lead offset.
+    function updateParagraphFollow(bookSec) {
+      if (!paraSync) return;
+      if (syncEnabled[paraSync.workId] === false) return;
+      const t = bookSec + syncLeadSecs;
+      const spans = paraSync.spans;
+      // Spans are monotonic by start — the active paragraph is the last one
+      // whose window has started.
+      let idx = -1;
+      for (let i = 0; i < spans.length; i++) {
+        if (spans[i].s <= t) idx = spans[i].p; else break;
+      }
+      if (idx === paraSync.lastIdx) return;
+      paraSync.lastIdx = idx;
+      const reader = document.getElementById('reader-' + paraSync.workId);
+      if (!reader) return;
+      reader.querySelectorAll('.para-reading').forEach(el => el.classList.remove('para-reading'));
+      if (idx < 0) return;
+      const el = reader.querySelector(`[data-para-idx="${idx}"]`);
+      if (el) {
+        el.classList.add('para-reading');
+        const elTop = el.offsetTop - reader.offsetTop;
+        reader.scrollTop = elTop - reader.clientHeight / 2;
+      }
+    }
+
     async function loadChapterList(bookId, workId) {
       if (chapterCache[bookId]?.chapters) {
         renderChapterList(bookId, workId);
@@ -3816,8 +3884,9 @@
       };
       delete currentReaderParagraph[workId];
       refreshScopeUI(workId);
-      // Reflect the follow-mode for this source in the gear bar (#210).
-      updateSyncModeIndicator(workId, bookId);
+      // Reflect the follow-mode for this source + load paragraph-follow data
+      // when the alignment is paragraph/embedding (#210).
+      setupReaderFollow(workId, bookId, index);
 
       // Highlight active chapter
       const listEl = document.getElementById('text-chapters-' + bookId);
@@ -5105,6 +5174,9 @@
       // Follow detected-chapter boundaries during continuous playback so
       // karaoke + the reader don't strand on the starting chapter (#211).
       maybeReloadSyncChapter(bookSec);
+      // Paragraph-level follow for embedding-aligned ebooks (#210). No-op when
+      // the displayed source uses word karaoke or has no alignment.
+      updateParagraphFollow(bookSec);
       updateNpTocActive();
     });
     document.getElementById('audio-player').addEventListener('loadedmetadata', () => {

@@ -1,0 +1,216 @@
+package library
+
+import (
+	"encoding/json"
+	"sort"
+
+	"github.com/pj/abookify/internal/db"
+)
+
+// Reader follow-mode rendering support (#210). The reader picks a render mode
+// per displayed source from the alignment method+unit: word-by-word karaoke
+// for the transcript / word-anchor ebooks (driven by sync_data, unchanged),
+// and PARAGRAPH-level follow for ebooks that align to the narration only by
+// paragraph/embedding (a different translation — words don't correspond, so a
+// coarser paragraph highlight is the appropriate mode). BuildTextSync produces
+// the per-paragraph audio time windows that drive that paragraph follow.
+//
+// This is a read-only consumer of transcription's alignment payload (like
+// diff.go) — it maps the baked segment times onto the displayed ebook's
+// paragraphs. Basis-robust: segment offsets (chunker/Tokenize basis) and
+// paragraph offsets (Fields basis) are each normalized to a 0..1 position
+// WITHIN the chapter, then a piecewise-linear frac→time map (anchored on the
+// aligned segments) assigns each paragraph a [start,end] in audio seconds.
+
+// TextSyncSpan is one paragraph's audio time window (seconds, on the same
+// continuous transcript/audio timeline the reader's karaoke clock uses).
+type TextSyncSpan struct {
+	ParagraphIdx int     `json:"p"`
+	Start        float64 `json:"s"`
+	End          float64 `json:"e"`
+}
+
+// TextSync is GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}. mode mirrors
+// the client resolver (word|paragraph|none); spans are populated only for the
+// paragraph mode (word mode is driven by sync_data client-side).
+type TextSync struct {
+	Mode       string         `json:"mode"`
+	Method     string         `json:"method"`
+	Unit       string         `json:"unit"`
+	Confidence float64        `json:"confidence"`
+	Spans      []TextSyncSpan `json:"spans"`
+}
+
+type fracAnchor struct {
+	frac float64
+	sec  float64
+}
+
+// BuildTextSync resolves the displayed source's follow mode and, for the
+// paragraph case, the per-paragraph time windows for one chapter.
+func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*TextSync, error) {
+	work, err := store.GetWork(workID)
+	if err != nil || work == nil {
+		return &TextSync{Mode: "none"}, err
+	}
+	// Transcript displayed → word-by-word (client uses sync_data; no spans).
+	transIDs := map[int64]bool{}
+	for _, b := range work.TextFiles {
+		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
+			transIDs[b.ID] = true
+		}
+	}
+	if transIDs[bookID] {
+		return &TextSync{Mode: "word", Method: "transcript", Unit: "word", Confidence: 1}, nil
+	}
+
+	aligns, err := store.ListAlignmentsForWork(workID)
+	if err != nil {
+		return &TextSync{Mode: "none"}, err
+	}
+	// Best row pairing this ebook with any transcript (collapse dual rows).
+	var best *db.Alignment
+	for i := range aligns {
+		a := &aligns[i]
+		paired := (a.FromBookID == bookID && transIDs[a.ToBookID]) ||
+			(a.ToBookID == bookID && transIDs[a.FromBookID])
+		if !paired {
+			continue
+		}
+		if best == nil || a.Confidence > best.Confidence {
+			best = a
+		}
+	}
+	if best == nil {
+		return &TextSync{Mode: "none"}, nil
+	}
+
+	mode := "paragraph"
+	if best.Unit == "word" {
+		mode = "word"
+	}
+	out := &TextSync{Mode: mode, Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
+
+	// Paragraph follow needs the payload's baked segment times + the chapter's
+	// word span. (word mode returns here — handled client-side by sync_data.)
+	if mode != "paragraph" {
+		return out, nil
+	}
+
+	var p AnchorAlignmentPayload
+	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
+		return out, nil
+	}
+
+	// The ebook is the FROM side for the alignment rows; if this row was stored
+	// transcript→ebook, the ebook offsets live on the To side. EbookChapters /
+	// segment es/ee always describe the ebook side regardless, so use them.
+	var cStart, cLen int
+	found := false
+	for _, cs := range p.EbookChapters {
+		if cs.Index == chapterIdx {
+			cStart, cLen = cs.Start, cs.Len
+			found = true
+			break
+		}
+	}
+	if !found || cLen <= 0 {
+		return out, nil
+	}
+	cEnd := cStart + cLen
+
+	// Frac→time anchors from aligned segments overlapping this chapter.
+	var anchors []fracAnchor
+	for _, s := range p.Segments {
+		if s.Kind != SegAligned || s.EndSec <= 0 {
+			continue
+		}
+		if s.EbookEnd <= cStart || s.EbookStart >= cEnd {
+			continue // segment is outside this chapter
+		}
+		fs := clamp01(float64(s.EbookStart-cStart) / float64(cLen))
+		fe := clamp01(float64(s.EbookEnd-cStart) / float64(cLen))
+		anchors = append(anchors, fracAnchor{fs, s.StartSec}, fracAnchor{fe, s.EndSec})
+	}
+	if len(anchors) < 2 {
+		return out, nil // not enough timing to follow this chapter
+	}
+	sort.Slice(anchors, func(i, j int) bool {
+		if anchors[i].frac == anchors[j].frac {
+			return anchors[i].sec < anchors[j].sec
+		}
+		return anchors[i].frac < anchors[j].frac
+	})
+
+	paras, err := store.ListParagraphs(bookID, chapterIdx)
+	if err != nil || len(paras) == 0 {
+		return out, nil
+	}
+	totalWords := 0
+	for _, pa := range paras {
+		if pa.WordEnd > totalWords {
+			totalWords = pa.WordEnd
+		}
+	}
+	if totalWords <= 0 {
+		return out, nil
+	}
+
+	spans := make([]TextSyncSpan, 0, len(paras))
+	var prevEnd float64
+	for _, pa := range paras {
+		fs := clamp01(float64(pa.WordStart) / float64(totalWords))
+		fe := clamp01(float64(pa.WordEnd) / float64(totalWords))
+		st := interpFrac(anchors, fs)
+		en := interpFrac(anchors, fe)
+		// Keep the windows monotonic + non-empty so the client's "paragraph
+		// whose window contains t" lookup is stable.
+		if st < prevEnd {
+			st = prevEnd
+		}
+		if en < st {
+			en = st
+		}
+		spans = append(spans, TextSyncSpan{ParagraphIdx: pa.ParagraphIdx, Start: st, End: en})
+		prevEnd = en
+	}
+	out.Spans = spans
+	return out, nil
+}
+
+func clamp01(f float64) float64 {
+	if f < 0 {
+		return 0
+	}
+	if f > 1 {
+		return 1
+	}
+	return f
+}
+
+// interpFrac linearly interpolates an audio time for a chapter-fraction from
+// the sorted (frac,sec) anchors. Clamps to the first/last anchor outside range.
+func interpFrac(anchors []fracAnchor, frac float64) float64 {
+	if len(anchors) == 0 {
+		return 0
+	}
+	if frac <= anchors[0].frac {
+		return anchors[0].sec
+	}
+	last := anchors[len(anchors)-1]
+	if frac >= last.frac {
+		return last.sec
+	}
+	for i := 1; i < len(anchors); i++ {
+		a, b := anchors[i-1], anchors[i]
+		if frac <= b.frac {
+			span := b.frac - a.frac
+			if span <= 0 {
+				return a.sec
+			}
+			t := (frac - a.frac) / span
+			return a.sec + t*(b.sec-a.sec)
+		}
+	}
+	return last.sec
+}

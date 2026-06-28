@@ -287,6 +287,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
+	mux.HandleFunc("GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}", s.handleTextSync)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
@@ -704,6 +705,36 @@ func (s *Server) handleWorkDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, diff)
+}
+
+// handleTextSync returns the reader follow-mode + per-paragraph audio time
+// windows for a displayed text source + chapter (#210). The reader uses
+// `mode` to choose word-by-word karaoke (transcript/word-anchor, driven by
+// sync_data) vs paragraph-level follow (embedding/paragraph) and, for the
+// latter, highlights the paragraph whose window contains the current audio
+// time. Always 200 — `mode:"none"` / empty `spans` degrade gracefully.
+func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	bookID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("bookId")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bookId"})
+		return
+	}
+	chapterIdx, err := strconv.Atoi(strings.TrimSpace(r.PathValue("chapterIdx")))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
+		return
+	}
+	ts, err := library.BuildTextSync(s.store, id, bookID, chapterIdx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ts)
 }
 
 // handleWorkCoverage returns per-source-pair DIRECTIONAL coverage (#199): for
