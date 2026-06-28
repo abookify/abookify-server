@@ -13,6 +13,18 @@
   src: url('/fonts/InterVariable.woff2') format('woff2');
 }
 
+/* Fraunces — the warm-bookish display serif (#213), bundled locally so the
+   warm theme works fully offline (no Google Fonts CDN). Variable woff2 from
+   @fontsource-variable/fraunces (standard axes: wght 100–900 + opsz), one
+   67 KB file. Georgia is the fallback when this hasn't loaded. */
+@font-face {
+  font-family: 'Fraunces';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/Fraunces-standard.woff2') format('woff2');
+}
+
 /* Component vocabulary (#205) — border-first, low-chrome per
    design/design-system-mock.html. Grown surface-by-surface as the app
    migrates onto it; these are the primitives the mock defines. */
