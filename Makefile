@@ -1,4 +1,33 @@
-.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote css fonts
+.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote css fonts build-server
+
+# Desktop-bundle server binaries (distribution / #56 Tauri shell). Produces a
+# STANDALONE, STATIC Go binary per target platform — CGO_ENABLED=0 (pure-Go
+# modernc.org/sqlite, no libc dependency), web UI + fonts embedded via
+# go:embed, version stamped from git. Output: dist/abookify-<os>-<arch>[.exe].
+# The Tauri shell (transcription #56) wraps the host-matching binary; the
+# launch/health/setup contract it builds against is in
+# ../handoff/server-web.md. Runs in Docker — no host Go toolchain.
+#
+# Override platforms:  make build-server PLATFORMS="linux/amd64 darwin/arm64"
+PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+build-server:
+	@mkdir -p dist
+	docker run --rm -v "$$(pwd)":/app -w /app -e VERSION="$(VERSION)" -e PLATFORMS="$(PLATFORMS)" \
+		golang:1.24-bookworm sh -c '\
+		set -e; \
+		for p in $$PLATFORMS; do \
+		  os=$${p%/*}; arch=$${p#*/}; \
+		  ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+		  out="dist/abookify-$$os-$$arch$$ext"; \
+		  echo "building $$out (version $$VERSION)"; \
+		  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -buildvcs=false \
+		    -ldflags="-s -w -X main.version=$$VERSION" -o "$$out" ./cmd/abookify; \
+		done'
+	@echo ""
+	@echo "Built static server binaries in dist/ (version $(VERSION)):"
+	@ls -lh dist/abookify-* 2>/dev/null | awk '{print "  " $$9 "  " $$5}'
+	@echo "Each is self-contained (embedded web UI + fonts, pure-Go SQLite, no CGO)."
 
 # Regenerate the embedded design-system stylesheet (#205 / Phase 1 #144).
 # Runs Tailwind v3 standalone via an ephemeral Docker container — no host

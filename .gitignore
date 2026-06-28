@@ -36,3 +36,6 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Desktop-bundle server binaries (make build-server)
+dist/

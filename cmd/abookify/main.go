@@ -14,6 +14,11 @@ import (
 	"github.com/pj/abookify/internal/tts"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+// "dev" for `go run` / un-stamped builds. Surfaced in the startup log and
+// GET /api/info so the desktop shell can show + update-check the bundle.
+var version = "dev"
+
 func main() {
 	libraryPath := flag.String("library", envOrDefault("ABOOKIFY_LIBRARY_PATH", "./library"), "path to book library")
 	dbPath := flag.String("db", envOrDefault("ABOOKIFY_DB_PATH", "./data/abookify.db"), "path to SQLite database")
@@ -24,7 +29,7 @@ func main() {
 	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", "./generated"), "path for generated audio")
 	flag.Parse()
 
-	log.Printf("abookify server starting")
+	log.Printf("abookify server starting (version %s)", version)
 	log.Printf("  library:   %s", *libraryPath)
 	log.Printf("  database:  %s", *dbPath)
 	log.Printf("  generated: %s", *generatedPath)

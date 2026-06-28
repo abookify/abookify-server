@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -2258,11 +2257,7 @@ func pathDiskStats(path string) map[string]any {
 		used += info.Size()
 		return nil
 	})
-	var free int64
-	var statfs syscall.Statfs_t
-	if syscall.Statfs(path, &statfs) == nil {
-		free = int64(statfs.Bavail) * int64(statfs.Bsize)
-	}
+	free := fsFreeBytes(path) // platform-split (diskfree_{unix,windows}.go)
 	return map[string]any{
 		"path": path,
 		"used": used,
