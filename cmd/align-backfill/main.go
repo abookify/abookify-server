@@ -55,6 +55,38 @@ func main() {
 		aligned++
 		log.Printf("work %d %q: anchor coverage %.3f (timeline backfilled)", w.ID, w.Title, cov)
 	}
-	fmt.Printf("\nalign-backfill done: aligned=%d skipped=%d errored=%d (of %d works)\n",
+	fmt.Printf("\nalign-backfill (anchor) done: aligned=%d skipped=%d errored=%d (of %d works)\n",
 		aligned, skipped, errored, len(works))
+
+	// Embedding/paragraph rows (cross-translation works): re-run with a NIL
+	// embedder — chunk embeddings are already stored, so no re-embed / API call —
+	// purely to bake the #209 render timeline onto the existing embedding rows.
+	var embFound, embDone, embErr int
+	for _, w := range works {
+		als, err := store.ListAlignmentsForWork(w.ID)
+		if err != nil {
+			continue
+		}
+		hasEmbedding := false
+		for _, a := range als {
+			if a.Method == "embedding" {
+				hasEmbedding = true
+				break
+			}
+		}
+		if !hasEmbedding {
+			continue
+		}
+		embFound++
+		cov, mq, err := library.ComputeEmbeddingAlignment(store, nil, w.ID)
+		if err != nil {
+			embErr++
+			log.Printf("work %d %q: embedding ERROR %v", w.ID, w.Title, err)
+			continue
+		}
+		embDone++
+		log.Printf("work %d %q: embedding coverage %.3f matchQ %.3f (timeline backfilled)", w.ID, w.Title, cov, mq)
+	}
+	fmt.Printf("align-backfill (embedding) done: backfilled=%d errored=%d (of %d embedding works)\n",
+		embDone, embErr, embFound)
 }
