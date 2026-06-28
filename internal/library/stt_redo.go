@@ -53,7 +53,7 @@ type rawSidecar struct {
 // bar. Returns the number of files actually retranscribed.
 func redoTranscriptionForFiles(
 	store *db.Store,
-	sttClient *stt.Client,
+	sttClient stt.Provider,
 	libraryRoot string,
 	workID int64,
 	filenames []string,

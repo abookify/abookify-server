@@ -34,7 +34,7 @@ type SegmentEvent struct {
 // a permanently-failed segment rather than aborting the file), and stitches the
 // results into one timeline. All timestamps are shifted by baseOffset (the prior
 // files' cumulative duration in a multi-file book; pass 0 for a standalone file).
-func ChunkedTranscribe(client *stt.Client, audioPath string, baseOffset float64, onSeg func(SegmentEvent)) (*stt.TranscribeResult, error) {
+func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64, onSeg func(SegmentEvent)) (*stt.TranscribeResult, error) {
 	dur := probeDurationFile(audioPath)
 	if dur <= 0 {
 		return nil, fmt.Errorf("could not determine audio duration for %s", audioPath)
@@ -121,7 +121,7 @@ func ChunkedTranscribe(client *stt.Client, audioPath string, baseOffset float64,
 
 // transcribeChunked is the server-side adapter over the shared primitive.
 // onProgress fires once per segment (before transcription) to drive the job UI.
-func transcribeChunked(client *stt.Client, audioPath string, onProgress func(segIdx, totalSegs int)) (*stt.TranscribeResult, error) {
+func transcribeChunked(client stt.Provider, audioPath string, onProgress func(segIdx, totalSegs int)) (*stt.TranscribeResult, error) {
 	return ChunkedTranscribe(client, audioPath, 0, func(e SegmentEvent) {
 		if e.Done {
 			log.Printf("stt-chunked: segment %d/%d done (offset=%ds, %d words)",

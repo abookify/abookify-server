@@ -15,7 +15,7 @@ import (
 //
 // If originalText is provided, timestamps are mapped to the original words.
 // If empty, raw Whisper timestamps are stored as-is (fallback).
-func AlignChapter(store *db.Store, sttClient *stt.Client, workID, audioBookID int64, chapterIdx int, audioPath string, originalText string) error {
+func AlignChapter(store *db.Store, sttClient stt.Provider, workID, audioBookID int64, chapterIdx int, audioPath string, originalText string) error {
 	if sttClient == nil {
 		return fmt.Errorf("STT service not available")
 	}
