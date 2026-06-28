@@ -3563,12 +3563,11 @@
       if (!rows.length) return { mode: 'none' };
       rows.sort((a, z) => (z.confidence || 0) - (a.confidence || 0));
       const best = rows[0];
-      // The ebook reader follows by paragraph regardless of the row's unit
-      // (word-by-word ebook karaoke isn't wired — only the transcript source
-      // does word-level). unit/method are kept for the tooltip + future
-      // word-anchor ebook karaoke.
+      // word-anchor ebook → word-by-word karaoke via the composed word map
+      // (#210b); embedding/paragraph → paragraph-follow. Dual rows already
+      // collapsed to the higher-confidence one above.
       return {
-        mode: 'paragraph',
+        mode: best.unit === 'word' ? 'word' : 'paragraph',
         method: best.method, unit: best.unit, confidence: best.confidence,
         alignmentId: best.id,
       };
@@ -3607,15 +3606,46 @@
     // (transcript/word-anchor) or has no alignment.
     let paraSync = null; // { workId, bookId, chapterIdx, spans:[{p,s,e}], lastIdx }
 
+    // True while the reader is showing a word-anchor EBOOK driven by composed
+    // word karaoke (#210b) — used to keep the transcript-follow machinery from
+    // resetting the reader back to the transcript text.
+    let currentReaderIsEbookKaraoke = false;
+
     // Resolve the follow mode for the displayed source, paint the indicator,
-    // and (paragraph mode only) load the per-paragraph time windows so the
-    // reader can follow the narration by paragraph.
+    // and set up the matching render: word-by-word karaoke for the transcript /
+    // word-anchor ebooks, paragraph-follow for embedding/paragraph ebooks.
     async function setupReaderFollow(workId, bookId, chapterIdx) {
       updateSyncModeIndicator(workId, bookId);
+      currentReaderIsEbookKaraoke = false;
       const work = allWorks.find(w => w.id === workId);
       if (!work) { clearParagraphFollow(); paraSync = null; return; }
+      const book = (work.text_files || []).find(b => b.id === bookId);
       const aligns = await getAlignments(workId);
       const m = resolveReaderSyncMode(work, bookId, aligns);
+
+      // Word-anchor EBOOK (not the transcript) → drive word-by-word karaoke
+      // from the composed per-word map. Render the paragraphed word spans into
+      // THIS work's reader (decoupled from the global currentWorkId, which is
+      // only set once audio is playing) and arm the karaoke loop. The tick
+      // highlights by the player clock, so it lights up once the audio plays.
+      if (m.mode === 'word' && book && !bookIsTranscript(book)) {
+        clearParagraphFollow(); paraSync = null;
+        try {
+          const words = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}`).then(r => r.json());
+          const reader = document.getElementById('reader-' + workId);
+          const built = (Array.isArray(words) && words.length && window.shared && window.shared.transcriptParagraphsFromSync)
+            ? window.shared.transcriptParagraphsFromSync(words) : null;
+          if (reader && built && built.karaokeSafe && built.html) {
+            reader.innerHTML = built.html;
+            karaokeHighlightSafe = true;
+            activeSyncData = words;
+            currentReaderIsEbookKaraoke = true;
+            startKaraoke();
+          }
+        } catch {}
+        return;
+      }
+
       if (m.mode !== 'paragraph') { clearParagraphFollow(); paraSync = null; return; }
       try {
         const ts = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}`).then(r => r.json());
@@ -3889,10 +3919,11 @@
         title: chMeta?.title || '',
       };
       delete currentReaderParagraph[workId];
+      // Reset synchronously so a stale ebook-karaoke flag from a previous
+      // source can't suppress the transcript sync that loads after this
+      // returns (#210b); setupReaderFollow re-sets it for word-anchor ebooks.
+      currentReaderIsEbookKaraoke = false;
       refreshScopeUI(workId);
-      // Reflect the follow-mode for this source + load paragraph-follow data
-      // when the alignment is paragraph/embedding (#210).
-      setupReaderFollow(workId, bookId, index);
 
       // Highlight active chapter
       const listEl = document.getElementById('text-chapters-' + bookId);
@@ -3924,6 +3955,9 @@
         const cached = chapterCache[bookId].loadedContent[index];
         renderChapterContent(reader, cached);
         reader.scrollTop = 0;
+        // Set up audio-follow AFTER the content is in the DOM — word-anchor
+        // ebooks re-render the pane as paragraphed word-karaoke text (#210).
+        setupReaderFollow(workId, bookId, index);
         return;
       }
 
@@ -3939,6 +3973,7 @@
         reader.scrollTop = 0;
         // Apply divergence dimming (if alignment data is available).
         applyDivergence(workId, index);
+        setupReaderFollow(workId, bookId, index);
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';
       }
@@ -4343,6 +4378,12 @@
     // filter to just the words whose timestamps fall inside this chapter so
     // the reader shows one chapter's worth of text instead of the whole book.
     async function loadSyncData(workId, audioBookId, audioIndex, chapterRange) {
+      // When the reader is showing a word-anchor ebook, its word karaoke is
+      // already driven by the composed word map (setupReaderFollow). Don't
+      // overwrite it with the transcript text here (#210b). isTextPaneShowing-
+      // Transcript() can't tell us — it's true whenever the work HAS a
+      // transcript — so we gate on the explicit ebook-karaoke flag.
+      if (currentReaderIsEbookKaraoke) return true;
       // Try direct lookup first
       const urls = [
         `/api/works/${workId}/sync/${audioBookId}/${audioIndex}`,
@@ -4401,6 +4442,9 @@
       if (syncReloadInFlight) return;
       if (currentWorkId == null || currentSyncBookId == null) return;
       if (syncEnabled[currentWorkId] === false) return;
+      // When the reader is showing a word-anchor ebook (composed word karaoke),
+      // don't reset it back to the transcript text on chapter crossings (#210b).
+      if (currentReaderIsEbookKaraoke) return;
       const detected = audioChapterCache[currentSyncBookId];
       if (!detected || detected.length === 0) return; // only detected-chapter single-file books
       const ch = detected.find(c =>
