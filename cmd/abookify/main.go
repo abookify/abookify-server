@@ -263,6 +263,8 @@ func main() {
 	srv.BookNLPURL = *booknlpURL
 	srv.DataDir = *dataDir
 	srv.ModelsDir = modelsDir
+	srv.TTSURL = *ttsURL
+	srv.STTURL = *sttURL
 
 	// Set up TTS/STT clients and generator
 	var ttsClient *tts.Client

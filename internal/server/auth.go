@@ -72,9 +72,10 @@ func isAuthExempt(r *http.Request) bool {
 		return true
 	}
 	switch p {
-	// /api/ready + /api/info are polled by the desktop shell before login —
-	// liveness/version only, no library data — so they stay open like health.
-	case "/api/health", "/api/ready", "/api/info", "/api/auth/status", "/api/auth/login":
+	// /api/ready + /api/info + /api/setup are read by the desktop shell before
+	// login (liveness/version + first-run state, no library data) so they stay
+	// open like health. The /api/engines/* install hooks stay gated.
+	case "/api/health", "/api/ready", "/api/info", "/api/setup", "/api/auth/status", "/api/auth/login":
 		return true
 	}
 	return false

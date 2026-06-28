@@ -60,6 +60,12 @@ type Server struct {
 	DataDir   string
 	ModelsDir string
 
+	// TTSURL/STTURL are the configured local-engine endpoints (empty when no
+	// local engine is wired — e.g. an API-key-only install). Surfaced on
+	// /api/setup + used by the model-download hooks to reach the engine.
+	TTSURL string
+	STTURL string
+
 	// embedding dedupe — guards against re-entry when multiple STT jobs
 	// finish back-to-back for the same work, or when ReloadLLM kicks off
 	// a backfill while a per-work embed is already running.
@@ -261,6 +267,9 @@ func New(store *db.Store, port string) *Server {
 	// API routes
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/ready", s.handleReady)
+	mux.HandleFunc("GET /api/setup", s.handleSetup)
+	mux.HandleFunc("GET /api/engines/status", s.handleEnginesStatus)
+	mux.HandleFunc("POST /api/engines/install", s.handleEnginesInstall)
 	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
