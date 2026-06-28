@@ -341,6 +341,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("GET /api/settings/schema", s.handleSettingsSchema)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
@@ -2136,6 +2137,14 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 
 	s.Events.Broadcast(Event{Type: "library_updated"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported"})
+}
+
+// handleSettingsSchema serves the backend-driven settings schema (#202) — the
+// single source of truth web + mobile render their settings UIs from, so they
+// stop drifting against the flat KV. Static + cacheable; values still come
+// from GET /api/settings.
+func (s *Server) handleSettingsSchema(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, SettingsSchema())
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
