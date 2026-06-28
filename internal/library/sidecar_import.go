@@ -1147,18 +1147,34 @@ func titleAnnouncementLength(words []sttWord, silences []sttSilence, start int) 
 	// "Chapter|Part|Book N [subtitle]" — body starts after the last title
 	// word. Walk forward until we hit a sentence terminator OR a real
 	// pause (matching TITLE_END_PAUSE = 0.6s used by extractChapterTitle).
-	isCh := false
-	for _, p := range []string{"chapter", "part", "book"} {
-		if first == p {
-			isCh = true
-			break
+	// Where the number region ends → the body/subtitle search start:
+	//   "Chapter|Part|Book N …" → prefix + number = start+2.
+	//   bare "N …" → the number's own token span (#173): the v2 silence path
+	//   lands on a bare number when the narrator says just the number, or
+	//   Whisper drops the prefix word — and the old code left it (returning 0)
+	//   so "Two." bled into the body. Strip it like the prefixed form.
+	bodyStart := -1
+	switch first {
+	case "chapter", "part", "book":
+		bodyStart = start + 2
+	default:
+		toks := make([]string, 0, 2)
+		for k := start; k < end && k < start+2; k++ {
+			toks = append(toks, strings.TrimSpace(words[k].Word))
+		}
+		if n, consumed := parseTitleNumber(toks); n > 0 && consumed > 0 {
+			bodyStart = start + consumed
 		}
 	}
-	if !isCh {
+	if bodyStart < 0 || bodyStart > end {
 		return 0
 	}
+
+	// Walk from the body-search start to the title-end signal (sentence
+	// terminator or a real pause). Mirrors extractChapterTitle so the body
+	// excludes the spoken title for the narrator-pattern AND silence paths.
 	const titleEndPause = 0.6
-	for j := start + 2; j < end; j++ {
+	for j := bodyStart; j < end; j++ {
 		tok := strings.TrimSpace(words[j].Word)
 		if tok != "" {
 			last := tok[len(tok)-1]
@@ -1173,10 +1189,10 @@ func titleAnnouncementLength(words []sttWord, silences []sttSilence, start int) 
 			}
 		}
 	}
-	// No reliable title-end signal in the peek window — narrator may
-	// have run straight into body. Trim only the prefix + number so we
-	// at least drop "Chapter 21".
-	return 2
+	// No reliable title-end signal in the peek window — narrator may have run
+	// straight into body. Trim only the prefix + number ("Chapter 21" / "Two")
+	// so the body at least doesn't lead with the announcement.
+	return bodyStart - start
 }
 
 // inferChapterTitle reads the first ~15 words starting at `start` and
@@ -1269,30 +1285,26 @@ func inferChapterTitleWithSilences(words []sttWord, silences []sttSilence, start
 	// Exception: if the first 1-2 tokens are a bare chapter number ("Two.",
 	// "5.") the v2 silence-detection path produced this, and a real subtitle
 	// often follows. Promote those to "Chapter N: Subtitle".
-	skipLeadingNumberTokens := 0
-	for i := 0; i < len(rawTokens) && i < 2; i++ {
-		t := strings.TrimRight(strings.ToLower(rawTokens[i]), ".,!?:;")
-		if isNumberWord(t) || isAllDigits(t) {
-			skipLeadingNumberTokens = i + 1
-		} else {
-			break
-		}
-	}
-	if skipLeadingNumberTokens > 0 {
-		effective := displayTokens[skipLeadingNumberTokens:]
+	// Bare leading number ("Two.", "5.", "Twenty Six") — the v2 silence path
+	// lands here when the narrator says just the number, or Whisper drops the
+	// "Chapter" word. Use the SPOKEN number, not the positional chapNum, so we
+	// don't renumber the chapter to its index (#173, matching the
+	// narrator-pattern path which carries the announced number).
+	if spoken, numToks := parseTitleNumber(rawTokens); spoken > 0 && numToks > 0 {
+		effective := displayTokens[numToks:]
 		if len(effective) > 8 {
 			effective = effective[:8]
 		}
-		text := strings.TrimSpace(strings.Join(effective, ""))
-		text = strings.TrimRight(text, ".,;: ")
+		text := strings.TrimRight(strings.TrimSpace(strings.Join(effective, "")), ".,;: ")
 		if text != "" {
 			text = normalizeTitleCase(text)
-			full := fmt.Sprintf("Chapter %d: %s", chapNum, text)
+			full := fmt.Sprintf("Chapter %d: %s", spoken, text)
 			if len(full) > 80 {
 				full = full[:80] + "…"
 			}
 			return NormalizeChapterTitle(full)
 		}
+		return fmt.Sprintf("Chapter %d", spoken)
 	}
 	return fmt.Sprintf("Chapter %d", chapNum)
 }

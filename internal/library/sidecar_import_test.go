@@ -399,6 +399,77 @@ func TestInferChapterTitle(t *testing.T) {
 	}
 }
 
+// #173: the v2 silence path lands on a BARE number ("Two.", "5.") when the
+// narrator says just the number or Whisper drops the "Chapter" word. The old
+// code (a) renumbered the title to the chapter's positional index and (b) left
+// the bare-number announcement bleeding into the body. Both are now fixed to
+// match the narrator-pattern path: use the spoken number + strip the
+// announcement.
+func TestSilenceBareNumberAnnouncement_173(t *testing.T) {
+	// "Two. [0.7s] My First Five Years [2.0s] It doesn't..." — narrator said
+	// "Two", but the silence path detects this as (say) the 5th chapter.
+	titleWords := []sttWord{
+		{Start: 100.0, End: 100.5, Word: " Two."},  // bare spoken number, no "Chapter"
+		{Start: 101.2, End: 101.5, Word: " My"},     // 0.7s announcement pause
+		{Start: 101.5, End: 101.8, Word: " First"},
+		{Start: 101.8, End: 102.0, Word: " Five"},
+		{Start: 102.0, End: 102.4, Word: " Years"},
+		{Start: 104.4, End: 104.7, Word: " It"}, // 2.0s pause → body
+		{Start: 104.7, End: 105.0, Word: " doesn't"},
+	}
+
+	t.Run("uses spoken number not positional chapNum", func(t *testing.T) {
+		// chapNum=5 is the positional index the silence path would pass.
+		got := inferChapterTitleWithSilences(titleWords, nil, 0, 5)
+		want := "Chapter 2: My First Five Years"
+		if got != want {
+			t.Errorf("got %q, want %q (must use spoken 'Two'=2, not positional 5)", got, want)
+		}
+	})
+
+	t.Run("strips the bare-number announcement from the body", func(t *testing.T) {
+		// "Two. My First Five Years." then body "It doesn't..." — the strip
+		// should consume words 0..4 ("Two." … "Years.") so the body starts at
+		// word 5 ("It").
+		stripWords := []sttWord{
+			{Start: 100.0, End: 100.5, Word: " Two."},
+			{Start: 101.2, End: 101.5, Word: " My"},
+			{Start: 101.5, End: 101.8, Word: " First"},
+			{Start: 101.8, End: 102.0, Word: " Five"},
+			{Start: 102.0, End: 102.4, Word: " Years."}, // period → title end
+			{Start: 104.4, End: 104.7, Word: " It"},
+			{Start: 104.7, End: 105.0, Word: " doesn't"},
+		}
+		if got := titleAnnouncementLength(stripWords, nil, 0); got != 5 {
+			t.Errorf("got skip=%d, want 5 (strip 'Two. My First Five Years.')", got)
+		}
+	})
+
+	t.Run("number-only announcement strips just the number", func(t *testing.T) {
+		// "Five. [0.7s] It doesn't..." — no subtitle, the pause after the number
+		// is the title end; strip only "Five." so the body keeps "It doesn't".
+		ws := []sttWord{
+			{Start: 0.0, End: 0.4, Word: " Five."},
+			{Start: 1.1, End: 1.4, Word: " It"}, // 0.7s announcement pause
+			{Start: 1.4, End: 1.7, Word: " doesn't"},
+		}
+		if got := titleAnnouncementLength(ws, nil, 0); got != 1 {
+			t.Errorf("got skip=%d, want 1 (strip just 'Five.')", got)
+		}
+	})
+
+	t.Run("non-number body start is not stripped", func(t *testing.T) {
+		ws := []sttWord{
+			{Start: 0.0, End: 0.5, Word: " The"},
+			{Start: 0.5, End: 1.0, Word: " morning"},
+			{Start: 1.0, End: 1.5, Word: " sun."},
+		}
+		if got := titleAnnouncementLength(ws, nil, 0); got != 0 {
+			t.Errorf("got skip=%d, want 0 (no announcement)", got)
+		}
+	})
+}
+
 // v2 silence-based chapter detection: chapter-kind silences become the
 // chapter boundaries. First chapter is always at word 0.
 func TestDetectChaptersFromSilences_V2(t *testing.T) {
