@@ -173,6 +173,13 @@
     .floating-save:hover { opacity: 0.92; }
     .floating-save:active { transform: scale(0.97); }
     .floating-save.saved { background: var(--success); }
+    /* Experimental badge for schema-rendered groups (#202). */
+    .schema-exp {
+      display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      background: var(--ebook-only-soft); color: var(--ebook-only);
+      border: 1px solid color-mix(in srgb, var(--ebook-only) 40%, transparent); vertical-align: middle;
+    }
 
     /* Pairing row layout — desktop default keeps QR + text side by side. */
     .pairing-row {
@@ -276,131 +283,8 @@
       </div>
     </div>
 
-    <div class="section">
-      <h2>Text-to-Speech Voice</h2>
-      <div class="hint" style="margin-bottom:12px;">Choose the voice used when generating audiobooks from ebook text. All voices are powered by Kokoro and run locally.</div>
-      <div class="field">
-        <label>Voice</label>
-        <select id="tts-voice">
-          <optgroup label="Female - American English">
-            <option value="af_heart" selected>Heart (default, natural)</option>
-            <option value="af_bella">Bella</option>
-            <option value="af_nicole">Nicole</option>
-            <option value="af_sarah">Sarah</option>
-            <option value="af_nova">Nova</option>
-            <option value="af_sky">Sky</option>
-            <option value="af_river">River</option>
-            <option value="af_jessica">Jessica</option>
-          </optgroup>
-          <optgroup label="Male - American English">
-            <option value="am_adam">Adam</option>
-            <option value="am_michael">Michael</option>
-            <option value="am_eric">Eric</option>
-            <option value="am_liam">Liam</option>
-            <option value="am_puck">Puck</option>
-          </optgroup>
-          <optgroup label="Female - British English">
-            <option value="bf_emma">Emma</option>
-            <option value="bf_lily">Lily</option>
-            <option value="bf_alice">Alice</option>
-          </optgroup>
-          <optgroup label="Male - British English">
-            <option value="bm_george">George</option>
-            <option value="bm_daniel">Daniel</option>
-            <option value="bm_lewis">Lewis</option>
-          </optgroup>
-        </select>
-        <button onclick="previewVoice()" id="preview-btn" style="margin-top:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:0.85rem;">Preview voice</button>
-        <audio id="preview-audio" style="display:none;"></audio>
-        <div class="hint" style="margin-top:4px;">Generates a short sample with the selected voice. Requires Kokoro to be running.</div>
-      </div>
-    </div>
-
-    <div class="section">
-      <h2>Speech-to-Text Model</h2>
-      <div class="hint" style="margin-bottom:12px;">Choose the Whisper model used when transcribing audiobooks to text. Larger models are more accurate but slower. Changes apply to new transcription jobs.</div>
-      <div class="field">
-        <label>Model</label>
-        <select id="stt-model">
-          <option value="large-v3">Large V3 (Best quality, slowest)</option>
-          <option value="medium">Medium (Good quality, moderate speed)</option>
-          <option value="small">Small (Decent quality, fast)</option>
-          <option value="base">Base (Basic quality, fastest)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Unload from memory after idle</label>
-        <select id="stt-idle-timeout">
-          <option value="5">5 minutes</option>
-          <option value="15">15 minutes</option>
-          <option value="30">30 minutes</option>
-          <option value="60" selected>1 hour (default)</option>
-          <option value="0">Never (always loaded)</option>
-        </select>
-        <div class="hint">The Whisper model uses ~3 GB of RAM (or VRAM on GPU). Unloading frees memory when not actively transcribing.</div>
-      </div>
-    </div>
-
-    <div class="section">
-      <h2>Book Q&A</h2>
-      <div class="hint" style="margin-bottom:12px;">Add your own AI API key to enable intelligent question and answer about your books. Your key is stored locally on this server and only sent to the provider you select.</div>
-      <div class="field">
-        <label>Provider</label>
-        <select id="llm-provider" onchange="onProviderChange()">
-          <option value="">Not configured (keyword search only)</option>
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI (ChatGPT)</option>
-          <option value="openrouter">OpenRouter (Claude, GPT, Gemini, Llama, …)</option>
-          <option value="ollama">Ollama (free, runs locally)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>API Key</label>
-        <input type="password" id="llm-api-key" autocomplete="off" placeholder="sk-… (paste to replace, leave empty to keep)">
-        <div class="saved-key" id="llm-api-key-saved" style="display:none;">
-          Saved key: <code id="llm-api-key-mask"></code>
-          <button type="button" class="clear-key-btn" onclick="clearSavedKey('llm-api-key', 'llm_api_key')">Clear</button>
-        </div>
-        <div class="key-test-row">
-          <button type="button" class="test-btn" id="llm-test-btn" onclick="testLLM()">Test connection</button>
-          <span class="key-test-result" id="llm-test-result"></span>
-        </div>
-      </div>
-      <div class="field">
-        <label>Model</label>
-        <select id="llm-model-select" onchange="onModelSelectChange()">
-          <option value="">Default for this provider</option>
-        </select>
-        <input type="text" id="llm-model" placeholder="custom-model-id" style="margin-top:6px; display:none;">
-        <div class="hint" id="llm-model-hint">Pick a model — switch to a more capable one for better answers.</div>
-      </div>
-      <div class="field">
-        <label>Base URL (optional, for proxies or self-hosted)</label>
-        <input type="text" id="llm-base-url" placeholder="Leave blank for default">
-      </div>
-    </div>
-
-    <div class="section">
-      <h2>Voice Chat</h2>
-      <div class="hint" style="margin-bottom:12px;">Talk to your books using real-time voice conversation. Requires a speech-to-speech API key. This feature sends audio to an external service.</div>
-      <div class="field">
-        <label>Provider</label>
-        <select id="voice-provider">
-          <option value="">Not configured</option>
-          <option value="gemini">Google Gemini Live</option>
-          <option value="openai-realtime">OpenAI Realtime</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>API Key</label>
-        <input type="password" id="voice-api-key" autocomplete="off" placeholder="paste to replace, leave empty to keep">
-        <div class="saved-key" id="voice-api-key-saved" style="display:none;">
-          Saved key: <code id="voice-api-key-mask"></code>
-          <button type="button" class="clear-key-btn" onclick="clearSavedKey('voice-api-key', 'voice_api_key')">Clear</button>
-        </div>
-      </div>
-      <div class="hint">Voice chat is a premium feature that uses real-time speech-to-speech AI. Your audio is sent to the selected provider for processing.</div>
-    </div>
+        <!-- Config sections rendered from /api/settings/schema (#202) -->
+    <div id="schema-form"></div>
 
     <div class="section">
       <h2>Library</h2>
@@ -478,20 +362,6 @@
         </div>
         <div id="fetch-covers-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
-      <div class="field">
-        <label>Cast of characters
-          <span style="display:inline-block; margin-left:6px; padding:1px 7px; border-radius:999px; font-size:0.62rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; background:rgba(240,165,0,0.18); color:#f0a500; border:1px solid rgba(240,165,0,0.4); vertical-align:middle;">experimental</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text); cursor:pointer;">
-          <input type="checkbox" id="booknlp-enabled" style="width:auto; min-height:0;">
-          Enable BookNLP cast extraction
-        </label>
-        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Extracts a named cast from a work's EPUB via the optional <code>booknlp</code> service
-          (<code>docker compose --profile booknlp up -d booknlp</code>). Extraction quality varies by
-          genre/translation and aliases that share no tokens may over-split — hence the
-          experimental label. Disabled by default; cast panels stay hidden until enabled.
-        </div>
       </div>
     </div>
 
@@ -506,6 +376,72 @@
 
   <script>
     let allModels = {}; // { provider → [{id, label}, ...] }
+
+    // Render the config sections from the backend settings schema (#202) — the
+    // single source of truth web + mobile share. The markup deliberately emits
+    // the SAME element ids the rest of this page's logic (loadSettings,
+    // saveSettings, onProviderChange, previewVoice, testLLM, clearSavedKey…)
+    // already targets, so only the markup is schema-driven; the behavior is
+    // unchanged. Security stays a hand-built section (its auth flow has its own
+    // save/disable/sign-out semantics); the schema still describes it for mobile.
+    const SCHEMA_RENDER_GROUPS = ['tts', 'stt', 'llm', 'voice', 'cast'];
+    async function renderSchemaForm() {
+      const host = document.getElementById('schema-form');
+      if (!host) return;
+      let schema;
+      try { schema = await fetch('/api/settings/schema').then(r => r.json()); }
+      catch { return; }
+      host.innerHTML = (schema.groups || [])
+        .filter(g => SCHEMA_RENDER_GROUPS.includes(g.key))
+        .map(renderSchemaGroup).join('');
+    }
+    function schemaFieldId(key) { return key.replace(/_/g, '-'); }
+    function schemaEscAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+    function schemaEscHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+    function schemaOpt(o, def) {
+      return `<option value="${schemaEscAttr(o.value)}"${o.value === def ? ' selected' : ''}>${schemaEscHtml(o.label)}</option>`;
+    }
+    function renderSchemaGroup(g) {
+      const badge = g.experimental
+        ? ' <span class="schema-exp">experimental</span>' : '';
+      const desc = g.description ? `<div class="hint" style="margin-bottom:12px;">${schemaEscHtml(g.description)}</div>` : '';
+      return `<div class="section"><h2>${schemaEscHtml(g.title)}${badge}</h2>${desc}${(g.fields || []).map(renderSchemaField).join('')}</div>`;
+    }
+    function renderSchemaField(f) {
+      const id = schemaFieldId(f.key);
+      const label = `<label>${schemaEscHtml(f.label)}</label>`;
+      const help = f.help ? `<div class="hint" id="${id}-hint">${schemaEscHtml(f.help)}</div>` : '';
+      const previewAddon = (f.addons || []).includes('preview')
+        ? `<button onclick="previewVoice()" id="preview-btn" style="margin-top:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:0.85rem;">Preview voice</button><audio id="preview-audio" style="display:none;"></audio>` : '';
+      switch (f.type) {
+        case 'select': {
+          const opts = f.option_groups
+            ? f.option_groups.map(og => `<optgroup label="${schemaEscAttr(og.label)}">${og.options.map(o => schemaOpt(o, f.default)).join('')}</optgroup>`).join('')
+            : (f.options || []).map(o => schemaOpt(o, f.default)).join('');
+          const onchange = f.key === 'llm_provider' ? ' onchange="onProviderChange()"' : '';
+          return `<div class="field">${label}<select id="${id}"${onchange}>${opts}</select>${previewAddon}${help}</div>`;
+        }
+        case 'select_or_custom': // llm_model: curated select + custom free-text
+          return `<div class="field">${label}
+            <select id="${id}-select" onchange="onModelSelectChange()"><option value="">Default for this provider</option></select>
+            <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${help}</div>`;
+        case 'secret': {
+          const clear = (f.addons || []).includes('clear')
+            ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear</button>` : '';
+          const test = (f.addons || []).includes('test')
+            ? `<div class="key-test-row"><button type="button" class="test-btn" id="llm-test-btn" onclick="testLLM()">Test connection</button><span class="key-test-result" id="llm-test-result"></span></div>` : '';
+          return `<div class="field">${label}
+            <input type="password" id="${id}" autocomplete="off" placeholder="${schemaEscAttr(f.placeholder)}">
+            <div class="saved-key" id="${id}-saved" style="display:none;">Saved key: <code id="${id}-mask"></code> ${clear}</div>
+            ${test}${help}</div>`;
+        }
+        case 'bool':
+          return `<div class="field"><label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" id="${id}" style="width:auto; min-height:0;"> ${schemaEscHtml(f.label)}</label>${help}</div>`;
+        case 'text':
+        default:
+          return `<div class="field">${label}<input type="text" id="${id}" placeholder="${schemaEscAttr(f.placeholder)}">${help}</div>`;
+      }
+    }
 
     async function loadModels() {
       try {
@@ -1176,7 +1112,9 @@
       }
     }
 
-    loadSettings();
+    // Render the schema-driven config sections first, THEN populate values —
+    // loadSettings targets elements the schema render creates (#202).
+    renderSchemaForm().then(loadSettings);
     checkServices();
     loadAuthState();
   </script>
