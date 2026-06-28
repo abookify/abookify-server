@@ -1,9 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
@@ -20,19 +27,54 @@ import (
 var version = "dev"
 
 func main() {
-	libraryPath := flag.String("library", envOrDefault("ABOOKIFY_LIBRARY_PATH", "./library"), "path to book library")
-	dbPath := flag.String("db", envOrDefault("ABOOKIFY_DB_PATH", "./data/abookify.db"), "path to SQLite database")
+	// data-dir is the install root (the desktop bundle passes ~/.abookify).
+	// It supplies the DEFAULTS for the per-path flags below; an explicit
+	// --library / --db / --generated / env var still overrides its slot, so
+	// the Docker compose (which sets ABOOKIFY_*_PATH explicitly) is unchanged.
+	dataDir := flag.String("data-dir", envOrDefault("ABOOKIFY_DATA_DIR", defaultDataDir()), "root dir for db/library/generated/models (~/.abookify on desktop)")
+	// Parse data-dir first so it can seed the others' defaults. (flag doesn't
+	// support staged parsing, so resolve it from env directly here; the flag
+	// is still registered for --help + explicit override.)
+	root := envOrDefault("ABOOKIFY_DATA_DIR", defaultDataDir())
+
+	libraryPath := flag.String("library", envOrDefault("ABOOKIFY_LIBRARY_PATH", filepath.Join(root, "library")), "path to book library")
+	dbPath := flag.String("db", envOrDefault("ABOOKIFY_DB_PATH", filepath.Join(root, "abookify.db")), "path to SQLite database")
 	port := flag.String("port", envOrDefault("ABOOKIFY_PORT", "7654"), "HTTP server port")
 	ttsURL := flag.String("tts-url", envOrDefault("ABOOKIFY_TTS_URL", ""), "TTS service URL")
 	sttURL := flag.String("stt-url", envOrDefault("ABOOKIFY_STT_URL", ""), "STT service URL")
 	booknlpURL := flag.String("booknlp-url", envOrDefault("ABOOKIFY_BOOKNLP_URL", ""), "BookNLP cast service URL (experimental)")
-	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", "./generated"), "path for generated audio")
+	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", filepath.Join(root, "generated")), "path for generated audio")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+	// Honor an explicit --data-dir override for the models path (the per-path
+	// flags already resolved their own overrides above).
+	modelsDir := filepath.Join(*dataDir, "models")
+
+	// First-run: create the data dirs so a fresh ~/.abookify just works. The
+	// DB open and initial scan both assume their parent dirs exist.
+	for _, d := range []string{filepath.Dir(*dbPath), *libraryPath, *generatedPath, modelsDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			log.Printf("warning: could not create %s: %v", d, err)
+		}
+	}
+
+	// Register the shutdown signals BEFORE the (possibly slow first-run) boot
+	// so a quit during the initial scan is caught + buffered, not the default
+	// hard-terminate. It's handled the moment boot reaches the serve loop.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+
 	log.Printf("abookify server starting (version %s)", version)
+	log.Printf("  data-dir:  %s", *dataDir)
 	log.Printf("  library:   %s", *libraryPath)
 	log.Printf("  database:  %s", *dbPath)
 	log.Printf("  generated: %s", *generatedPath)
+	log.Printf("  models:    %s", modelsDir)
 	log.Printf("  port:      %s", *port)
 
 	store, err := db.Open(*dbPath)
@@ -215,9 +257,12 @@ func main() {
 
 	// Set up HTTP server
 	srv := server.New(store, *port)
+	srv.Version = version
 	srv.LibraryDir = *libraryPath
 	srv.GeneratedDir = *generatedPath
 	srv.BookNLPURL = *booknlpURL
+	srv.DataDir = *dataDir
+	srv.ModelsDir = modelsDir
 
 	// Set up TTS/STT clients and generator
 	var ttsClient *tts.Client
@@ -285,9 +330,34 @@ func main() {
 		defer ingest.Close()
 	}
 
-	log.Printf("listening on :%s", *port)
-	if err := srv.ListenAndServe(); err != nil {
+	// Boot is done — flip ready so the desktop shell's /api/ready poll
+	// unblocks and it can show its window.
+	srv.SetReady(true)
+
+	// Serve in a goroutine so the main goroutine can wait for a shutdown
+	// signal and drain cleanly (Tauri sends SIGTERM/SIGINT on quit).
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Printf("listening on :%s", *port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serveErr:
 		log.Fatalf("server error: %v", err)
+	case s := <-sig:
+		log.Printf("received %s — shutting down gracefully", s)
+		applog.Info("system", "shutting down")
+		// Drain in-flight HTTP requests (bounded), then let the deferred
+		// watcher/ingest/store closers run as main returns.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown: %v", err)
+		}
+		log.Printf("stopped")
 	}
 }
 
@@ -296,4 +366,15 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// defaultDataDir is the install root when nothing is configured: ~/.abookify
+// (the desktop convention). Falls back to ./data if the home dir can't be
+// resolved, so a bare `go run` in a sandbox still works.
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "./data"
+	}
+	return filepath.Join(home, ".abookify")
 }

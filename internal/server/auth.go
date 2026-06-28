@@ -72,7 +72,9 @@ func isAuthExempt(r *http.Request) bool {
 		return true
 	}
 	switch p {
-	case "/api/health", "/api/auth/status", "/api/auth/login":
+	// /api/ready + /api/info are polled by the desktop shell before login —
+	// liveness/version only, no library data — so they stay open like health.
+	case "/api/health", "/api/ready", "/api/info", "/api/auth/status", "/api/auth/login":
 		return true
 	}
 	return false

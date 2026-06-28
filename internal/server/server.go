@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,22 @@ type Server struct {
 	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
 	// Empty when the booknlp compose profile isn't running.
 	BookNLPURL string
+
+	// Version is the build version (stamped via -ldflags), surfaced on
+	// /api/info + /api/ready so the desktop shell can show + update-check.
+	Version string
+
+	// ready flips true once the boot sequence (scan/migrate/link) is done.
+	// GET /api/ready reports it; the desktop shell polls that before showing
+	// its window. Reset to false on graceful shutdown so in-flight health
+	// checks see the drain. atomic — read from HTTP goroutines.
+	ready atomic.Bool
+
+	// DataDir is the resolved root for the install (~/.abookify on desktop):
+	// db, library, generated, models live under it. Surfaced on /api/setup
+	// so the shell/UI can report where data lives + the models path.
+	DataDir   string
+	ModelsDir string
 
 	// embedding dedupe — guards against re-entry when multiple STT jobs
 	// finish back-to-back for the same work, or when ReloadLLM kicks off
@@ -243,6 +260,7 @@ func New(store *db.Store, port string) *Server {
 
 	// API routes
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/ready", s.handleReady)
 	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
@@ -356,6 +374,36 @@ func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
 }
 
+// SetReady marks the server booted (or draining). GET /api/ready reflects it.
+func (s *Server) SetReady(v bool) { s.ready.Store(v) }
+
+// Shutdown gracefully drains the HTTP server: stop accepting new connections,
+// let in-flight requests finish (bounded by ctx). Marks not-ready first so a
+// polling shell/health check sees the drain. The caller closes the watcher,
+// ingest queue, and DB after this returns.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.ready.Store(false)
+	return s.http.Shutdown(ctx)
+}
+
+// handleReady is the lightweight readiness probe the desktop shell polls
+// before showing its window (packaging-plan First Launch). Unlike /api/health
+// it does NO upstream TTS/STT probing, so it's cheap to poll in a tight loop:
+// 200 {"ready":true,...} once booted, 503 {"ready":false} while warming or
+// draining. Connection-refused (process still starting) is the shell's "keep
+// waiting" signal; the first 200 is "show the window".
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	ready := s.ready.Load()
+	code := http.StatusOK
+	if !ready {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"ready":   ready,
+		"version": s.Version,
+	})
+}
+
 // handleHealth reports server liveness plus the reachability of the
 // upstream TTS and STT services so the Settings page can show honest
 // per-service status dots (the old version always lit both green off
@@ -420,10 +468,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	version := s.Version
+	if version == "" {
+		version = "dev"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    "abookify",
-		"version": "0.1.0",
+		"version": version,
 		"port":    s.http.Addr,
+		"ready":   s.ready.Load(),
 	})
 }
 
@@ -2444,8 +2497,8 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 // skip the static asset cascade (CSS, JS, images, favicon).
 func isAccessLogNoise(r *http.Request) bool {
 	p := r.URL.Path
-	if p == "/api/health" {
-		return true
+	if p == "/api/health" || p == "/api/ready" {
+		return true // polled in tight loops (containers, desktop shell startup)
 	}
 	if strings.HasPrefix(p, "/shared/") || strings.HasPrefix(p, "/static/") {
 		return true
