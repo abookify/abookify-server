@@ -25,13 +25,19 @@ echo ""; echo "=== launching engine (background) ==="
 ENGINE_PID=$!
 trap 'kill $ENGINE_PID 2>/dev/null' EXIT
 
-# wait for both health endpoints
+# wait for both health endpoints. First run downloads large-v3 (~3GB) + kokoro
+# weights before /health responds, which can take many minutes on a throttled
+# HF connection — hence the generous default. Override with ABOOKIFY_HEALTH_WAIT
+# (seconds). Pre-seed ~/.abookify/models/ to make this fast.
+WAIT="${ABOOKIFY_HEALTH_WAIT:-1800}"
 for url in http://127.0.0.1:5200/health http://127.0.0.1:8880/health; do
-  echo -n "waiting $url "
-  for i in $(seq 1 120); do
-    if curl -fsS "$url" >/dev/null 2>&1; then echo "OK"; break; fi
+  echo -n "waiting $url (up to ${WAIT}s for cold model download) "
+  ok=0
+  for i in $(seq 1 $((WAIT/2))); do
+    if curl -fsS "$url" >/dev/null 2>&1; then echo " OK"; ok=1; break; fi
     sleep 2; echo -n "."
   done
+  [ "$ok" = 1 ] || echo " TIMED OUT (model still downloading? check engine log)"
 done
 echo "--- STT /health:"; curl -fsS http://127.0.0.1:5200/health; echo
 echo "--- TTS /v1/models:"; curl -fsS http://127.0.0.1:8880/v1/models; echo
