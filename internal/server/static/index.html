@@ -3563,8 +3563,12 @@
       if (!rows.length) return { mode: 'none' };
       rows.sort((a, z) => (z.confidence || 0) - (a.confidence || 0));
       const best = rows[0];
+      // The ebook reader follows by paragraph regardless of the row's unit
+      // (word-by-word ebook karaoke isn't wired — only the transcript source
+      // does word-level). unit/method are kept for the tooltip + future
+      // word-anchor ebook karaoke.
       return {
-        mode: best.unit === 'word' ? 'word' : 'paragraph',
+        mode: 'paragraph',
         method: best.method, unit: best.unit, confidence: best.confidence,
         alignmentId: best.id,
       };
@@ -3588,7 +3592,9 @@
           : `Word-level alignment (${m.method}, ${pct}%) — words highlight with the audio.`;
       } else if (m.mode === 'paragraph') {
         el.innerHTML = '&#182; by paragraph';
-        el.title = `Paragraph-level alignment (${m.method}, ${pct}%) — this edition doesn't match the narration word-for-word (e.g. a different translation), so the reader follows by paragraph.`;
+        el.title = (m.unit === 'word')
+          ? `Word-level alignment (${m.method}, ${pct}%) — the reader follows by paragraph here; switch to the transcript source for word-by-word.`
+          : `Paragraph-level alignment (${m.method}, ${pct}%) — this edition doesn't match the narration word-for-word (e.g. a different translation), so the reader follows by paragraph.`;
       } else {
         el.innerHTML = '&#9711; no audio sync';
         el.title = 'No alignment between this text and the audio — read freely; the audio won’t follow along.';

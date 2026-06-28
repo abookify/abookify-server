@@ -85,17 +85,14 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		return &TextSync{Mode: "none"}, nil
 	}
 
-	mode := "paragraph"
-	if best.Unit == "word" {
-		mode = "word"
-	}
-	out := &TextSync{Mode: mode, Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
-
-	// Paragraph follow needs the payload's baked segment times + the chapter's
-	// word span. (word mode returns here — handled client-side by sync_data.)
-	if mode != "paragraph" {
-		return out, nil
-	}
+	// The reader renders an EBOOK by paragraph-follow regardless of the row's
+	// unit: word-by-word karaoke on an ebook needs a composed word map we don't
+	// have yet, but a word-ANCHOR alignment still yields fine-grained paragraph
+	// times (many small segments → accurate anchors), so same-edition ebooks
+	// get a tight follow and cross-translation (embedding) a coarser one. The
+	// transcript source is the only word-by-word path (handled above). Method/
+	// Unit still report the underlying alignment for transparency.
+	out := &TextSync{Mode: "paragraph", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
 
 	var p AnchorAlignmentPayload
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
