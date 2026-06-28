@@ -76,3 +76,24 @@ func TestEmbedNewWorksNoLLM(t *testing.T) {
 		t.Error("EmbedNewWorks must not start a backfill when no LLM is configured")
 	}
 }
+
+// #134: summary endpoints are key-gated — 503 when no LLM is configured.
+func TestSummaryEndpointsGated(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.ReloadLLM() // no provider → RAG nil
+
+	for _, path := range []string{"/api/books/1/chapters/0/summary", "/api/books/1/recap?up_to=0"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.SetPathValue("bookId", "1")
+		req.SetPathValue("idx", "0")
+		rec := httptest.NewRecorder()
+		if strings.Contains(path, "recap") {
+			srv.handleBookRecap(rec, req)
+		} else {
+			srv.handleChapterSummary(rec, req)
+		}
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s without LLM → %d, want 503", path, rec.Code)
+		}
+	}
+}
