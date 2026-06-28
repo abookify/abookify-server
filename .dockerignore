@@ -16,6 +16,9 @@ engine/.validate/
 data/
 generated/
 library/
+# testdata/ is multi-GB (PJ's live library lives under testdata/library); the
+# server image needs none of it (tests use it, the Dockerfile only builds).
+testdata/
 
 # Build artifacts
 bin/

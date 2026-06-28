@@ -24,10 +24,12 @@ var supportedFormats = map[string]string{
 	".m4a":  "m4a",
 	".flac": "flac",
 	".aac":  "aac",
+	".opus": "opus",
+	".ogg":  "opus",
 }
 
 var audioFormats = map[string]bool{
-	"mp3": true, "m4b": true, "m4a": true, "flac": true, "aac": true,
+	"mp3": true, "m4b": true, "m4a": true, "flac": true, "aac": true, "opus": true,
 }
 
 // Scan walks the given directory and returns a Book entry for each

@@ -233,7 +233,7 @@ func findInZip(r *zip.Reader, name string) (*zip.File, error) {
 func ExtractMetadata(path string) (Metadata, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".mp3", ".m4b", ".m4a", ".flac", ".aac":
+	case ".mp3", ".m4b", ".m4a", ".flac", ".aac", ".opus", ".ogg":
 		return ExtractMP3Metadata(path)
 	case ".epub":
 		return ExtractEPUBMetadata(path)

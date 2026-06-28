@@ -17,6 +17,7 @@ import (
 var supportedExts = map[string]string{
 	".epub": "epub", ".pdf": "pdf", ".mp3": "mp3",
 	".m4b": "m4b", ".m4a": "m4a", ".flac": "flac", ".aac": "aac",
+	".opus": "opus", ".ogg": "opus",
 	// MOBI family: routed through ConvertMobiToEpub in processPending so
 	// a sibling .epub is produced, and the EPUB chapter-extraction path
 	// runs on the converted file (via the next debounce tick).
@@ -25,6 +26,7 @@ var supportedExts = map[string]string{
 
 var audioExts = map[string]bool{
 	".mp3": true, ".m4b": true, ".m4a": true, ".flac": true, ".aac": true,
+	".opus": true, ".ogg": true,
 }
 
 // Watcher monitors the library directory for file changes.

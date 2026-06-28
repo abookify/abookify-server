@@ -351,6 +351,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleListMessages)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleAppendMessage)
 	mux.HandleFunc("PUT /api/sessions/{id}", s.handleRenameSession)
+	mux.HandleFunc("POST /api/sessions/{id}/scope", s.handleSetSessionScope)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
@@ -585,6 +586,8 @@ func (s *Server) handleStreamBook(w http.ResponseWriter, r *http.Request) {
 		contentType = "audio/flac"
 	case "aac":
 		contentType = "audio/aac"
+	case "opus":
+		contentType = "audio/ogg"
 	case "epub":
 		contentType = "application/epub+zip"
 	case "pdf":
