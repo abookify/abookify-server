@@ -288,6 +288,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
 	mux.HandleFunc("GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}", s.handleTextSync)
+	mux.HandleFunc("GET /api/works/{id}/word-sync/{bookId}/{chapterIdx}", s.handleEbookWordSync)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
@@ -735,6 +736,39 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ts)
+}
+
+// handleEbookWordSync returns a composed per-word audio map for one chapter of
+// a word-anchor-aligned ebook (#210b) — the same {w,s,e} shape as the
+// transcript sync_data, so the reader drives ebook word-by-word karaoke
+// through the identical path. `[]` (not 404) when the source isn't a
+// word-anchor ebook or the chapter has no per-word timing, so the client
+// cleanly falls back to paragraph-follow.
+func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	bookID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("bookId")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bookId"})
+		return
+	}
+	chapterIdx, err := strconv.Atoi(strings.TrimSpace(r.PathValue("chapterIdx")))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
+		return
+	}
+	words, err := library.BuildEbookWordSync(s.store, id, bookID, chapterIdx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if words == nil {
+		words = []library.SyncWord{}
+	}
+	writeJSON(w, http.StatusOK, words)
 }
 
 // handleWorkCoverage returns per-source-pair DIRECTIONAL coverage (#199): for

@@ -175,6 +175,153 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 	return out, nil
 }
 
+// SyncWord mirrors a transcript sync_data entry ({w,s,e}) so the reader can
+// drive ebook word-by-word karaoke through the SAME path the transcript uses.
+type SyncWord struct {
+	W string  `json:"w"`
+	S float64 `json:"s"`
+	E float64 `json:"e"`
+}
+
+// BuildEbookWordSync composes a per-word audio map for one chapter of a
+// word-anchor-aligned ebook (#210b): each readable ebook word with its audio
+// time, in chapter order — the "composed alignment" that lets the EBOOK side
+// highlight word-by-word like the transcript, instead of paragraph-follow.
+// Returns nil when the source isn't a word-anchor ebook or the chapter has no
+// per-word timing.
+//
+// Readable words come from displayTokenize on the SAME chapter text the
+// aligner tokenized (loadContentChapters), so they're index-aligned with the
+// payload's word offsets. Aligned segments carry WordSecs (per-ebook-word start
+// sec); unaligned (skipped) words forward-fill the previous time so the array
+// stays monotonic for the karaoke binary-search.
+func BuildEbookWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
+	work, err := store.GetWork(workID)
+	if err != nil || work == nil {
+		return nil, err
+	}
+	transIDs := map[int64]bool{}
+	for _, b := range work.TextFiles {
+		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
+			transIDs[b.ID] = true
+		}
+	}
+	if transIDs[bookID] {
+		return nil, nil // transcript drives its own sync_data
+	}
+	aligns, err := store.ListAlignmentsForWork(workID)
+	if err != nil {
+		return nil, err
+	}
+	var best *db.Alignment
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Unit != "word" {
+			continue
+		}
+		paired := (a.FromBookID == bookID && transIDs[a.ToBookID]) ||
+			(a.ToBookID == bookID && transIDs[a.FromBookID])
+		if !paired {
+			continue
+		}
+		if best == nil || a.Confidence > best.Confidence {
+			best = a
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	var p AnchorAlignmentPayload
+	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
+		return nil, nil
+	}
+	var cStart, cLen int
+	found := false
+	for _, cs := range p.EbookChapters {
+		if cs.Index == chapterIdx {
+			cStart, cLen = cs.Start, cs.Len
+			found = true
+			break
+		}
+	}
+	if !found || cLen <= 0 {
+		return nil, nil
+	}
+
+	// Readable words for this chapter, index-aligned with the aligner's tokens.
+	chapters, err := loadContentChapters(store, bookID, true)
+	if err != nil {
+		return nil, err
+	}
+	var words []string
+	for _, ch := range chapters {
+		if ch.Index == chapterIdx {
+			words = displayTokenize(ch.Text)
+			break
+		}
+	}
+	if len(words) == 0 {
+		return nil, nil
+	}
+	if len(words) > cLen { // tolerate a tiny tokenizer drift; never index OOB
+		words = words[:cLen]
+	}
+	n := len(words)
+	cEnd := cStart + cLen
+
+	// Per-word start times from the aligned segments' WordSecs.
+	times := make([]float64, n)
+	known := make([]bool, n)
+	anyKnown := false
+	for _, s := range p.Segments {
+		if s.Kind != SegAligned || len(s.WordSecs) == 0 {
+			continue
+		}
+		if s.EbookEnd <= cStart || s.EbookStart >= cEnd {
+			continue
+		}
+		for j, sec := range s.WordSecs {
+			local := (s.EbookStart + j) - cStart
+			if local < 0 || local >= n {
+				continue
+			}
+			times[local] = sec
+			known[local] = true
+			anyKnown = true
+		}
+	}
+	if !anyKnown {
+		return nil, nil
+	}
+	// Forward-fill skipped (unaligned) words so times are monotonic; back-fill
+	// any leading gap with the first known time.
+	var firstKnown float64
+	for i := 0; i < n; i++ {
+		if known[i] {
+			firstKnown = times[i]
+			break
+		}
+	}
+	last := firstKnown
+	for i := 0; i < n; i++ {
+		if known[i] {
+			last = times[i]
+		} else {
+			times[i] = last
+		}
+	}
+
+	out := make([]SyncWord, n)
+	for i := 0; i < n; i++ {
+		end := times[i] + 0.3
+		if i+1 < n && times[i+1] > times[i] {
+			end = times[i+1]
+		}
+		out[i] = SyncWord{W: words[i], S: times[i], E: end}
+	}
+	return out, nil
+}
+
 func clamp01(f float64) float64 {
 	if f < 0 {
 		return 0
