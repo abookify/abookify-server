@@ -13,9 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/stt"
 )
 
+// chunkSecs mirrors library.ChunkedTranscribe's 10-min window; used here only
+// for the CLI's cross-file ETA estimate (the actual chunking lives in library).
 const chunkSecs = 600
 
 // audioExts are the file extensions we'll treat as audio when --audio points
@@ -132,16 +135,14 @@ func main() {
 		if len(files) > 1 {
 			log.Printf("[%d/%d] %s (offset %.0fs)", fi+1, len(files), filepath.Base(path), cumOffset)
 		}
-		segResults, err := transcribeFile(client, path, durations[fi], cumOffset, start, cumOffset, totalDur)
+		r, err := transcribeFile(client, path, cumOffset, start, cumOffset, totalDur)
 		if err != nil {
 			log.Fatalf("transcribe %s: %v", path, err)
 		}
-		for _, r := range segResults {
-			combined.Segments = append(combined.Segments, r.Segments...)
-			combined.Text += r.Text + " "
-			if combined.Language == "" {
-				combined.Language = r.Language
-			}
+		combined.Segments = append(combined.Segments, r.Segments...)
+		combined.Text += r.Text + " "
+		if combined.Language == "" {
+			combined.Language = r.Language
 		}
 		cumOffset += durations[fi]
 	}
@@ -277,72 +278,18 @@ func resolveInputFiles(path string) ([]string, error) {
 //
 // `wallStart`, `cumDone`, and `totalDur` are used only for ETA logging across
 // an entire multi-file run.
-func transcribeFile(client *stt.Client, path string, dur, baseOffset float64, wallStart time.Time, cumDone, totalDur float64) ([]stt.TranscribeResult, error) {
-	nSegs := int(dur/chunkSecs) + 1
-	var results []stt.TranscribeResult
-
-	for i := 0; i < nSegs; i++ {
-		segStart := i * chunkSecs
-		segPath := fmt.Sprintf("/tmp/stt-cli-seg-%04d.mp3", i)
-
-		// Copy a chunk without re-encoding. For non-mp3 containers `-c copy`
-		// still works because we read the container-level timestamps.
-		cmd := exec.Command("ffmpeg", "-y", "-v", "error",
-			"-ss", strconv.Itoa(segStart), "-t", strconv.Itoa(chunkSecs),
-			"-i", path, "-c", "copy", segPath)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("ffmpeg split %d: %v\n%s", i, err, out)
+// transcribeFile is a thin wrapper over the shared library.ChunkedTranscribe
+// primitive (chunking + retry + offset-stitch live there, in one place shared
+// with the server). This wrapper only adds the CLI's cross-file ETA logging.
+// Returns one combined result already shifted into the global timeline.
+func transcribeFile(client *stt.Client, path string, baseOffset float64, wallStart time.Time, cumDone, totalDur float64) (*stt.TranscribeResult, error) {
+	return library.ChunkedTranscribe(client, path, baseOffset, func(e library.SegmentEvent) {
+		if !e.Done {
+			log.Printf("  segment %d/%d (file offset %ds)...", e.SegIdx+1, e.TotalSegs, e.SegStartSecs)
+			return
 		}
-
-		log.Printf("  segment %d/%d (file offset %ds)...", i+1, nSegs, segStart)
-
-		// Retry the Whisper call on transient failures. Whisper sometimes
-		// returns a 500 on a segment ("Invalid data found when processing
-		// input") that succeeds when retried — likely intermittent decoder
-		// state. After maxAttempts retries we give up on the segment and
-		// continue with an empty result so a single bad chunk doesn't lose
-		// hours of completed work elsewhere in the file.
-		const maxAttempts = 3
-		var result *stt.TranscribeResult
-		var err error
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			result, err = client.TranscribeFile(segPath)
-			if err == nil {
-				break
-			}
-			if attempt < maxAttempts {
-				backoff := time.Duration(attempt*2) * time.Second
-				log.Printf("    segment %d attempt %d/%d failed (%v); retry in %v",
-					i+1, attempt, maxAttempts, err, backoff)
-				time.Sleep(backoff)
-			}
-		}
-		os.Remove(segPath)
-		if err != nil {
-			log.Printf("  segment %d failed permanently after %d attempts: %v — skipping",
-				i+1, maxAttempts, err)
-			// Continue with an empty result rather than abort the whole file.
-			result = &stt.TranscribeResult{}
-		}
-
-		// Shift all timestamps into the global timeline: base offset (prior
-		// files) + segment offset within this file.
-		shift := baseOffset + float64(segStart)
-		shifted := stt.TranscribeResult{Language: result.Language}
-		for _, seg := range result.Segments {
-			s := stt.Segment{Start: seg.Start + shift, End: seg.End + shift, Text: seg.Text}
-			for _, w := range seg.Words {
-				s.Words = append(s.Words, stt.Word{
-					Word: w.Word, Start: w.Start + shift, End: w.End + shift, Probability: w.Probability,
-				})
-			}
-			shifted.Segments = append(shifted.Segments, s)
-		}
-		shifted.Text = result.Text
-		results = append(results, shifted)
-
 		// ETA against total multi-file duration.
-		done := cumDone + float64(segStart+chunkSecs)
+		done := cumDone + float64(e.SegStartSecs+chunkSecs)
 		if done > totalDur {
 			done = totalDur
 		}
@@ -352,10 +299,9 @@ func transcribeFile(client *stt.Client, path string, dur, baseOffset float64, wa
 			remaining := totalDur - done
 			eta := time.Duration(remaining * rate * float64(time.Second))
 			log.Printf("    done (%d words, %.1fx realtime, overall %.0f%%, ETA %s)",
-				len(strings.Fields(result.Text)), 1/rate, 100*done/totalDur, eta.Truncate(time.Second))
+				e.Words, 1/rate, 100*done/totalDur, eta.Truncate(time.Second))
 		}
-	}
-	return results, nil
+	})
 }
 
 func probeDuration(path string) float64 {

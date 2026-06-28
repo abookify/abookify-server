@@ -95,20 +95,18 @@ func retranscribeAndMerge(client *stt.Client, files []string, durations []float6
 	var newSilences []silenceEvent
 	for _, e := range redo {
 		log.Printf("[redo] %s (offset %.0fs, dur %.0fs)", e.base, e.startSec, e.endSec-e.startSec)
-		segResults, err := transcribeFile(client, files[e.idx], durations[e.idx], e.startSec, wallStart, 0, e.endSec-e.startSec)
+		r, err := transcribeFile(client, files[e.idx], e.startSec, wallStart, 0, e.endSec-e.startSec)
 		if err != nil {
 			return fmt.Errorf("transcribe %s: %w", e.base, err)
 		}
-		for _, r := range segResults {
-			for _, seg := range r.Segments {
-				for _, w := range seg.Words {
-					newWords = append(newWords, wordTS{
-						Word:        w.Word,
-						Start:       w.Start,
-						End:         w.End,
-						Probability: w.Probability,
-					})
-				}
+		for _, seg := range r.Segments {
+			for _, w := range seg.Words {
+				newWords = append(newWords, wordTS{
+					Word:        w.Word,
+					Start:       w.Start,
+					End:         w.End,
+					Probability: w.Probability,
+				})
 			}
 		}
 		sil, err := detectSilences(files[e.idx], -30, 0.15, e.startSec)
