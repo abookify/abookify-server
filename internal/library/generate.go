@@ -308,7 +308,7 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice string) {
 		processedText := PreprocessForTTS(chMeta.Title, ch.Content)
 
 		// Split long text into chunks for TTS (~500 words each)
-		textChunks := splitTextForTTS(processedText, 500)
+		textChunks := SplitTextForTTS(processedText, 500)
 		var allAudio []byte
 
 		for ci, chunk := range textChunks {
@@ -607,8 +607,6 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 	log.Printf("stt: completed transcription for work %d (%d files)", workID, len(audioFiles))
 }
 
-// splitTextForTTS breaks long text into chunks that TTS can handle.
-// Splits on sentence boundaries (periods) near the target word count.
 // RegenerateChapter queues a single chapter for audio regeneration.
 func (g *Generator) RegenerateChapter(workID, bookID int64, ch *db.Chapter, voice string) (string, bool) {
 	jobID := fmt.Sprintf("regen-%d-%d-%d", workID, bookID, ch.Index)
@@ -660,7 +658,7 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 	// Preprocess
 	processed := PreprocessForTTS(ch.Title, ch.Content)
 	log.Printf("regenerate: preprocessed to %d chars", len(processed))
-	chunks := splitTextForTTS(processed, 500)
+	chunks := SplitTextForTTS(processed, 500)
 
 	job.CurrentStep = fmt.Sprintf("Generating: %s", ch.Title)
 	g.updateJob(job)
@@ -759,60 +757,8 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 	log.Printf("regenerate: completed chapter %d (%s) for book %d", ch.Index, ch.Title, bookID)
 }
 
-func splitTextForTTS(text string, targetWords int) []string {
-	words := strings.Fields(text)
-	if len(words) <= targetWords {
-		return []string{text}
-	}
-
-	var chunks []string
-	sentences := splitSentences(text)
-	var current []string
-	currentWords := 0
-
-	for _, sentence := range sentences {
-		sentWords := len(strings.Fields(sentence))
-		if currentWords+sentWords > targetWords && currentWords > 0 {
-			chunks = append(chunks, strings.Join(current, " "))
-			current = nil
-			currentWords = 0
-		}
-		current = append(current, sentence)
-		currentWords += sentWords
-	}
-
-	if len(current) > 0 {
-		chunks = append(chunks, strings.Join(current, " "))
-	}
-
-	if len(chunks) == 0 {
-		chunks = []string{text}
-	}
-
-	return chunks
-}
-
-func splitSentences(text string) []string {
-	var sentences []string
-	var current strings.Builder
-
-	for _, r := range text {
-		current.WriteRune(r)
-		if r == '.' || r == '!' || r == '?' || r == '\n' {
-			s := strings.TrimSpace(current.String())
-			if s != "" {
-				sentences = append(sentences, s)
-			}
-			current.Reset()
-		}
-	}
-
-	if s := strings.TrimSpace(current.String()); s != "" {
-		sentences = append(sentences, s)
-	}
-
-	return sentences
-}
+// splitTextForTTS / splitSentences moved to tts_chunk.go as the exported
+// SplitTextForTTS so the server and tts-cli share one implementation.
 
 func estimateETA(startedAt time.Time, completed, total int) string {
 	if completed == 0 || startedAt.IsZero() {

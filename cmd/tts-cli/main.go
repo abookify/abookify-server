@@ -79,7 +79,7 @@ func synthesize(client *tts.Client, text, voice, output, sourceFile string) {
 	words := len(strings.Fields(text))
 	log.Printf("Synthesizing %d words with voice %q → %s", words, voice, output)
 
-	chunks := splitText(text, 500)
+	chunks := library.SplitTextForTTS(text, 500)
 	log.Printf("Split into %d chunks", len(chunks))
 
 	start := time.Now()
@@ -141,37 +141,5 @@ type ttsSidecar struct {
 	SynthesizedAt string  `json:"synthesized_at"`
 }
 
-func splitText(text string, targetWords int) []string {
-	words := strings.Fields(text)
-	if len(words) <= targetWords {
-		return []string{text}
-	}
-
-	var chunks []string
-	sentences := strings.Split(text, ".")
-	var current strings.Builder
-	currentWords := 0
-
-	for _, s := range sentences {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		sWords := len(strings.Fields(s))
-		if currentWords+sWords > targetWords && currentWords > 0 {
-			chunks = append(chunks, current.String())
-			current.Reset()
-			currentWords = 0
-		}
-		if current.Len() > 0 {
-			current.WriteString(". ")
-		}
-		current.WriteString(s)
-		currentWords += sWords
-	}
-	if current.Len() > 0 {
-		chunks = append(chunks, current.String())
-	}
-
-	return chunks
-}
+// splitText moved to library.SplitTextForTTS (shared with the server) — the CLI
+// no longer carries its own chunking copy.
