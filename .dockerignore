@@ -1,0 +1,30 @@
+# Keep the Docker build context (and the resulting server image) lean.
+# The Dockerfile does `COPY . .` then `go build`; the Go binary needs only
+# source. Without this, the context pulled in the multi-GB hermetic engine
+# bundle, the SQLite DB, and build artifacts → an 18 GB image + disk-fill.
+#
+# (server-web owns the Dockerfile — added by transcription after a build filled
+#  /home; sanity-check nothing here is needed at image-build time. Runtime data
+#  is volume-mounted, not baked in.)
+
+# Hermetic ML engine bundle + its build cache (#55/#57) — never needed in the image
+engine/dist/
+engine/.build-cache/
+engine/.validate/
+
+# Runtime data — mounted as a volume at runtime, must not be baked in
+data/
+generated/
+library/
+
+# Build artifacts
+bin/
+**/__pycache__/
+*.test
+
+# Node / web tooling (web UI is committed pre-built + go:embed'd from internal/)
+node_modules/
+
+# VCS / local
+.git/
+.gitignore
