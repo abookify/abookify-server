@@ -1,20 +1,8 @@
-# abookify hermetic engine — pinned Python deps.
+# DEPRECATED (#57). Split into:
+#   requirements-base.txt  — CPU-capable deps (every platform; torch installed
+#                            separately by build.sh, variant-pinned)
+#   requirements-cuda.txt  — cuBLAS/cuDNN wheels for CTranslate2 GPU (NVIDIA only)
 #
-# CUDA reaches the GPU via the user's NVIDIA *driver* only. These nvidia-*-cu12
-# wheels supply cuBLAS + cuDNN as pip packages (no system CUDA toolkit). The
-# launcher puts their site-packages/nvidia/*/lib dirs on LD_LIBRARY_PATH.
-# CTranslate2 >= 4.5 (via faster-whisper) needs cuDNN 9.x.
-
-# --- STT ---
-faster-whisper==1.1.1          # pulls ctranslate2, tokenizers, av (PyAV/ffmpeg), onnxruntime
-flask==3.0.3
-
-# CUDA runtime libs as wheels (Linux x86_64; ignored/no-op on macOS via build.sh)
-nvidia-cublas-cu12==12.4.5.8
-nvidia-cudnn-cu12==9.1.0.70
-
-# --- TTS ---
-kokoro==0.9.4                  # hexgrad Kokoro-82M pipeline (pulls torch, misaki g2p)
-torch==2.5.1                   # default PyPI linux wheel is the CUDA 12 build
-soundfile==0.12.1
-espeakng-loader==0.2.4         # ships espeak-ng shared lib as a wheel (misaki OOV fallback) -> stays hermetic
+# build.sh picks the variant (cpu default / cuda when an NVIDIA GPU is detected)
+# so CPU/Mac hosts never pull torch+CUDA. This file is kept only so older refs
+# don't 404; do not add deps here.

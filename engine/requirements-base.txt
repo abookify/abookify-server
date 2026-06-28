@@ -1,0 +1,13 @@
+# abookify hermetic engine — BASE deps (CPU-capable, every platform).
+#
+# torch is installed SEPARATELY by build.sh (variant-pinned: CPU wheel by
+# default, CUDA wheel only when an NVIDIA GPU is detected) BEFORE this file, so
+# pip sees it already satisfied here and kokoro doesn't drag in the default
+# (CUDA) torch. The CUDA runtime libs for CTranslate2 live in requirements-cuda.txt.
+
+faster-whisper==1.1.1          # pulls ctranslate2 (CPU-capable), tokenizers, av (PyAV/ffmpeg), onnxruntime
+flask==3.0.3
+
+kokoro==0.9.4                  # hexgrad Kokoro-82M pipeline (needs torch — installed first by build.sh)
+soundfile==0.12.1
+espeakng-loader==0.2.4         # ships espeak-ng shared lib as a wheel (misaki OOV fallback) -> stays hermetic

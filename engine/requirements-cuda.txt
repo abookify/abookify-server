@@ -1,0 +1,12 @@
+# abookify hermetic engine — CUDA extras (installed ONLY when an NVIDIA GPU is
+# detected; Linux x86_64). These supply cuBLAS + cuDNN as pip wheels so
+# CTranslate2 >= 4.5 (faster-whisper's backend) can run float16 on the GPU via
+# the user's NVIDIA *driver* — no system CUDA toolkit. The launcher puts their
+# site-packages/nvidia/*/lib dirs on LD_LIBRARY_PATH.
+#
+# torch's own CUDA build (installed by build.sh in cuda mode) carries the rest
+# of the CUDA runtime (cuda-runtime, nvrtc, cufft, nccl, ...). These two are the
+# extra ones CTranslate2 needs that torch doesn't expose on the path.
+
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==9.1.0.70

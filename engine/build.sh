@@ -31,10 +31,23 @@ esac
 PBS_ASSET="cpython-${PY_VERSION}+${PBS_TAG}-${TRIPLE}-install_only.tar.gz"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_ASSET}"
 
+# --- engine variant: cpu (default, every platform) vs cuda (NVIDIA GPU only) ---
+# Override with ABOOKIFY_ENGINE_VARIANT=cpu|cuda. Auto: cuda iff the platform is
+# CUDA-capable AND an NVIDIA GPU is present. This is the #57 split: Macs / CPU
+# boxes never pull torch+CUDA (~2.5 GB), they get the small CPU stack.
+if [ -n "${ABOOKIFY_ENGINE_VARIANT:-}" ]; then
+  VARIANT="$ABOOKIFY_ENGINE_VARIANT"
+elif [ "$GPU_CAPABLE" = 1 ] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q GPU; then
+  VARIANT="cuda"
+else
+  VARIANT="cpu"
+fi
+[ "$GPU_CAPABLE" = 1 ] || VARIANT="cpu"   # cuda wheels are linux/x86_64 only
+
 echo "=== abookify engine build ==="
 echo "  bundle : $BUNDLE"
 echo "  python : $PY_VERSION (pbs $PBS_TAG, $TRIPLE)"
-echo "  gpu    : $([ "$GPU_CAPABLE" = 1 ] && echo 'CUDA wheels included' || echo 'CPU only (no nvidia wheels)')"
+echo "  variant: $VARIANT $([ "$VARIANT" = cpu ] && echo '(CPU wheels — no torch+CUDA)' || echo '(NVIDIA GPU — torch+CUDA + cuBLAS/cuDNN)')"
 
 mkdir -p "$BUNDLE"
 CACHE="$HERE/.build-cache"; mkdir -p "$CACHE"
@@ -60,20 +73,33 @@ PY="$BUNDLE/python/bin/python3"
 echo "--- upgrading pip"
 "$PY" -m pip install --upgrade pip wheel >/dev/null
 
-# On non-GPU platforms, strip the nvidia-*-cu12 lines (they're linux/x86_64 only).
-REQ="$HERE/requirements.txt"
-if [ "$GPU_CAPABLE" != 1 ]; then
-  REQ="$CACHE/requirements.cpu.txt"
-  grep -v '^nvidia-' "$HERE/requirements.txt" > "$REQ"
-  echo "--- (CPU build: nvidia wheels stripped)"
+# 2a. torch FIRST, variant-pinned, so kokoro doesn't drag in the default (CUDA)
+#     torch. cpu variant uses the CPU wheel index on Linux/Windows; macOS's
+#     default wheel is already CPU/MPS so it needs no special index.
+echo "--- installing torch ($VARIANT)"
+if [ "$VARIANT" = "cuda" ]; then
+  "$PY" -m pip install "torch==2.5.1"                                  # default index = cu124
+elif [ "$OS" = "Darwin" ]; then
+  "$PY" -m pip install "torch==2.5.1"                                  # mac default = CPU/MPS
+else
+  "$PY" -m pip install "torch==2.5.1" --index-url https://download.pytorch.org/whl/cpu
 fi
-echo "--- installing requirements (this is the big step)"
-"$PY" -m pip install -r "$REQ"
+
+# 2b. base deps (torch now satisfied → kokoro won't pull a different one).
+echo "--- installing base requirements"
+"$PY" -m pip install -r "$HERE/requirements-base.txt"
+
+# 2c. CUDA extras for CTranslate2 (cuBLAS/cuDNN wheels) — GPU builds only.
+if [ "$VARIANT" = "cuda" ]; then
+  echo "--- installing CUDA extras (cuBLAS/cuDNN for CTranslate2)"
+  "$PY" -m pip install -r "$HERE/requirements-cuda.txt"
+fi
 
 # --- 3. copy engine code -------------------------------------------------------
 echo "--- staging engine code"
 mkdir -p "$BUNDLE/engine"
 cp "$HERE"/stt_server.py "$HERE"/tts_server.py "$HERE"/_common.py "$HERE"/launch.py "$BUNDLE/engine/"
+echo "$VARIANT" > "$BUNDLE/VARIANT"   # stamp so the install/first-run flow knows what it built
 
 # --- 4. launcher wrapper -------------------------------------------------------
 cat > "$BUNDLE/abookify-engine" <<'WRAP'
@@ -89,7 +115,7 @@ WRAP
 chmod +x "$BUNDLE/abookify-engine"
 
 echo ""
-echo "=== build complete ==="
+echo "=== build complete ($VARIANT) ==="
 du -sh "$BUNDLE" 2>/dev/null | awk '{print "  bundle size: "$1}'
 echo "  launch: $BUNDLE/abookify-engine"
 echo "  models will download to ~/.abookify/models/ on first use"
