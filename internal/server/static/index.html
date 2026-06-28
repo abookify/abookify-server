@@ -455,6 +455,31 @@
     .meld-ins { background: rgba(52,211,153,0.22); border-radius: 3px; padding: 0 2px; }
     @media (max-width: 560px) { .meld-pair { grid-template-columns: 1fr; } }
 
+    /* Spoiler-aware recap + chapter summary modal (#134). */
+    #np-recap-btn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent) !important; }
+    .recap-modal { max-width: 620px; width: 92%; }
+    .recap-head { display: flex; align-items: center; justify-content: space-between; }
+    .recap-head h3 { margin: 0; font-family: var(--serif); font-weight: 600; font-size: 1.15rem; }
+    .recap-close { background: none; border: none; color: var(--text-muted); font-size: 1.1rem; cursor: pointer; }
+    .recap-close:hover { color: var(--text); }
+    .recap-note { font-size: 0.8rem; color: var(--muted); margin: 0.3rem 0 1rem; }
+    .recap-section { margin-bottom: 1.1rem; }
+    .recap-label {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 0.45rem; display: flex; align-items: center; gap: 0.5rem;
+    }
+    .recap-regen {
+      background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted);
+      cursor: pointer; font-size: 0.75rem; line-height: 1; padding: 2px 6px;
+    }
+    .recap-regen:hover { color: var(--accent); border-color: var(--accent); }
+    .recap-body { font-size: 0.9rem; line-height: 1.6; color: var(--text); }
+    .recap-body p { margin: 0 0 0.6rem; }
+    .recap-body p:last-child { margin-bottom: 0; }
+    .recap-loading { color: var(--muted); font-style: italic; }
+    .recap-empty { color: var(--muted); }
+    .recap-err { color: var(--danger); }
+
     /* Directional coverage readout (#199/#200): two columns per source-pair —
        QUALITY (audiobook→ebook, traffic-lit: is the alignment trustworthy) and
        SCOPE (ebook→audiobook, neutral: how much is narrated — low is normal for
@@ -1699,6 +1724,7 @@
       </select>
       <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
+      <button id="np-recap-btn" onclick="openRecap()" title="Spoiler-free recap + chapter summary" style="display:none;">&#10022; Recap</button>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
       <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
@@ -1802,6 +1828,9 @@
       } catch {
         llmConfigured = false;
       }
+      // The reader "Recap" affordance (#134) needs an LLM.
+      const rb = document.getElementById('np-recap-btn');
+      if (rb) rb.style.display = llmConfigured ? '' : 'none';
     }
 
     // work_id → {total_missing_sec, segment_count, source_files[]}
@@ -3030,6 +3059,70 @@
       closeAllWorkMenus();
       ensureAbookSummaryHost();
       await openMeld(workId);
+    }
+
+    // Spoiler-aware recap + chapter summary for the active reader (#134).
+    // Shows the "story so far" through the reader's CURRENT chapter (server
+    // bounds it to chapters ≤ that index, so nothing ahead leaks) plus a
+    // summary of the current chapter. Lazy-fetched; each section regenerates.
+    function openRecap() {
+      const workId = currentReaderWorkId;
+      if (workId == null) { showToast('Open the reader first', 'err'); return; }
+      const ch = currentReaderChapter[workId];
+      if (!ch) { showToast('Open a chapter first', 'err'); return; }
+      if (!llmConfigured) { showToast('Add an AI key in Settings to use recaps', 'err'); return; }
+      const bookId = ch.bookId, idx = ch.index;
+      const chTitle = ch.title || ('Chapter ' + idx);
+      const host = document.createElement('div');
+      host.id = 'recap-host';
+      host.innerHTML = `<div class="modal-backdrop" onclick="closeRecap(event)">
+        <div class="modal recap-modal" onclick="event.stopPropagation()">
+          <div class="recap-head">
+            <h3>&#10022; Recap</h3>
+            <button class="recap-close" onclick="closeRecap()" title="Close">&#10005;</button>
+          </div>
+          <p class="recap-note">Spoiler-free — built only from what you've read, through <b>${escapeHtml(chTitle)}</b>.</p>
+          <div class="recap-section">
+            <div class="recap-label">Story so far
+              <button class="recap-regen" onclick="loadRecap(${bookId},${idx},true)" title="Regenerate">&#8635;</button></div>
+            <div class="recap-body" id="recap-so-far"><span class="recap-loading">Generating…</span></div>
+          </div>
+          <div class="recap-section">
+            <div class="recap-label">This chapter
+              <button class="recap-regen" onclick="loadChapterSummary(${bookId},${idx},true)" title="Regenerate">&#8635;</button></div>
+            <div class="recap-body" id="recap-chapter"><span class="recap-loading">Generating…</span></div>
+          </div>
+        </div>
+      </div>`;
+      document.body.appendChild(host);
+      loadRecap(bookId, idx, false);
+      loadChapterSummary(bookId, idx, false);
+    }
+    function recapParas(text) { return (text || '').split(/\n\n+/).map(p => `<p>${escapeHtml(p)}</p>`).join(''); }
+    async function loadRecap(bookId, idx, refresh) {
+      const el = document.getElementById('recap-so-far');
+      if (!el) return;
+      el.innerHTML = `<span class="recap-loading">${refresh ? 'Regenerating' : 'Generating'}…</span>`;
+      try {
+        const d = await fetch(`/api/books/${bookId}/recap?up_to=${idx}${refresh ? '&refresh=1' : ''}`).then(r => r.json());
+        if (d.error) { el.innerHTML = `<span class="recap-err">${escapeHtml(d.error)}</span>`; return; }
+        el.innerHTML = d.recap ? recapParas(d.recap) : '<span class="recap-empty">Not far enough in to recap yet.</span>';
+      } catch { el.innerHTML = '<span class="recap-err">Couldn’t load the recap.</span>'; }
+    }
+    async function loadChapterSummary(bookId, idx, refresh) {
+      const el = document.getElementById('recap-chapter');
+      if (!el) return;
+      el.innerHTML = `<span class="recap-loading">${refresh ? 'Regenerating' : 'Generating'}…</span>`;
+      try {
+        const d = await fetch(`/api/books/${bookId}/chapters/${idx}/summary${refresh ? '?refresh=1' : ''}`).then(r => r.json());
+        if (d.error) { el.innerHTML = `<span class="recap-err">${escapeHtml(d.error)}</span>`; return; }
+        el.innerHTML = d.summary ? recapParas(d.summary) : '<span class="recap-empty">No summary for this chapter.</span>';
+      } catch { el.innerHTML = '<span class="recap-err">Couldn’t load the summary.</span>'; }
+    }
+    function closeRecap(e) {
+      if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
+      const h = document.getElementById('recap-host');
+      if (h) h.remove();
     }
 
     async function openAbookSummary(workId) {
