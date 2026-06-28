@@ -1121,6 +1121,21 @@
       width: 64px; text-align: right; font-variant-numeric: tabular-nums;
     }
     .np-overlay-bar select option { background: var(--surface-2); color: var(--text); }
+
+    /* Reader follow-mode indicator (#210): which render mode is driving the
+       reader for the displayed source — word-by-word karaoke (transcript /
+       word-anchor) vs by-paragraph follow (embedding/paragraph alignment) vs
+       no audio sync. Makes the source toggle's effect legible. */
+    .np-sync-mode {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+      padding: 3px 9px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+      cursor: default;
+    }
+    .np-sync-mode.word { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
+    .np-sync-mode.paragraph { color: var(--ebook-only); border-color: color-mix(in srgb, var(--ebook-only) 35%, transparent); background: var(--ebook-only-soft); }
+    .np-sync-mode.none { color: var(--muted); }
     .np-overlay-bar .np-overlay-title {
       flex: 1; font-weight: 600; color: var(--text);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1673,6 +1688,7 @@
         <option value="1.8">Relaxed</option>
       </select>
       <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
+      <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
       <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
     </div>
@@ -3436,8 +3452,12 @@
       const sel = document.getElementById('np-text-source');
       if (!sel) return;
       const sources = work ? orderedTextSources(work) : [];
+      const current = work ? resolveDisplayTextBook(work) : null;
+      // Follow-mode indicator shows for any active source (even a lone one);
+      // the picker itself only when there's a real choice (>1 source).
+      if (work && current) updateSyncModeIndicator(work.id, current.id);
+      else { const ind = document.getElementById('np-sync-mode'); if (ind) ind.style.display = 'none'; }
       if (sources.length < 2) { sel.style.display = 'none'; sel.innerHTML = ''; return; }
-      const current = resolveDisplayTextBook(work);
       sel.innerHTML = sources.map(b =>
         `<option value="${b.id}" ${current && b.id === current.id ? 'selected' : ''}>${escapeHtml(textSourceLabel(b))}</option>`
       ).join('');
@@ -3491,6 +3511,77 @@
         });
       } catch (e) {
         console.warn('Failed to persist text-edition override:', e);
+      }
+    }
+
+    // Alignment rows per work (method/unit/confidence/book-pair), cached so the
+    // sync-mode resolver doesn't refetch on every chapter change. Invalidated
+    // implicitly by a page reload; alignments rarely change mid-session.
+    const alignmentsCache = {};
+    async function getAlignments(workId) {
+      if (alignmentsCache[workId]) return alignmentsCache[workId];
+      try {
+        const r = await fetch(`/api/works/${workId}/alignments`);
+        alignmentsCache[workId] = (await r.json()) || [];
+      } catch { alignmentsCache[workId] = []; }
+      return alignmentsCache[workId];
+    }
+
+    function bookIsTranscript(b) {
+      return b && (b.format === 'transcript' || b.origin === 'whisper_transcript');
+    }
+
+    // Resolve the reader follow-mode for a displayed text source (#210). The
+    // render mode must match the alignment between that source and the audio:
+    //   - transcript           → word-by-word karaoke (1:1 with the audio timeline)
+    //   - ebook + word/anchor   → word-by-word (word-level alignment exists)
+    //   - ebook + paragraph/emb → by-paragraph follow (coarser; no word map)
+    //   - ebook, no alignment   → none (read freely, no audio follow)
+    // Dual rows (a work can carry both a near-zero word-anchor AND a good
+    // embedding/paragraph row — cross-translation) collapse to the higher-
+    // confidence row, so a recovered cross-translation reads as "paragraph",
+    // not a broken "word". (Survey: handoff/transcription.md.)
+    function resolveReaderSyncMode(work, bookId, aligns) {
+      const book = (work.text_files || []).find(b => b.id === bookId);
+      if (bookIsTranscript(book)) {
+        return { mode: 'word', method: 'transcript', unit: 'word', confidence: 1 };
+      }
+      const transIds = new Set((work.text_files || []).filter(bookIsTranscript).map(b => b.id));
+      const rows = (aligns || []).filter(a =>
+        (a.from_book_id === bookId && transIds.has(a.to_book_id)) ||
+        (a.to_book_id === bookId && transIds.has(a.from_book_id)));
+      if (!rows.length) return { mode: 'none' };
+      rows.sort((a, z) => (z.confidence || 0) - (a.confidence || 0));
+      const best = rows[0];
+      return {
+        mode: best.unit === 'word' ? 'word' : 'paragraph',
+        method: best.method, unit: best.unit, confidence: best.confidence,
+        alignmentId: best.id,
+      };
+    }
+
+    // Paint the gear-bar follow-mode indicator for the active reader source.
+    async function updateSyncModeIndicator(workId, bookId) {
+      const el = document.getElementById('np-sync-mode');
+      if (!el) return;
+      const work = allWorks.find(w => w.id === workId);
+      if (!work || bookId == null) { el.style.display = 'none'; return; }
+      const aligns = await getAlignments(workId);
+      const m = resolveReaderSyncMode(work, bookId, aligns);
+      el.className = 'np-sync-mode ' + m.mode;
+      el.style.display = '';
+      const pct = typeof m.confidence === 'number' ? Math.round(m.confidence * 100) : null;
+      if (m.mode === 'word') {
+        el.innerHTML = '&#9834; word-by-word';
+        el.title = m.method === 'transcript'
+          ? 'Reading the transcript — words highlight in time with the audio.'
+          : `Word-level alignment (${m.method}, ${pct}%) — words highlight with the audio.`;
+      } else if (m.mode === 'paragraph') {
+        el.innerHTML = '&#182; by paragraph';
+        el.title = `Paragraph-level alignment (${m.method}, ${pct}%) — this edition doesn't match the narration word-for-word (e.g. a different translation), so the reader follows by paragraph.`;
+      } else {
+        el.innerHTML = '&#9711; no audio sync';
+        el.title = 'No alignment between this text and the audio — read freely; the audio won’t follow along.';
       }
     }
 
@@ -3725,6 +3816,8 @@
       };
       delete currentReaderParagraph[workId];
       refreshScopeUI(workId);
+      // Reflect the follow-mode for this source in the gear bar (#210).
+      updateSyncModeIndicator(workId, bookId);
 
       // Highlight active chapter
       const listEl = document.getElementById('text-chapters-' + bookId);
