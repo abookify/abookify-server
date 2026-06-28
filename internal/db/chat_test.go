@@ -22,11 +22,11 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Create two sessions.
-	s1, err := store.CreateSession(workID, "")
+	s1, err := store.CreateSession(workID, "", "reading")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	s2, err := store.CreateSession(workID, "Custom title")
+	s2, err := store.CreateSession(workID, "Custom title", "book")
 	if err != nil {
 		t.Fatalf("create session 2: %v", err)
 	}

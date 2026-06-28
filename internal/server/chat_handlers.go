@@ -45,9 +45,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Title string `json:"title"`
+		Scope string `json:"scope"` // "reading" (default, spoiler-safe) | "book"
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.store.CreateSession(workID, req.Title)
+	id, err := s.store.CreateSession(workID, req.Title, req.Scope)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -70,6 +71,29 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.RenameSession(id, req.Title); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sess, _ := s.store.GetSession(id)
+	writeJSON(w, http.StatusOK, sess)
+}
+
+// handleSetSessionScope changes a chat's spoiler scope (#130): "reading"
+// (answer only up to the reader's position) or "book" (whole book).
+func (s *Server) handleSetSessionScope(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if err := s.store.SetSessionScope(id, req.Scope); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -163,9 +187,15 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content string              `json:"content"`
-		Scope   library.QueryScope `json:"scope,omitempty"`
+		Content string             `json:"content"`
+		Scope   library.QueryScope `json:"scope,omitempty"` // optional per-turn narrowing (paragraph/chapter)
+		// Reader's live position, for the session's spoiler scope (#130). The
+		// server — not the client — resolves the effective bound, so spoiler
+		// safety is enforced server-side.
+		ReaderBookID  int64 `json:"reader_book_id,omitempty"`
+		ReaderChapter int   `json:"reader_chapter,omitempty"`
 	}
+	req.ReaderChapter = -1 // distinguish "not sent" from chapter 0
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
@@ -176,6 +206,11 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the effective retrieval scope from the chat's spoiler mode +
+	// the reader's live position (#130). "reading" → up_to the current chapter;
+	// "book" → whole book; an explicit paragraph/chapter override narrows it.
+	scope := library.ResolveSessionScope(sess.Scope, req.ReaderBookID, req.ReaderChapter, req.Scope)
+
 	// Snapshot the prior history *before* appending the new user message —
 	// AskInSession appends the question itself.
 	history, err := s.store.ListMessages(sessionID)
@@ -184,12 +219,12 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot the scope on the user message so chat history can show
-	// "asked about Chapter 6" after the fact. Empty for whole-book
-	// turns (default) so we don't bloat the table with no-op blobs.
+	// Snapshot the resolved scope on the user message so chat history can show
+	// what the answer was bounded to. Empty for whole-book turns (default) so
+	// we don't bloat the table with no-op blobs.
 	scopeJSON := ""
-	if req.Scope.Type != "" && req.Scope.Type != "book" {
-		if b, err := json.Marshal(req.Scope); err == nil {
+	if scope.Type != "" && scope.Type != "book" {
+		if b, err := json.Marshal(scope); err == nil {
 			scopeJSON = string(b)
 		}
 	}
@@ -208,7 +243,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, req.Scope)
+	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.

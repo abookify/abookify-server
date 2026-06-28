@@ -7,9 +7,12 @@ import (
 )
 
 type QASession struct {
-	ID        int64     `json:"id"`
-	WorkID    int64     `json:"work_id"`
-	Title     string    `json:"title"`
+	ID     int64  `json:"id"`
+	WorkID int64  `json:"work_id"`
+	Title  string `json:"title"`
+	// Scope is the per-chat spoiler policy (#130): "reading" (spoiler-safe,
+	// up to the reader's position) or "book" (whole book).
+	Scope     string    `json:"scope"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -27,13 +30,22 @@ type QAMessage struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-func (s *Store) CreateSession(workID int64, title string) (int64, error) {
+// normalizeScope clamps a chat scope to the known values; unknown/empty →
+// "reading" (spoiler-safe default).
+func normalizeScope(scope string) string {
+	if scope == "book" {
+		return "book"
+	}
+	return "reading"
+}
+
+func (s *Store) CreateSession(workID int64, title, scope string) (int64, error) {
 	if title == "" {
 		title = "New chat"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO qa_sessions (work_id, title) VALUES (?, ?)`,
-		workID, title,
+		`INSERT INTO qa_sessions (work_id, title, scope) VALUES (?, ?, ?)`,
+		workID, title, normalizeScope(scope),
 	)
 	if err != nil {
 		return 0, err
@@ -41,9 +53,18 @@ func (s *Store) CreateSession(workID int64, title string) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SetSessionScope updates a chat's spoiler scope ("reading" | "book").
+func (s *Store) SetSessionScope(id int64, scope string) error {
+	_, err := s.db.Exec(
+		`UPDATE qa_sessions SET scope = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		normalizeScope(scope), id,
+	)
+	return err
+}
+
 func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 	rows, err := s.db.Query(
-		`SELECT id, work_id, title, created_at, updated_at
+		`SELECT id, work_id, title, scope, created_at, updated_at
 		   FROM qa_sessions WHERE work_id = ? ORDER BY updated_at DESC, id DESC`,
 		workID,
 	)
@@ -54,7 +75,7 @@ func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 	var out []QASession
 	for rows.Next() {
 		var ss QASession
-		if err := rows.Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.CreatedAt, &ss.UpdatedAt); err != nil {
+		if err := rows.Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.CreatedAt, &ss.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, ss)
@@ -65,9 +86,9 @@ func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 func (s *Store) GetSession(id int64) (*QASession, error) {
 	var ss QASession
 	err := s.db.QueryRow(
-		`SELECT id, work_id, title, created_at, updated_at
+		`SELECT id, work_id, title, scope, created_at, updated_at
 		   FROM qa_sessions WHERE id = ?`, id,
-	).Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.CreatedAt, &ss.UpdatedAt)
+	).Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.CreatedAt, &ss.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

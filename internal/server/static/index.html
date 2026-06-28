@@ -1240,6 +1240,19 @@
       font-size: 0.72rem; padding: 2px 4px;
     }
     .qa-scope-row select:focus { outline: none; border-color: #f0a500; }
+    /* Per-chat spoiler-scope chip (#130): spoiler-safe (success) vs whole-book
+       (amber, an opt-in to possible spoilers). */
+    .qa-scope-chip {
+      cursor: pointer; font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+      padding: 2px 9px; border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+      background: var(--success-soft); color: var(--success);
+    }
+    .qa-scope-chip.book {
+      border-color: color-mix(in srgb, var(--ebook-only) 40%, transparent);
+      background: var(--ebook-only-soft); color: var(--ebook-only);
+    }
+    .qa-scope-chip:hover { filter: brightness(0.97); }
     .qa-input-row {
       display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
     }
@@ -2324,12 +2337,9 @@
               <div class="qa-empty">Pick a chat or start a new one to begin.</div>
             </div>
             <div class="qa-scope-row">
-              <span>Scope:</span>
-              <select id="qa-scope-${work.id}" onchange="onScopeChange(${work.id})" title="What part of the book the LLM may use to answer">
-                <option value="book">Whole book</option>
-                <option value="up_to_chapter">Up to here (no spoilers)</option>
-                <option value="chapter">This chapter only</option>
-              </select>
+              <span>This chat:</span>
+              <button class="qa-scope-chip" id="qa-scope-chip-${work.id}" onclick="toggleChatScope(${work.id})"
+                title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
               <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
             </div>
             <div class="qa-input-row">
@@ -3970,21 +3980,9 @@
         reader.querySelectorAll('.paragraph-anchored').forEach(p => p.classList.remove('paragraph-anchored'));
       }
       if (el) el.classList.add('paragraph-anchored');
-      // Auto-switch the scope picker to "This paragraph" and persist.
-      const sel = document.getElementById('qa-scope-' + workId);
-      if (sel) {
-        // Make sure the paragraph option exists + is enabled before selecting.
-        const opt = [...sel.options].find(o => o.value === 'paragraph');
-        if (!opt) {
-          const newOpt = new Option('This paragraph', 'paragraph');
-          sel.appendChild(newOpt);
-        } else {
-          opt.disabled = false;
-        }
-        sel.value = 'paragraph';
-        localStorage.setItem('qa-scope-' + workId, 'paragraph');
-        refreshScopeUI(workId);
-      }
+      // The anchored paragraph becomes the next question's scope override
+      // (#130) — reflected in the chat-scope hint.
+      refreshScopeUI(workId);
     }
 
     function loadTextChapterNoSeek(bookId, index, workId) {
@@ -6431,6 +6429,7 @@
     // session's messages are currently rendered in the thread. Tabs are
     // re-rendered from scratch on every fetch — small enough to be cheap.
     const activeChatSessionId = {};
+    const chatSessionsCache = {}; // workId -> sessions[] (for per-chat scope lookup, #130)
 
     // Tracks the currently-open text chapter per work — updated from
     // loadChapter(). Used by the Q&A scope selector so "This chapter"
@@ -6443,78 +6442,63 @@
     // buildScopePayload to populate paragraph_idx.
     const currentReaderParagraph = {}; // workId -> {bookId, chapterIdx, paragraphIdx}
 
-    // Update scope-selector defaults + hint text whenever the
-    // visible chapter changes or a work card is rendered fresh.
+    // Per-chat spoiler scope (#130). activeChatScope[workId] mirrors the
+    // active session's stored scope: 'reading' (answer only up to where the
+    // reader is — spoiler-safe, the default) or 'book' (whole book, opt-in).
+    const activeChatScope = {};
+
+    // Refresh the chat-scope chip + its context hint. Called when the chip,
+    // the active chat, the reader chapter, or a paragraph anchor changes.
     function refreshScopeUI(workId) {
-      const sel = document.getElementById('qa-scope-' + workId);
+      const chip = document.getElementById('qa-scope-chip-' + workId);
       const hint = document.getElementById('qa-scope-hint-' + workId);
-      if (!sel) return;
+      const mode = activeChatScope[workId] || 'reading';
       const cur = currentReaderChapter[workId];
       const para = currentReaderParagraph[workId];
-      // Ensure a "This paragraph" option exists (work cards are
-      // rendered from the static HTML template with three options;
-      // we add the fourth dynamically once a paragraph is clickable).
-      if (!sel.querySelector('option[value="paragraph"]')) {
-        sel.appendChild(new Option('This paragraph', 'paragraph'));
-      }
-      const opts = sel.querySelectorAll('option');
-      opts.forEach(o => {
-        if (o.value === 'chapter' || o.value === 'up_to_chapter') {
-          o.disabled = !cur;
-        } else if (o.value === 'paragraph') {
-          o.disabled = !para;
-        }
-      });
-      // First-time setup: choose "Up to here" if a chapter is open,
-      // otherwise whole book. Persisted choice (qa-scope-${workId})
-      // wins on subsequent visits.
-      const stored = localStorage.getItem('qa-scope-' + workId);
-      if (stored && [...sel.options].some(o => o.value === stored && !o.disabled)) {
-        sel.value = stored;
-      } else if (cur) {
-        sel.value = 'up_to_chapter';
-      } else {
-        sel.value = 'book';
+      if (chip) {
+        if (mode === 'book') { chip.innerHTML = '📖 Whole book'; chip.classList.add('book'); }
+        else { chip.innerHTML = '🛡 Spoiler-safe'; chip.classList.remove('book'); }
       }
       if (hint) {
-        if (sel.value === 'book' || !cur) {
-          hint.textContent = '';
-        } else if (sel.value === 'paragraph' && para) {
-          hint.textContent = `— ¶${para.paragraphIdx + 1} of ${cur.title || 'Chapter ' + (cur.index + 1)}`;
+        if (para && cur) {
+          hint.textContent = `· asking about ¶${para.paragraphIdx + 1} of ${cur.title || 'Chapter ' + (cur.index + 1)}`;
+        } else if (mode === 'reading') {
+          hint.textContent = cur ? `· up to ${cur.title || 'Chapter ' + (cur.index + 1)}` : '· open a chapter to bound answers by your reading';
         } else {
-          hint.textContent = '— ' + (cur.title || 'Chapter ' + (cur.index + 1));
+          hint.textContent = '· may reveal anything';
         }
       }
     }
 
-    function onScopeChange(workId) {
-      const sel = document.getElementById('qa-scope-' + workId);
-      if (!sel) return;
-      localStorage.setItem('qa-scope-' + workId, sel.value);
+    // Toggle the active chat between spoiler-safe (reading) and whole-book,
+    // persisting on the session so the whole conversation respects it (#130).
+    async function toggleChatScope(workId) {
+      const sessionId = activeChatSessionId[workId];
+      if (!sessionId) { showToast('Start a chat first', 'err'); return; }
+      const next = (activeChatScope[workId] === 'book') ? 'reading' : 'book';
+      if (next === 'book' && !confirm('Switch this chat to the whole book? Answers may reveal events past where you are.')) return;
+      activeChatScope[workId] = next;
       refreshScopeUI(workId);
+      try {
+        await fetch(`/api/sessions/${sessionId}/scope`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ scope: next }),
+        });
+      } catch { /* best-effort — the UI already reflects the choice */ }
     }
 
-    // Build the scope payload from the selector + tracked chapter /
-    // paragraph. Returns null for whole-book (handler omits the field).
+    // Per-turn scope OVERRIDE: only the explicit "ask about this paragraph"
+    // gesture (#130). The chat's spoiler bound (reading/book) is the session
+    // default, resolved server-side from the reader position we send. Returns
+    // null when no paragraph is anchored.
     function buildScopePayload(workId) {
-      const sel = document.getElementById('qa-scope-' + workId);
-      if (!sel || sel.value === 'book') return null;
-      if (sel.value === 'paragraph') {
-        const para = currentReaderParagraph[workId];
-        if (!para) return null;
-        return {
-          type: 'paragraph',
-          book_id: para.bookId,
-          chapter_idx: para.chapterIdx,
-          paragraph_idx: para.paragraphIdx,
-        };
-      }
-      const cur = currentReaderChapter[workId];
-      if (!cur) return null; // selector should be disabled, but guard
+      const para = currentReaderParagraph[workId];
+      if (!para) return null;
       return {
-        type: sel.value,
-        book_id: cur.bookId,
-        chapter_idx: cur.index,
+        type: 'paragraph',
+        book_id: para.bookId,
+        chapter_idx: para.chapterIdx,
+        paragraph_idx: para.paragraphIdx,
       };
     }
 
@@ -6527,6 +6511,7 @@
       try {
         const res = await fetch(`/api/works/${workId}/sessions`);
         const sessions = res.ok ? await res.json() : [];
+        chatSessionsCache[workId] = sessions; // for per-chat scope lookup (#130)
         renderChatTabs(workId, sessions);
         // Auto-select the most-recently-updated session if none active yet.
         if (sessions.length > 0 && !activeChatSessionId[workId]) {
@@ -6597,6 +6582,10 @@
 
     async function selectChatSession(workId, sessionId) {
       activeChatSessionId[workId] = sessionId;
+      // Adopt this chat's spoiler scope (#130) so the chip + sent bound match.
+      const sess = (chatSessionsCache[workId] || []).find(s => s.id === sessionId);
+      activeChatScope[workId] = (sess && sess.scope) || 'reading';
+      refreshScopeUI(workId);
       // Update active state on tabs without re-fetching the list.
       const tabsEl = document.getElementById('chat-tabs-' + workId);
       if (tabsEl) {
@@ -6849,7 +6838,13 @@
       pinToTop(thread, userBubble);
 
       try {
-        const body = scope ? { content: text, scope } : { content: text };
+        const body = { content: text };
+        if (scope) body.scope = scope; // paragraph override, if anchored
+        // Send the reader's live position so the server can apply the chat's
+        // spoiler bound (#130). Falls back to the displayed text book.
+        const cur = currentReaderChapter[workId];
+        if (cur) { body.reader_book_id = cur.bookId; body.reader_chapter = cur.index; }
+        else if (bookId) { body.reader_book_id = bookId; }
         const res = await fetch(`/api/sessions/${sessionId}/messages`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},

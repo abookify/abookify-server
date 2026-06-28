@@ -36,6 +36,30 @@ func (s QueryScope) isWholeBook() bool {
 	return s.Type == "" || s.Type == "book"
 }
 
+// ResolveSessionScope maps a chat's per-session spoiler mode (#130) + the
+// reader's live position to the effective retrieval scope:
+//   - "reading" (default, spoiler-safe) → up_to_chapter at the reader's current
+//     chapter, so retrieval never reaches content past where they are;
+//   - "book" → the whole book (the user opted in to possible spoilers).
+//
+// A more-restrictive per-turn override (a paragraph/chapter the user explicitly
+// pointed at on screen — necessarily at or behind their position) is honored as
+// the narrower scope. With no reader position in "reading" mode, falls back to
+// whole-book (the reader isn't open, so there's no position to protect).
+func ResolveSessionScope(mode string, readerBookID int64, readerChapter int, override QueryScope) QueryScope {
+	if override.Type == "paragraph" || override.Type == "chapter" {
+		return override
+	}
+	if mode == "book" {
+		return QueryScope{Type: "book"}
+	}
+	// reading (spoiler-safe) — bound to the reader's current chapter.
+	if readerBookID != 0 && readerChapter >= 0 {
+		return QueryScope{Type: "up_to_chapter", BookID: readerBookID, ChapterIdx: readerChapter}
+	}
+	return QueryScope{Type: "book"}
+}
+
 // FilterChunks returns the subset of chunks that fall inside the scope.
 // Whole-book scopes are pass-through. Paragraph scope resolves the
 // paragraph's word range from the paragraphs table; if that lookup
@@ -187,22 +211,36 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 		citations = append(citations, cit)
 	}
 
-	// Invoke the underlying RAG completion via its public Client path.
-	systemPrompt := fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
-Answer questions based ONLY on the provided passages from the book.
-
-IMPORTANT — citation style: NEVER mention "Passage N" or "Passages 3-5" or
-any reference to internal passage numbers. The user does NOT see passage
-numbers; they see your prose answer plus a separate Sources panel below it
-that names the chapters. Cite by chapter name or by a short inline quote
-(e.g., 'In Chapter 5, the author argues…' or 'as the text puts it, "…"').
-The passage-N labels in your context are an internal hint for you only.
-
+	// Spoiler-safety (#130). The retrieval above is already bounded to what the
+	// reader has read (citations never exceed the scope), which is the
+	// ENFORCEABLE guarantee. For a bounded scope we also swap to a strict
+	// extraction prompt that omits the book title (the title alone primes a
+	// model's recall) and forbids outside knowledge — strong for books the
+	// model hasn't memorized. NOTE: for a few ultra-famous public-domain
+	// classics that the model has memorized verbatim, generation can still draw
+	// on that training knowledge despite the prompt; that residual leak is a
+	// known LLM limitation, not a retrieval-scope failure.
+	citationStyle := `Cite by chapter name or a short inline quote (e.g., 'In Chapter 5, the author argues…'); NEVER mention "Passage N" — the reader sees a separate Sources panel, not passage numbers.`
+	var systemPrompt, userMessage string
+	if scope.isWholeBook() {
+		systemPrompt = fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
+Answer questions using ONLY the provided passages from the book — never outside knowledge.
+%s
 If the passages don't contain enough information to answer, say so honestly.
-Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
+Keep answers concise but thorough — 2-4 paragraphs.`, work.Title, citationStyle)
+		userMessage = fmt.Sprintf("Here are relevant passages from the book:\n\n%s\n\nQuestion: %s",
+			contextBuf.String(), question)
+	} else {
+		systemPrompt = fmt.Sprintf(`You answer a reader's question using ONLY the passages provided — the only part of the book they have read so far. You do NOT know this book; ignore anything you might recall about it from elsewhere and rely solely on these passages.
 
-	userMessage := fmt.Sprintf("Here are relevant passages from the book:\n\n%s\n\nQuestion: %s",
-		contextBuf.String(), question)
+Hard rules:
+- Use ONLY facts explicitly stated in the passages. No outside knowledge, no guessing, no recognizing the book.
+- If the passages do not clearly contain the answer, reply with EXACTLY this and nothing more: "That hasn't come up yet in what you've read."
+- Never name or describe a character, event, death, twist, or ending that is not present in the passages — that would spoil the story for the reader.
+%s`, citationStyle)
+		userMessage = fmt.Sprintf("Passages the reader has read:\n\n%s\n\nUsing only these passages, answer: %s\n\n(If it isn't in the passages, reply exactly: \"That hasn't come up yet in what you've read.\")",
+			contextBuf.String(), question)
+	}
 
 	resp, err := rag.Client().Complete(llm.CompletionRequest{
 		System: systemPrompt,

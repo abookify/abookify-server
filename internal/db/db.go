@@ -570,6 +570,11 @@ func migrate(db *sql.DB) error {
 		// after the fact so users can reason about answers, and lets
 		// follow-up turns inherit the prior scope as a default.
 		`ALTER TABLE qa_messages ADD COLUMN scope_json TEXT NOT NULL DEFAULT ''`,
+		// Per-CHAT spoiler scope (#130): "reading" = answer only from chapters
+		// up to the reader's current position (spoiler-safe, default); "book" =
+		// the whole book (opt-in, may reveal the ending). The reader's live
+		// position is supplied per turn; the server resolves the bound.
+		`ALTER TABLE qa_sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'reading'`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
