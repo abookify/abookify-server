@@ -330,6 +330,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
 	mux.HandleFunc("GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}", s.handleTextSync)
+	mux.HandleFunc("GET /api/books/{bookId}/chapters/{idx}/summary", s.handleChapterSummary)
+	mux.HandleFunc("GET /api/books/{bookId}/recap", s.handleBookRecap)
 	mux.HandleFunc("GET /api/works/{id}/word-sync/{bookId}/{chapterIdx}", s.handleEbookWordSync)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)

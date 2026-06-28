@@ -92,6 +92,13 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 	// Reprocess can re-chunk (new, unembedded chunks); embed them so Q&A stays
 	// current without a restart (#159b — idempotent, no-op when no LLM).
 	s.EmbedNewWorks()
+	// Chapter content may have changed → drop cached summaries so they
+	// regenerate from the new text on next request (#134).
+	if work, _ := s.store.GetWork(id); work != nil {
+		for _, tf := range work.TextFiles {
+			s.invalidateSummaries(tf.ID)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_id": id,

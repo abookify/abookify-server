@@ -340,6 +340,24 @@ func migrate(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_bookmarks_work ON bookmarks(work_id);
 
+		-- LLM-generated, spoiler-aware summaries (#134), cached per book.
+		--   kind='chapter' → chapter_idx is the summarized chapter.
+		--   kind='recap'   → chapter_idx is the up-to chapter (recap of the
+		--                    story so far through it; nothing past it).
+		-- Unique key lets a regenerate REPLACE in place; model records which
+		-- LLM produced it.
+		CREATE TABLE IF NOT EXISTS summaries (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			book_id     INTEGER NOT NULL,
+			kind        TEXT NOT NULL,
+			chapter_idx INTEGER NOT NULL DEFAULT -1,
+			text        TEXT NOT NULL,
+			model       TEXT NOT NULL DEFAULT '',
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(book_id, kind, chapter_idx)
+		);
+		CREATE INDEX IF NOT EXISTS idx_summaries_book ON summaries(book_id);
+
 		CREATE TABLE IF NOT EXISTS sync_data (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			work_id     INTEGER NOT NULL,
@@ -1207,6 +1225,41 @@ func (s *Store) GetChapterContent(bookID int64, index int) (*Chapter, error) {
 		return nil, err
 	}
 	return &ch, nil
+}
+
+// GetSummary returns a cached summary's text + model, or ok=false if none.
+// (#134) kind ∈ {"chapter","recap"}; chapterIdx is the summarized chapter for
+// "chapter" and the up-to chapter for "recap".
+func (s *Store) GetSummary(bookID int64, kind string, chapterIdx int) (text, model string, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT text, model FROM summaries WHERE book_id = ? AND kind = ? AND chapter_idx = ?`,
+		bookID, kind, chapterIdx)
+	switch err = row.Scan(&text, &model); err {
+	case sql.ErrNoRows:
+		return "", "", false, nil
+	case nil:
+		return text, model, true, nil
+	default:
+		return "", "", false, err
+	}
+}
+
+// SaveSummary upserts a cached summary (REPLACE on the unique key so a
+// regenerate overwrites in place). (#134)
+func (s *Store) SaveSummary(bookID int64, kind string, chapterIdx int, text, model string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO summaries (book_id, kind, chapter_idx, text, model)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(book_id, kind, chapter_idx) DO UPDATE SET
+			text = excluded.text, model = excluded.model, created_at = CURRENT_TIMESTAMP`,
+		bookID, kind, chapterIdx, text, model)
+	return err
+}
+
+// DeleteSummariesForBook clears a book's cached summaries — used when its
+// content changes (reprocess/STT) so stale summaries don't linger. (#134)
+func (s *Store) DeleteSummariesForBook(bookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM summaries WHERE book_id = ?`, bookID)
+	return err
 }
 
 // InsertParagraph writes a paragraph row. Idempotent via
@@ -2085,6 +2138,7 @@ func (s *Store) DeleteWork(id int64) error {
 		tx.Exec(`DELETE FROM chapters WHERE book_id = ?`, bid)
 		tx.Exec(`DELETE FROM chunks WHERE book_id = ?`, bid)
 		tx.Exec(`DELETE FROM paragraphs WHERE book_id = ?`, bid)
+		tx.Exec(`DELETE FROM summaries WHERE book_id = ?`, bid)
 	}
 	tx.Exec(`DELETE FROM books WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM chapter_links WHERE work_id = ?`, id)

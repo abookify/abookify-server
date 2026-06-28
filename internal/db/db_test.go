@@ -331,3 +331,39 @@ func mustListBooks(t *testing.T, store *Store) []Book {
 	}
 	return books
 }
+
+// #134: summary cache round-trips, REPLACEs on the unique key, and is cleared
+// per book.
+func TestSummariesCache(t *testing.T) {
+	store := testStore(t)
+	if _, _, ok, _ := store.GetSummary(1, "chapter", 3); ok {
+		t.Fatal("expected no summary initially")
+	}
+	if err := store.SaveSummary(1, "chapter", 3, "first", "gpt-4o"); err != nil {
+		t.Fatal(err)
+	}
+	text, model, ok, _ := store.GetSummary(1, "chapter", 3)
+	if !ok || text != "first" || model != "gpt-4o" {
+		t.Errorf("got %q/%q ok=%v", text, model, ok)
+	}
+	// Regenerate REPLACEs in place (no duplicate row).
+	if err := store.SaveSummary(1, "chapter", 3, "second", "gpt-4o-mini"); err != nil {
+		t.Fatal(err)
+	}
+	text, model, _, _ = store.GetSummary(1, "chapter", 3)
+	if text != "second" || model != "gpt-4o-mini" {
+		t.Errorf("replace failed: %q/%q", text, model)
+	}
+	// Distinct key for the recap kind / different chapter.
+	store.SaveSummary(1, "recap", 5, "recap-text", "gpt-4o")
+	if t2, _, ok, _ := store.GetSummary(1, "recap", 5); !ok || t2 != "recap-text" {
+		t.Errorf("recap key collision: %q ok=%v", t2, ok)
+	}
+	// Per-book clear.
+	if err := store.DeleteSummariesForBook(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := store.GetSummary(1, "chapter", 3); ok {
+		t.Error("summaries should be cleared for the book")
+	}
+}
