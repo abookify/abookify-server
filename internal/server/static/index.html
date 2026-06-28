@@ -1253,6 +1253,15 @@
       background: var(--ebook-only-soft); color: var(--ebook-only);
     }
     .qa-scope-chip:hover { filter: brightness(0.97); }
+    /* Q&A starter-question chips (#131): tap to pre-fill the input. */
+    .qa-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem; }
+    .qa-chips:empty { display: none; }
+    .qa-chip {
+      cursor: pointer; font-size: 0.74rem; white-space: nowrap;
+      padding: 4px 11px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+    }
+    .qa-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .qa-input-row {
       display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
     }
@@ -2342,6 +2351,7 @@
                 title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
               <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
             </div>
+            <div class="qa-chips" id="qa-chips-${work.id}"></div>
             <div class="qa-input-row">
               <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
                 data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
@@ -6468,6 +6478,9 @@
           hint.textContent = '· may reveal anything';
         }
       }
+      // Refresh the starter chips (#131) — entity chips track the reader's
+      // position, so re-fetch when the chapter or chat changes.
+      if (document.getElementById('qa-chips-' + workId)) loadQASuggestions(workId);
     }
 
     // Toggle the active chat between spoiler-safe (reading) and whole-book,
@@ -6485,6 +6498,36 @@
           body: JSON.stringify({ scope: next }),
         });
       } catch { /* best-effort — the UI already reflects the choice */ }
+    }
+
+    // Q&A starter chips (#131): a few per-book quick-questions above the input
+    // that pre-fill it. Spoiler-aware — entity chips are bounded server-side to
+    // characters the reader has met, and every answer respects the chat scope.
+    // Re-fetched as the reader's chapter changes so the bound + chips stay current.
+    async function loadQASuggestions(workId) {
+      const host = document.getElementById('qa-chips-' + workId);
+      if (!host) return;
+      const work = allWorks.find(w => w.id === workId);
+      if (!work) return;
+      const cur = currentReaderChapter[workId];
+      const bookId = (cur && cur.bookId) || work.display_text_id ||
+        ((work.text_files || [])[0] || {}).id || '';
+      let url = `/api/works/${workId}/qa-suggestions?book_id=${bookId || ''}`;
+      if (cur) url += `&chapter=${cur.index}`;
+      try {
+        const d = await fetch(url).then(r => r.json());
+        const sugg = (d && d.suggestions) || [];
+        const attr = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        host.innerHTML = sugg.map(s =>
+          `<button class="qa-chip" data-p="${attr(s.prompt)}" onclick="fillQAInput(${workId}, this.dataset.p)">${escapeHtml(s.label)}</button>`
+        ).join('');
+      } catch { host.innerHTML = ''; }
+    }
+    function fillQAInput(workId, prompt) {
+      const input = document.getElementById('qa-input-' + workId);
+      if (!input) return;
+      input.value = prompt;
+      input.focus();
     }
 
     // Per-turn scope OVERRIDE: only the explicit "ask about this paragraph"

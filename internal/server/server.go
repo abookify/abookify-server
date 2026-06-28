@@ -352,6 +352,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleAppendMessage)
 	mux.HandleFunc("PUT /api/sessions/{id}", s.handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/{id}/scope", s.handleSetSessionScope)
+	mux.HandleFunc("GET /api/works/{id}/qa-suggestions", s.handleQASuggestions)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
 	mux.HandleFunc("POST /api/works/{id}/transcribe", s.handleTranscribe)
