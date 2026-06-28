@@ -19,6 +19,8 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify
 
+from _common import gpu_lock
+
 import ctranslate2
 from faster_whisper import WhisperModel
 
@@ -107,13 +109,18 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        segments, info = model.transcribe(
-            tmp_path,
-            language=language if language else None,
-            word_timestamps=word_timestamps,
-            vad_filter=True,
-            initial_prompt=initial_prompt,
-        )
+        # Serialize GPU inference across all callers (#132): the engine is the
+        # single GPU dispatcher. faster-whisper is lazy — the GPU work happens
+        # while the generator is consumed — so we materialize it under the lock.
+        with gpu_lock("stt"):
+            segments, info = model.transcribe(
+                tmp_path,
+                language=language if language else None,
+                word_timestamps=word_timestamps,
+                vad_filter=True,
+                initial_prompt=initial_prompt,
+            )
+            segments = list(segments)
 
         result_segments = []
         full_text_parts = []

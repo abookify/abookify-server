@@ -29,6 +29,8 @@ import numpy as np  # noqa: E402
 import av  # noqa: E402  (PyAV — pulled in by faster-whisper; bundles ffmpeg)
 import torch  # noqa: E402
 from flask import Flask, request, jsonify, Response  # noqa: E402
+
+from _common import gpu_lock  # noqa: E402
 from kokoro import KPipeline  # noqa: E402
 
 app = Flask(__name__)
@@ -158,7 +160,10 @@ def speech():
     if not text:
         return jsonify({"error": "missing input"}), 400
     try:
-        audio = synth(text, voice)
+        # Serialize GPU inference across all callers + the STT process (#132):
+        # the engine is the single GPU dispatcher. Encoding (CPU) runs outside.
+        with gpu_lock("tts"):
+            audio = synth(text, voice)
         data, mime = encode(audio, fmt)
         return Response(data, mimetype=mime)
     except Exception as e:  # noqa: BLE001

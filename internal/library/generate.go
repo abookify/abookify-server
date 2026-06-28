@@ -438,10 +438,38 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 		return
 	}
 
-	// We'll create a synthetic "text book" entry to hold the transcripts
+	// We'll create a synthetic "text book" entry to hold the transcripts.
+	// Resume support (#132): if a prior run already produced a transcript book +
+	// chapters, reuse it and SKIP the audio files already transcribed, so a long
+	// multi-file job (e.g. the 1,189-file Bible) resumes mid-way after a restart
+	// or failure instead of re-transcribing every file. Per-file results are
+	// committed as we go (chapters, sync data, links), so the done-set is durable.
 	transcriptBookID := int64(0)
+	for ti := range work.TextFiles {
+		if work.TextFiles[ti].Origin == "whisper_transcript" {
+			transcriptBookID = work.TextFiles[ti].ID
+			break
+		}
+	}
+	doneIdx := map[int]bool{}
+	if transcriptBookID != 0 {
+		if chs, err := g.store.ListChapters(transcriptBookID); err == nil {
+			for _, c := range chs {
+				if c.WordCount > 0 {
+					doneIdx[c.Index] = true
+				}
+			}
+		}
+		if len(doneIdx) > 0 {
+			log.Printf("stt: resuming work %d — %d/%d files already transcribed", workID, len(doneIdx), len(audioFiles))
+		}
+	}
+	var failedFiles []string
 
 	for i, af := range audioFiles {
+		if doneIdx[i] {
+			continue // already transcribed in a prior run (#132 resume)
+		}
 		job.Progress = float64(i) / float64(len(audioFiles))
 		title := af.Title
 		if title == "" {
@@ -465,11 +493,20 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 			g.updateJob(job)
 		})
 		if err != nil {
-			log.Printf("stt: transcription failed for %s: %v", af.Filename, err)
-			job.Status = "failed"
-			job.Error = fmt.Sprintf("transcription failed for %s: %v", af.Filename, err)
-			g.updateJob(job)
-			return
+			// #132: don't abandon a multi-hour job because one file failed.
+			// Log it, record it as a gap, and keep going — the remaining files
+			// still transcribe and the gap is fillable later via the redo-files
+			// path (handleRetryTranscription). A single-file work has nothing
+			// else to do, so fail it outright.
+			log.Printf("stt: transcription failed for %s: %v — skipping", af.Filename, err)
+			failedFiles = append(failedFiles, af.Filename)
+			if len(audioFiles) == 1 {
+				job.Status = "failed"
+				job.Error = fmt.Sprintf("transcription failed for %s: %v", af.Filename, err)
+				g.updateJob(job)
+				return
+			}
+			continue
 		}
 
 		// Create the transcript book on first successful transcription
@@ -601,10 +638,17 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 
 	job.Progress = 1.0
 	job.Status = "completed"
-	job.CurrentStep = fmt.Sprintf("Transcribed %d audio files", len(audioFiles))
+	if len(failedFiles) > 0 {
+		done := len(audioFiles) - len(failedFiles)
+		job.CurrentStep = fmt.Sprintf("Transcribed %d/%d files (%d gap(s) — retry to fill)",
+			done, len(audioFiles), len(failedFiles))
+		log.Printf("stt: completed work %d with %d gap(s): %s",
+			workID, len(failedFiles), strings.Join(failedFiles, ", "))
+	} else {
+		job.CurrentStep = fmt.Sprintf("Transcribed %d audio files", len(audioFiles))
+		log.Printf("stt: completed transcription for work %d (%d files)", workID, len(audioFiles))
+	}
 	g.updateJob(job)
-
-	log.Printf("stt: completed transcription for work %d (%d files)", workID, len(audioFiles))
 }
 
 // RegenerateChapter queues a single chapter for audio regeneration.
