@@ -308,6 +308,9 @@ func main() {
 	// Start file watcher for live library updates
 	watcher, err := library.NewWatcher(store, *libraryPath, func() {
 		srv.Events.Broadcast(server.Event{Type: "library_updated"})
+		// #159b: a newly-imported/scanned book gets embedded without a restart
+		// (no-op when no LLM; idempotent + single-flight, so cheap on every tick).
+		srv.EmbedNewWorks()
 	})
 	if err != nil {
 		log.Printf("warning: file watcher failed to start: %v", err)

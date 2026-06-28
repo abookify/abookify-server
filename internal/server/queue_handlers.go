@@ -89,6 +89,9 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 	// Tell connected clients to refresh their library view so chapters
 	// + sync get reloaded from the new DB rows.
 	s.Events.Broadcast(Event{Type: "library_updated"})
+	// Reprocess can re-chunk (new, unembedded chunks); embed them so Q&A stays
+	// current without a restart (#159b — idempotent, no-op when no LLM).
+	s.EmbedNewWorks()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_id": id,

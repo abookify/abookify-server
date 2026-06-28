@@ -62,3 +62,17 @@ func TestSaveSettingsKeepsMaskedSecret(t *testing.T) {
 		t.Errorf("masked echo clobbered the key: got %q", got)
 	}
 }
+
+// #159b: EmbedNewWorks (the import/scan/enable backfill trigger) must be a
+// no-op when no LLM is configured — it must not start a backfill goroutine.
+func TestEmbedNewWorksNoLLM(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.ReloadLLM() // no provider → RAG nil
+	srv.EmbedNewWorks()
+	srv.embedAllMu.Lock()
+	running := srv.embedAllRunning
+	srv.embedAllMu.Unlock()
+	if running {
+		t.Error("EmbedNewWorks must not start a backfill when no LLM is configured")
+	}
+}

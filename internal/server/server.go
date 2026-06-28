@@ -72,6 +72,14 @@ type Server struct {
 	embedMu      sync.Mutex
 	embedInFlight map[int64]bool
 
+	// embed-all single-flight (#159b): library-change triggers (import/scan,
+	// LLM-enable) coalesce into ONE running backfill instead of N concurrent
+	// full passes. A trigger arriving mid-pass sets dirty so the runner loops
+	// once more — catching works added after it swept past them.
+	embedAllMu      sync.Mutex
+	embedAllRunning bool
+	embedAllDirty   bool
+
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
 	alignMu      sync.Mutex
@@ -126,7 +134,7 @@ func (s *Server) ReloadLLM() {
 	log.Printf("LLM Q&A ready (provider: %s, model: %s)", provider, client.Model())
 
 	if prev == nil {
-		go s.embedAllWorks()
+		s.EmbedNewWorks() // backfill works added while no LLM was configured (#159)
 	}
 }
 
@@ -235,10 +243,9 @@ func (s *Server) AlignWorkAsync(workID int64) {
 	// nothing to align, nothing worth logging.
 }
 
-// embedAllWorks runs EmbedWorkAsync for every work in the library.
-// Fired on the LLM-enable transition so works added while no LLM was
-// configured get backfilled. Each per-work embed is a no-op when its
-// chunks already have embeddings.
+// embedAllWorks runs EmbedWorkAsync for every work in the library. Each
+// per-work embed is a no-op when its chunks already have embeddings, so this
+// is cheap for the steady state and only does real work for newly-added books.
 func (s *Server) embedAllWorks() {
 	works, err := s.store.ListWorks()
 	if err != nil {
@@ -248,6 +255,41 @@ func (s *Server) embedAllWorks() {
 	for _, w := range works {
 		s.EmbedWorkAsync(w.ID)
 	}
+}
+
+// EmbedNewWorks backfills embeddings for any work that needs them (#159/#159b)
+// — fired when the library changes (import/scan) or the LLM is enabled, so a
+// newly-added book becomes searchable without a restart or a manual embed.
+// No-op when no LLM is configured. Single-flight + dirty-coalescing: overlapping
+// triggers collapse into ONE running backfill, and one arriving mid-pass makes
+// the runner loop once more so late-added works aren't missed. Idempotent —
+// already-embedded works cost only a cheap "any unembedded chunks?" query.
+func (s *Server) EmbedNewWorks() {
+	if s.RAG() == nil {
+		return
+	}
+	s.embedAllMu.Lock()
+	if s.embedAllRunning {
+		s.embedAllDirty = true
+		s.embedAllMu.Unlock()
+		return
+	}
+	s.embedAllRunning = true
+	s.embedAllMu.Unlock()
+
+	go func() {
+		for {
+			s.embedAllWorks()
+			s.embedAllMu.Lock()
+			if !s.embedAllDirty {
+				s.embedAllRunning = false
+				s.embedAllMu.Unlock()
+				return
+			}
+			s.embedAllDirty = false // another trigger arrived mid-pass; sweep again
+			s.embedAllMu.Unlock()
+		}
+	}()
 }
 
 func New(store *db.Store, port string) *Server {
@@ -2136,6 +2178,7 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Events.Broadcast(Event{Type: "library_updated"})
+	s.EmbedNewWorks() // #159b: embed the imported work without a restart
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported"})
 }
 
