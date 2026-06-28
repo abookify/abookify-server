@@ -14,6 +14,7 @@ auto-detected via torch (CUDA -> cuda, else cpu). Audio is encoded with PyAV
 """
 import io
 import os
+import threading
 from pathlib import Path
 
 MODELS_DIR = Path(
@@ -98,6 +99,41 @@ def encode(audio: np.ndarray, fmt: str) -> tuple[bytes, str]:
         out.mux(packet)
     out.close()
     return buf.getvalue(), mime
+
+
+# --- model pre-fetch hook (server install flow) -----------------------------
+# Kokoro weights + the default voice download lazily on first synth. The install
+# flow (POST /api/engines/install → POST {engineURL}/download) wants to pre-fetch
+# them so the UI can show a bar. We warm the default pipeline in a background
+# thread and report progress via GET /download.
+_dl = {"status": "idle", "progress": 0.0, "error": None}
+
+
+def _warm_default():
+    try:
+        pipeline_for("af_heart")  # downloads Kokoro-82M weights + the default voice
+        _dl.update(status="ready", progress=1.0)
+    except Exception as e:  # noqa: BLE001
+        _dl.update(status="error", error=str(e))
+
+
+@app.route("/download", methods=["POST"])
+def download_start():
+    # Already warmed (or warming) → just report current state.
+    if _pipelines or _dl["status"] == "ready":
+        _dl.update(status="ready", progress=1.0)
+        return jsonify(_dl), 200
+    if _dl["status"] != "downloading":
+        _dl.update(status="downloading", progress=0.0, error=None)
+        threading.Thread(target=_warm_default, daemon=True).start()
+    return jsonify(_dl), 202
+
+
+@app.route("/download", methods=["GET"])
+def download_status():
+    if _pipelines and _dl["status"] != "ready":
+        _dl.update(status="ready", progress=1.0)
+    return jsonify(_dl)
 
 
 @app.route("/v1/models")

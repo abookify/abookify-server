@@ -82,6 +82,16 @@ def health():
     })
 
 
+@app.route("/download", methods=["POST", "GET"])
+def download():
+    """Model pre-fetch hook for the server's install flow (POST /api/engines/install
+    → POST {engineURL}/download). The Whisper model is fetched + loaded at startup
+    (WhisperModel init blocks until it's local), so by the time this service is
+    answering at all, the model is already present — always report ready.
+    """
+    return jsonify({"status": "ready", "progress": 1.0, "model": MODEL_SIZE})
+
+
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
     if "file" not in request.files:
