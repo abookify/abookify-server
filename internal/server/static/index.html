@@ -625,19 +625,32 @@
       letter-spacing: 0.06em; text-transform: uppercase;
       background: rgba(240,165,0,0.18); color: #f0a500; border: 1px solid rgba(240,165,0,0.4);
     }
-    .cast-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-    .cast-chip {
-      display: inline-flex; align-items: baseline; gap: 5px;
-      padding: 3px 10px; border-radius: 999px; font-size: 0.8rem;
-      background: var(--surface-hover); border: 1px solid var(--border); color: var(--text);
+    .cast-note { font-size: 0.72rem; color: var(--text-muted); margin: 0 0 8px; }
+    .cast-list { display: flex; flex-direction: column; gap: 2px; }
+    .cast-row {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 5px 8px; border-radius: 6px;
     }
-    .cast-chip .cast-count { font-size: 0.7rem; color: var(--text-muted); }
-    .cast-empty { font-size: 0.8rem; color: var(--text-muted); }
+    .cast-row:nth-child(odd) { background: var(--surface-hover); }
+    .cast-gender {
+      flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+      align-self: center; background: var(--text-muted);
+    }
+    .cast-gender.male { background: #4a8fd4; }
+    .cast-gender.female { background: #d46aa0; }
+    .cast-name { font-weight: 600; font-size: 0.85rem; color: var(--text); }
+    .cast-aka { font-size: 0.72rem; color: var(--text-muted); font-style: italic; }
+    .cast-count {
+      margin-left: auto; flex: 0 0 auto; font-size: 0.72rem; color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .cast-empty { font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 8px; }
     .cast-extract-btn {
       background: transparent; color: var(--text); border: 1px solid var(--border);
       padding: 4px 10px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
     }
     .cast-extract-btn:hover { background: var(--surface-hover); }
+    .cast-extract-btn:disabled { opacity: 0.5; cursor: default; }
 
     .work-body { display: none; border-top: 1px solid var(--border); }
     .work-card.expanded .work-body { display: block; }
@@ -3494,17 +3507,42 @@
         }
         panel.style.display = '';
         if (chars.length === 0) {
-          list.innerHTML = `<span class="cast-empty">No cast extracted yet.</span>
-            <button class="cast-extract-btn" onclick="extractCast(${workId})">Extract cast</button>`;
+          // Feature on but nothing extracted yet. Offer the trigger only when
+          // the service is actually reachable (data.enabled folds in the
+          // booknlp_enabled flag AND a configured service URL).
+          list.innerHTML =
+            `<span class="cast-empty">No cast extracted yet.</span>` +
+            (data.enabled
+              ? `<button class="cast-extract-btn" onclick="extractCast(${workId})">Extract cast</button>`
+              : `<span class="cast-empty">Enable BookNLP in Settings and start its service to extract.</span>`);
           return;
         }
-        const chips = chars.map(c => {
-          const title = (c.aliases && c.aliases.length > 1) ? ` title="${escapeHtml(c.aliases.join(', '))}"` : '';
-          return `<span class="cast-chip"${title}>${escapeHtml(c.name)}<span class="cast-count">${c.mention_count}</span></span>`;
+        // Name plus mention count and any aliases (over and above the canonical
+        // name), with a subtle gender dot. Aliases are shown inline rather than
+        // hidden in a tooltip so the over-split caveat is visible to the reader.
+        const rows = chars.map(c => {
+          const extras = (c.aliases || []).filter(a => a && a !== c.name);
+          const aka = extras.length
+            ? `<span class="cast-aka" title="${escapeHtml(extras.join(', '))}">aka ${escapeHtml(extras.slice(0, 3).join(', '))}${extras.length > 3 ? '…' : ''}</span>`
+            : '';
+          // BookNLP reports gender as a pronoun string ("he/him/his",
+          // "she/her") or a bare M/F — normalize both. Test "she/her" before
+          // "he/him" since the former contains "he".
+          const gl = String(c.gender || '').toLowerCase();
+          const g = (gl === 'f' || gl.includes('she') || gl.includes('her')) ? 'female'
+                  : (gl === 'm' || gl.includes('he') || gl.includes('him')) ? 'male' : '';
+          const n = c.mention_count;
+          return `<div class="cast-row">
+            <span class="cast-gender ${g}"></span>
+            <span class="cast-name">${escapeHtml(c.name)}</span>
+            ${aka}
+            <span class="cast-count">${n} mention${n === 1 ? '' : 's'}</span>
+          </div>`;
         }).join('');
+        const note = `<p class="cast-note">Auto-detected from the ebook text — ${chars.length} character${chars.length === 1 ? '' : 's'}. Names and aliases may be imperfect (aliases can over-split).</p>`;
         const reextract = data.enabled
-          ? `<button class="cast-extract-btn" onclick="extractCast(${workId})">Re-extract</button>` : '';
-        list.innerHTML = chips + reextract;
+          ? `<div style="margin-top:8px;"><button class="cast-extract-btn" onclick="extractCast(${workId})">Re-extract</button></div>` : '';
+        list.innerHTML = note + rows + reextract;
       } catch {
         panel.style.display = 'none';
       }
