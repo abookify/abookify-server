@@ -75,7 +75,7 @@
       --surface-hover: #F1E8DA;/* hover tint on white surfaces */
       --border: #E7DDCD;      /* warm hairline — primary structuring device */
       --text: #241E17;        /* warm near-black */
-      --muted: #7C7163;       /* warm secondary */
+      --muted: #736857;       /* warm secondary — darkened for WCAG AA on surface-2 (4.7:1) */
       --text-muted: var(--muted); /* alias — existing refs */
       --accent: #1D4ED8;      /* brand blue (unchanged anchor; AA on white) */
       --accent-soft: rgba(29,78,216,.10);
@@ -104,6 +104,26 @@
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* Accessibility: a single visible keyboard focus ring for every
+       interactive element (a11y pass). :focus-visible only shows for
+       keyboard/AT users, so mouse clicks stay ring-free and the visual
+       design is unchanged. Covers native controls plus role="button" /
+       tabindex elements (work cards, chapter rows, pills). */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
+    }
+    /* Don't clip the ring inside scroll containers. */
+    a:focus-visible, button:focus-visible, [role="button"]:focus-visible,
+    [tabindex]:focus-visible, input:focus-visible, select:focus-visible,
+    textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    /* Screen-reader-only utility for labels that shouldn't render visually. */
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+    }
 
     body {
       font-family: var(--font-ui);
@@ -505,7 +525,7 @@
     .dir-pct.neutral { color: var(--accent); }
     .dir-kind { font-size: 0.72rem; color: var(--muted); margin-top: 5px; }
     .dir-kind b { color: var(--text); font-weight: 600; }
-    .dir-words { font-size: 0.68rem; color: var(--muted-2); margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .dir-words { font-size: 0.68rem; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; } /* was --muted-2 (2.5:1, failed AA) */
     @media (max-width: 480px) {
       .dir-cov { grid-template-columns: 1fr; }
       .dir-col + .dir-col { border-left: 0; border-top: 1px solid var(--border); }
@@ -1625,7 +1645,7 @@
   </header>
 
   <div class="toolbar">
-    <input type="search" id="search" placeholder="Search library... (Ctrl+K)">
+    <input type="search" id="search" placeholder="Search library... (Ctrl+K)" aria-label="Search library">
     <button class="filter-btn active" data-filter="all">All</button>
     <button class="filter-btn" data-filter="paired">Paired</button>
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
@@ -1641,7 +1661,7 @@
 
   <!-- Merge dialog -->
   <div id="rename-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+    <div role="dialog" aria-modal="true" aria-label="Rename work" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
       <h3 style="margin:0 0 16px; color:var(--text);">Rename work</h3>
       <input type="hidden" id="rename-work-id" value="">
       <label style="font-size:0.8rem; color:var(--text-muted);">Title:</label>
@@ -1656,7 +1676,7 @@
   </div>
 
   <div id="merge-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+    <div role="dialog" aria-modal="true" aria-label="Merge works" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
       <h3 style="margin:0 0 16px; color:var(--text);">Merge works</h3>
       <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 12px;">Move all files from one work into another. The source work will be deleted.</p>
       <label style="font-size:0.8rem; color:var(--text-muted);">Keep (target):</label>
@@ -1671,9 +1691,9 @@
   </div>
 
   <div class="queue-bar" id="queue-bar"></div>
-  <div class="jobs-bar" id="jobs-bar"></div>
+  <div class="jobs-bar" id="jobs-bar" role="status" aria-live="polite"></div>
   <div id="custom-tooltip"></div>
-  <div id="toast" style="display:none; position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:200; padding:10px 16px; border-radius:8px; font-size:0.85rem; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
+  <div id="toast" role="status" aria-live="polite" style="display:none; position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:200; padding:10px 16px; border-radius:8px; font-size:0.85rem; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   <div id="duplicates-banner" style="display:none; margin:0 2rem 1rem; padding:12px 14px; border:1px solid var(--border); border-left:3px solid #f0a500; border-radius:6px; background:rgba(240,165,0,0.05);"></div>
   <div class="library-search-panel" id="library-search-panel" style="display:none;"></div>
   <div class="library-head" id="library-head">
@@ -1707,8 +1727,8 @@
     <form class="login-box" id="login-form" onsubmit="return submitLogin(event)">
       <h2>Sign in to Abookify</h2>
       <p class="login-sub">This library is password-protected.</p>
-      <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none" autocorrect="off">
-      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <input type="text" id="login-username" placeholder="Username" aria-label="Username" autocomplete="username" autocapitalize="none" autocorrect="off">
+      <input type="password" id="login-password" placeholder="Password" aria-label="Password" autocomplete="current-password">
       <button type="submit" id="login-submit">Sign in</button>
       <div class="login-error" id="login-error"></div>
     </form>
@@ -1760,8 +1780,8 @@
       <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
       <button id="np-recap-btn" onclick="openRecap()" title="Spoiler-free recap + chapter summary" style="display:none;">&#10022; Recap</button>
-      <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore">&#9974;</button>
-      <button onclick="closeNpOverlay()" title="Hide reader">&#10005;</button>
+      <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore" aria-label="Maximize or restore reader">&#9974;</button>
+      <button onclick="closeNpOverlay()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
     </div>
     <div class="np-overlay-body">
       <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true">
@@ -1777,7 +1797,7 @@
   </div>
 
   <div class="now-playing" id="now-playing">
-    <button class="np-bigplay" id="play-pause-btn" onclick="togglePlayPause()" title="Play / Pause">&#9654;</button>
+    <button class="np-bigplay" id="play-pause-btn" onclick="togglePlayPause()" title="Play / Pause" aria-label="Play or pause">&#9654;</button>
     <div class="np-center">
       <div class="np-meta-row">
         <div class="np-info">
@@ -1785,11 +1805,11 @@
           <div class="np-work" id="np-work"></div>
         </div>
         <div class="np-transport">
-          <button class="player-btn" onclick="skipChapter(-1)" title="Previous chapter">&#9198;</button>
-          <button class="player-btn" onclick="skipTime(-30)" title="Back 30s" style="font-size:0.7rem;">-30</button>
-          <button class="player-btn" onclick="skipTime(30)" title="Forward 30s" style="font-size:0.7rem;">+30</button>
-          <button class="player-btn" onclick="skipChapter(1)" title="Next chapter">&#9197;</button>
-          <button class="player-btn" onclick="toggleNpOverlay()" title="Show / hide reader" style="font-size:0.95rem;">&#128214;</button>
+          <button class="player-btn" onclick="skipChapter(-1)" title="Previous chapter" aria-label="Previous chapter">&#9198;</button>
+          <button class="player-btn" onclick="skipTime(-30)" title="Back 30s" aria-label="Back 30 seconds" style="font-size:0.7rem;">-30</button>
+          <button class="player-btn" onclick="skipTime(30)" title="Forward 30s" aria-label="Forward 30 seconds" style="font-size:0.7rem;">+30</button>
+          <button class="player-btn" onclick="skipChapter(1)" title="Next chapter" aria-label="Next chapter">&#9197;</button>
+          <button class="player-btn" onclick="toggleNpOverlay()" title="Show / hide reader" aria-label="Show or hide reader" style="font-size:0.95rem;">&#128214;</button>
         </div>
       </div>
       <div class="np-progress-row">
@@ -1806,11 +1826,11 @@
     </div>
     <div class="np-right">
       <div class="player-vol">
-        <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute / Unmute">&#128266;</button>
-        <input type="range" id="vol-slider" min="0" max="100" value="100" oninput="setVolume(this.value)" title="Volume">
+        <button class="vol-icon" id="vol-icon" onclick="toggleMute()" title="Mute / Unmute" aria-label="Mute or unmute">&#128266;</button>
+        <input type="range" id="vol-slider" min="0" max="100" value="100" oninput="setVolume(this.value)" title="Volume" aria-label="Volume">
       </div>
-      <button class="player-btn" id="waveform-toggle" onclick="toggleWaveform()" title="Show / hide waveform" style="font-size:0.95rem;">&#9835;</button>
-      <select id="speed-select" onchange="setSpeed(this.value)" title="Playback speed"
+      <button class="player-btn" id="waveform-toggle" onclick="toggleWaveform()" title="Show / hide waveform" aria-label="Show or hide waveform" style="font-size:0.95rem;">&#9835;</button>
+      <select id="speed-select" onchange="setSpeed(this.value)" title="Playback speed" aria-label="Playback speed"
         style="background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:0.2rem 0.3rem;font-size:0.7rem;cursor:pointer;">
         <option value="0.5">0.5x</option>
         <option value="0.75">0.75x</option>
@@ -1820,8 +1840,8 @@
         <option value="2">2x</option>
         <option value="3">3x</option>
       </select>
-      <button onclick="addBookmark()" title="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
-      <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
+      <button onclick="addBookmark()" title="Add bookmark" aria-label="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
+      <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" aria-label="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
       <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
     </div>
   </div>
@@ -1842,6 +1862,23 @@
     window.dispatchEvent(new Event('shared-ready'));
   </script>
   <script>
+    // Accessibility keyboard shim (a11y pass): activate any non-native
+    // element exposed as a button (role="button" + tabindex) on Enter/Space,
+    // matching native <button> behavior. Without this, the work cards /
+    // chapter rows / pills we mark up as buttons would be focusable but not
+    // keyboard-operable (a WCAG 2.1.1 failure). Pure a11y plumbing — it only
+    // forwards a keypress on an already-focused role=button to a click; it
+    // changes no application logic.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      const t = e.target;
+      if (!t || t.getAttribute('role') !== 'button') return;
+      if (t.tagName === 'BUTTON' || t.tagName === 'A' || t.tagName === 'INPUT' ||
+          t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      t.click();
+    });
+
     let allWorks = [];
     let activeFilter = 'all';
     let currentPlayingId = null;
@@ -2287,6 +2324,7 @@
       const cardId = 'work-' + work.id;
       return `
         <div class="work-card" id="${cardId}" onclick="openWorkDetail(${work.id})"
+             role="button" tabindex="0" aria-label="Open ${escapeHtml(work.title)}"
              title="${escapeHtml(work.title)}">
           <div class="work-cover">
             <img src="/api/works/${work.id}/cover" alt=""
@@ -2296,11 +2334,11 @@
             ${work.has_audio ? `
               <button class="work-play-btn" id="play-btn-${work.id}"
                 onclick="event.stopPropagation(); resumeOrPlay(${work.id})"
-                title="Resume / pause">&#9654;</button>` : ''}
+                title="Resume / pause" aria-label="Resume or pause ${escapeHtml(work.title)}">&#9654;</button>` : ''}
           </div>
           <button class="work-menu-btn" id="menu-btn-${work.id}"
             onclick="event.stopPropagation(); toggleWorkMenu(${work.id}, event);"
-            title="More actions" aria-haspopup="menu" aria-expanded="false">&#8943;</button>
+            title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">&#8943;</button>
           <div class="work-menu-popover" id="menu-pop-${work.id}" role="menu"
             onclick="event.stopPropagation();">
             ${renderWorkMenu(work)}
@@ -2367,6 +2405,7 @@
             <div class="qa-chips" id="qa-chips-${work.id}"></div>
             <div class="qa-input-row">
               <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
+                aria-label="Ask a question about this book"
                 data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
                 onkeydown="if(event.key==='Enter')chatSend(${work.id})">
               <button onclick="chatSend(${work.id})">Ask</button>
@@ -2436,15 +2475,15 @@
         if (files.length === 1) {
           const f = files[0];
           mount.innerHTML = `
-            <div class="chapter-row" id="audio-ch-${f.id}" onclick="playAudio(${f.id}, 0, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
-              <button class="play-btn">&#9654;</button>
+            <div class="chapter-row" id="audio-ch-${f.id}" role="button" tabindex="0" aria-label="Play ${escapeHtml(f.title || f.filename)}" onclick="playAudio(${f.id}, 0, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
+              <button class="play-btn" aria-hidden="true" tabindex="-1">&#9654;</button>
               <span class="chapter-name">${escapeHtml(f.title || f.filename)}</span>
               <span class="chapter-size">${f.duration_secs ? formatTime(f.duration_secs) : formatSize(f.size_bytes)}</span>
             </div>`;
         } else {
           mount.innerHTML = files.map((f, i) => `
-            <div class="chapter-row" id="audio-ch-${f.id}" onclick="playAudio(${f.id}, ${i}, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
-              <button class="play-btn">&#9654;</button>
+            <div class="chapter-row" id="audio-ch-${f.id}" role="button" tabindex="0" aria-label="Play ${escapeHtml(f.title || f.filename)}" onclick="playAudio(${f.id}, ${i}, ${work.id}, '${escapeJs(f.title || f.filename)}', '${workTitle}')">
+              <button class="play-btn" aria-hidden="true" tabindex="-1">&#9654;</button>
               <span class="chapter-name">${escapeHtml(f.title || f.filename)}</span>
               <span class="chapter-size">${f.duration_secs ? formatTime(f.duration_secs) : formatSize(f.size_bytes)}</span>
             </div>
@@ -2584,6 +2623,7 @@
       // Clickable → opens the .abook summary (sources + alignment + "Compare
       // sources" meld), so the comparison is one click from the card.
       return `<span class="media-pill ${cls} align-clickable"
+        role="button" tabindex="0" aria-label="Alignment ${pct}% — compare sources"
         onclick="event.stopPropagation(); openAbookSummary(${work.id})"
         title="${escapeHtml(label)}${escapeHtml(m)} · click to compare sources">${pct}%</span>`;
     }
@@ -2593,6 +2633,7 @@
       if (!entry || !entry.segment_count) return '';
       const label = `⚠ ${formatGapDuration(entry.total_missing_sec)} missing`;
       return `<span class="media-pill gap-warn"
+        role="button" tabindex="0" aria-label="${escapeHtml(label)} — show transcription gap details"
         onclick="event.stopPropagation(); showGapDetails(${workId})"
         title="Whisper produced no output for part of this book. Click for details.">${label}</span>`;
     }
@@ -2628,7 +2669,7 @@
         : '';
       const html = `
         <div class="modal-backdrop" onclick="closeGapModal(event)">
-          <div class="modal" onclick="event.stopPropagation()">
+          <div class="modal" role="dialog" aria-modal="true" aria-label="Transcription gaps" onclick="event.stopPropagation()">
             <h2 style="margin-top:0">Transcription gaps</h2>
             <p style="color:var(--text-muted)">${escapeHtml(title)}</p>
             <table class="gap-table">
@@ -2709,32 +2750,32 @@
       host.id = 'logs-modal-host';
       host.innerHTML = `
         <div class="modal-backdrop" onclick="closeSystemConsole(event)">
-          <div class="modal logs-modal" onclick="event.stopPropagation()">
+          <div class="modal logs-modal" role="dialog" aria-modal="true" aria-label="System console" onclick="event.stopPropagation()">
             <div class="logs-head">
               <h3>System console</h3>
               <button onclick="closeSystemConsole()">Close</button>
             </div>
             <div class="logs-filters">
-              <select id="logs-level" onchange="refreshLogs()">
+              <select id="logs-level" onchange="refreshLogs()" aria-label="Filter logs by level">
                 <option value="">All levels</option>
                 <option value="debug">Debug+</option>
                 <option value="info" selected>Info+</option>
                 <option value="warn">Warn+</option>
                 <option value="error">Error only</option>
               </select>
-              <select id="logs-component" onchange="refreshLogs()">
+              <select id="logs-component" onchange="refreshLogs()" aria-label="Filter logs by component">
                 <option value="">All components</option>
               </select>
-              <select id="logs-since" onchange="refreshLogs()">
+              <select id="logs-since" onchange="refreshLogs()" aria-label="Filter logs by time">
                 <option value="">Any time</option>
                 <option value="15m">Last 15m</option>
                 <option value="1h" selected>Last 1h</option>
                 <option value="6h">Last 6h</option>
                 <option value="24h">Last 24h</option>
               </select>
-              <input type="search" id="logs-q" placeholder="Filter message / job id…" oninput="debouncedRefreshLogs()">
+              <input type="search" id="logs-q" placeholder="Filter message / job id…" aria-label="Filter logs by message or job id" oninput="debouncedRefreshLogs()">
               <label class="logs-auto"><input type="checkbox" id="logs-auto" onchange="toggleLogsAuto()"> Live</label>
-              <button onclick="refreshLogs()" title="Refresh">&#8635;</button>
+              <button onclick="refreshLogs()" title="Refresh" aria-label="Refresh logs">&#8635;</button>
               <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear</button>
             </div>
             <div class="logs-active-filters" id="logs-active-filters" style="display:none; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;"></div>
@@ -3076,7 +3117,7 @@
       const host = document.createElement('div');
       host.id = 'abook-summary-host';
       host.innerHTML = `<div class="modal-backdrop" onclick="closeAbookSummary(event)">
-        <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Book summary and source comparison" onclick="event.stopPropagation()">
           <div id="abs-body"><p style="color:var(--text-muted)">Loading…</p></div>
           <div style="text-align:right;margin-top:1rem"><button onclick="closeAbookSummary()">Close</button></div>
         </div>
@@ -3109,7 +3150,7 @@
       const host = document.createElement('div');
       host.id = 'recap-host';
       host.innerHTML = `<div class="modal-backdrop" onclick="closeRecap(event)">
-        <div class="modal recap-modal" onclick="event.stopPropagation()">
+        <div class="modal recap-modal" role="dialog" aria-modal="true" aria-label="Recap" onclick="event.stopPropagation()">
           <div class="recap-head">
             <h3>&#10022; Recap</h3>
             <button class="recap-close" onclick="closeRecap()" title="Close">&#10005;</button>
@@ -3910,6 +3951,7 @@
         // re-querying the chapter cache on every timeupdate (4×/sec).
         return `
         <div class="${rowClass}" id="text-ch-${bookId}-${ch.index}"
+             role="button" tabindex="0" aria-label="Read ${escapeHtml(ch.title)}"
              data-start="${ch.start_sec || 0}" data-end="${ch.end_sec || 0}"
              onclick="loadChapter(${bookId}, ${ch.index}, ${workId})">
           <span class="chapter-name">${escapeHtml(ch.title)}</span>
@@ -5060,6 +5102,7 @@
         chapters.map(c => {
           const isActive = absTime >= (c.start_sec || 0) && absTime < (c.end_sec || 1e12);
           return `<div class="chapter-row${isActive ? ' active' : ''}"
+            role="button" tabindex="0" aria-label="Read ${escapeHtml(c.title || ('Chapter ' + (c.index+1)))}"
             data-ch-idx="${c.index}"
             onclick="loadChapter(${textBook.id}, ${c.index}, ${work.id})">
              <span class="chapter-name">${escapeHtml(c.title || ('Chapter ' + (c.index+1)))}</span>
@@ -6724,7 +6767,7 @@
             const cp = JSON.stringify({w: workId, abk: c.audio_book_id, sec: c.audio_start_sec, title: c.chapter_title || ''});
             playBtn = `<button class="cite-play" onclick='event.stopPropagation(); playCitation(${cp})' title="Play from this passage">▶</button>`;
           }
-          return `<div class="chat-citation" onclick='jumpToCitation(${cite})'>${playBtn}<span class="cite-text">${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)} — ${escapeHtml(c.excerpt)}</span></div>`;
+          return `<div class="chat-citation" role="button" tabindex="0" aria-label="Jump to ${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)}" onclick='jumpToCitation(${cite})'>${playBtn}<span class="cite-text">${escapeHtml(c.chapter_title || 'Chapter ' + c.chapter_idx)} — ${escapeHtml(c.excerpt)}</span></div>`;
         }).join('');
         citations = `<div class="chat-citations">
           <button class="chat-citations-toggle" onclick="toggleChatSources(this)">
