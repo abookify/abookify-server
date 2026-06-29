@@ -153,7 +153,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.CreateAuthSession(token, storedUser, db.DefaultSessionTTL); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	s.setSessionCookie(w, r, token, db.DefaultSessionTTL)

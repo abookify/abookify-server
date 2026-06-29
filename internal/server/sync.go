@@ -54,7 +54,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.GetAllSettings()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 

@@ -60,7 +60,7 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := s.store.QueryLogs(f)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if logs == nil {

@@ -132,7 +132,7 @@ func (s *Server) handleRotateServerID(w http.ResponseWriter, r *http.Request) {
 	}
 	newID := hex.EncodeToString(buf)
 	if err := s.store.SetSetting(settingServerID, newID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -180,12 +180,12 @@ func (s *Server) handlePairQR(w http.ResponseWriter, r *http.Request) {
 	payload := s.newPairingPayload(r)
 	data, err := json.Marshal(payload)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	png, err := qrcode.Encode(string(data), qrcode.Medium, 256)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")

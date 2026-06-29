@@ -143,7 +143,7 @@ func (s *Server) handleBookRecap(w http.ResponseWriter, r *http.Request) {
 	// reader's current point — no later chapter is ever consulted.
 	chapters, err := s.store.ListChapters(bookID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	sort.Slice(chapters, func(i, j int) bool { return chapters[i].Index < chapters[j].Index })

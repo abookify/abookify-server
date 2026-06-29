@@ -28,7 +28,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	sessions, err := s.store.ListSessions(workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if sessions == nil {
@@ -50,7 +50,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	id, err := s.store.CreateSession(workID, req.Title, req.Scope)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	sess, _ := s.store.GetSession(id)
@@ -71,7 +71,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.RenameSession(id, req.Title); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	sess, _ := s.store.GetSession(id)
@@ -94,7 +94,7 @@ func (s *Server) handleSetSessionScope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetSessionScope(id, req.Scope); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	sess, _ := s.store.GetSession(id)
@@ -108,7 +108,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteSession(id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -153,7 +153,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs, err := s.store.ListMessages(sessionID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	out := make([]chatMessage, 0, len(msgs))
@@ -215,7 +215,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	// AskInSession appends the question itself.
 	history, err := s.store.ListMessages(sessionID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -233,7 +233,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	// LLM call fails or times out.
 	userID, err := s.store.AppendMessage(sessionID, "user", req.Content, "", scopeJSON)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -259,7 +259,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	citationsJSON := library.MarshalCitations(answer.Citations)
 	assistID, err := s.store.AppendMessage(sessionID, "assistant", answer.Text, citationsJSON, "")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
