@@ -69,10 +69,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	tts, stt := s.speechEngines()
 	llmProvider, llmConfigured := s.llmState()
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":    s.Version,
-		"data_dir":   s.DataDir,
-		"models_dir": s.ModelsDir,
+	resp := map[string]any{
+		"version": s.Version,
 		"speech": map[string]any{
 			"tts":           tts,
 			"stt":           stt,
@@ -84,7 +82,21 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		},
 		// The welcome screen shows when neither speech engine is usable.
 		"needs_setup": !(tts.Ready || stt.Ready),
-	})
+	}
+	// data_dir/models_dir are local filesystem paths (they can reveal the home
+	// dir / username). /api/setup is unauth-exempt so the desktop shell can read
+	// needs_setup pre-login, so only expose the paths to a TRUSTED caller: when
+	// auth is off (open server — nothing to protect) or the request is
+	// authenticated. An unauthenticated remote caller on an auth-on server gets
+	// the booleans, not the paths.
+	if !s.authEnabled() {
+		resp["data_dir"] = s.DataDir
+		resp["models_dir"] = s.ModelsDir
+	} else if _, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
+		resp["data_dir"] = s.DataDir
+		resp["models_dir"] = s.ModelsDir
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // llmState reports whether Q&A has a usable provider (settings or env), for

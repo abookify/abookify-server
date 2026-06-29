@@ -39,7 +39,7 @@ func (s *Server) handleQueueRemoveFailed(w http.ResponseWriter, r *http.Request)
 	}
 	target := filepath.Join(s.LibraryDir, "failed", name)
 	if err := os.RemoveAll(target); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, err)
 		return
 	}
 	s.Events.Broadcast(Event{Type: "queue_updated"})
@@ -154,7 +154,7 @@ func (s *Server) handleTranscriptionGaps(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, err)
 		return
 	}
 	type summaryEntry struct {
@@ -218,7 +218,7 @@ func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {
 	}
 	embedded, err := rag.EmbedBook(id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

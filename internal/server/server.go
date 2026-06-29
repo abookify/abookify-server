@@ -541,7 +541,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	books, err := s.store.ListBooks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if books == nil {
@@ -602,7 +602,7 @@ func (s *Server) handleStreamBook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if works == nil {
@@ -638,7 +638,7 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 
 	work, err := s.store.GetWork(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if work == nil {
@@ -673,7 +673,7 @@ func (s *Server) handleWorkVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	schemaVersion, contentVersion, found, err := s.store.GetVersions(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if !found {
@@ -692,7 +692,7 @@ func (s *Server) handleWorkVersion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	type catalogEntry struct {
@@ -747,7 +747,7 @@ func (s *Server) handleWorkDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	diff, found, err := library.BuildDiff(s.store, id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if !found {
@@ -781,7 +781,7 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 	}
 	ts, err := library.BuildTextSync(s.store, id, bookID, chapterIdx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ts)
@@ -811,7 +811,7 @@ func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 	}
 	words, err := library.BuildEbookWordSync(s.store, id, bookID, chapterIdx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if words == nil {
@@ -834,7 +834,7 @@ func (s *Server) handleWorkCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	cov, err := library.BuildCoverage(s.store, id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cov)
@@ -852,7 +852,7 @@ func (s *Server) handleGetCast(w http.ResponseWriter, r *http.Request) {
 	}
 	chars, err := s.store.ListCharactersForWork(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if chars == nil {
@@ -889,7 +889,7 @@ func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		applog.Log(applog.LevelError, "booknlp", "", id, "cast extraction failed",
 			map[string]any{"error": err.Error()})
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if s.Events != nil {
@@ -919,7 +919,7 @@ func (s *Server) handleListChapters(w http.ResponseWriter, r *http.Request) {
 
 	chapters, err := s.store.ListChapters(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if chapters == nil {
@@ -944,7 +944,7 @@ func (s *Server) handleSearchBook(w http.ResponseWriter, r *http.Request) {
 
 	chunks, err := s.store.SearchChunks(id, query)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if chunks == nil {
@@ -970,7 +970,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 
 	ch, err := s.store.GetChapterContent(id, index)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if ch == nil {
@@ -995,7 +995,7 @@ func (s *Server) handleTTSPreview(w http.ResponseWriter, r *http.Request) {
 		voice,
 	)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "audio/mpeg")
@@ -1017,7 +1017,7 @@ func (s *Server) handleMergeWorks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.MergeWorks(targetID, req.SourceID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	log.Printf("merged work %d into work %d", req.SourceID, targetID)
@@ -1030,7 +1030,7 @@ func (s *Server) handleMergeWorks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err := s.store.DeleteWork(id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	log.Printf("deleted work %d", id)
@@ -1268,7 +1268,7 @@ func (s *Server) handleFetchCover(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	coversDir := filepath.Join(s.LibraryDir, "covers")
@@ -1338,7 +1338,7 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 		// Legacy fallback: keyword-only search on the first text file
 		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)
 		if err2 != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeServerError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, legacy)
@@ -1357,7 +1357,7 @@ func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
 	}
 	bookmarks, err := s.store.ListBookmarks(workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if bookmarks == nil {
@@ -1381,7 +1381,7 @@ func (s *Server) handleCreateBookmark(w http.ResponseWriter, r *http.Request) {
 	bm.WorkID = workID
 	id, err := s.store.CreateBookmark(bm)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -1403,7 +1403,7 @@ func (s *Server) handleUpdateBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.UpdateBookmark(id, req.Note, req.Color); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1417,7 +1417,7 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteBookmark(id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -1444,7 +1444,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListDuplicates(w http.ResponseWriter, r *http.Request) {
 	groups, err := library.FindDuplicateWorks(s.store)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, groups)
@@ -1470,7 +1470,7 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Title != "" || req.Author != "" {
 		if err := s.store.UpdateWork(workID, req.Title, req.Author); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeServerError(w, r, err)
 			return
 		}
 	}
@@ -1497,7 +1497,7 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.store.SetDisplayTextBook(workID, bookID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeServerError(w, r, err)
 			return
 		}
 	}
@@ -1534,7 +1534,7 @@ func (s *Server) handleAddChapter(w http.ResponseWriter, r *http.Request) {
 		Confidence: 1.0,
 	}
 	if err := s.store.InsertChapter(ch); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if bk, _ := s.store.GetBook(bookID); bk != nil && bk.WorkID > 0 {
@@ -1560,7 +1560,7 @@ func (s *Server) handleWaveform(w http.ResponseWriter, r *http.Request) {
 	}
 	wf, err := library.GenerateWaveform(*book, genDir)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, wf)
@@ -1591,7 +1591,7 @@ func (s *Server) handleWorkWaveform(w http.ResponseWriter, r *http.Request) {
 	}
 	wf, err := library.GenerateWorkWaveform(*work, genDir)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, wf)
@@ -1610,7 +1610,7 @@ func (s *Server) handleSearchWork(w http.ResponseWriter, r *http.Request) {
 	}
 	hits, err := library.SearchWork(s.store, workID, query, 20)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, hits)
@@ -1634,7 +1634,7 @@ func (s *Server) handleSearchLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	hits, err := library.SearchLibrary(s.store, query, limit)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if hits == nil {
@@ -1651,7 +1651,7 @@ func (s *Server) handleListAlignments(w http.ResponseWriter, r *http.Request) {
 	}
 	alignments, err := s.store.ListAlignmentsForWork(workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, alignments)
@@ -1665,7 +1665,7 @@ func (s *Server) handleDivergence(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := library.ComputeDivergence(s.store, workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if report == nil {
@@ -1788,7 +1788,7 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -1814,7 +1814,7 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 	for _, tf := range work.TextFiles {
 		n, err := library.EmbedChunksForBook(s.store, rag.Client(), tf.ID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeServerError(w, r, err)
 			return
 		}
 		totalEmbedded += n
@@ -1832,7 +1832,7 @@ func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		applog.Log(applog.LevelError, "align", "", workID, "anchor align failed",
 			map[string]any{"error": err.Error()})
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	applog.Log(applog.LevelInfo, "align", "", workID, "anchor align done",
@@ -1852,7 +1852,7 @@ func (s *Server) handleForceAlign(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAlignAll(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	applog.Info("align", fmt.Sprintf("align-all backfill starting (%d works)", len(works)))
@@ -1900,7 +1900,7 @@ func (s *Server) handleDetectChapters(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := library.DetectChaptersFromStoredSync(s.store, workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if n > 0 {
@@ -1916,7 +1916,7 @@ func (s *Server) handleGetSyncData(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.store.GetSyncData(workID, audioBookID, chapterIdx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -1951,7 +1951,7 @@ func (s *Server) handleGetPosition(w http.ResponseWriter, r *http.Request) {
 	}
 	pos, err := s.store.GetPosition(workID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	if pos == nil {
@@ -1975,7 +1975,7 @@ func (s *Server) handleSavePosition(w http.ResponseWriter, r *http.Request) {
 	}
 	pos.WorkID = workID
 	if err := s.store.SavePosition(pos); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	// Record a 10-second listening event for analytics. The web/mobile
@@ -2014,7 +2014,7 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	// server. Default bundles audio for a self-contained offline copy.
 	includeAudio := r.URL.Query().Get("audio") != "0"
 	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -2040,12 +2040,12 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	exportDir := filepath.Join(s.LibraryDir, "exports")
 	if err := os.MkdirAll(exportDir, 0755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -2179,7 +2179,7 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	tmpFile.Close()
 
 	if err := abook.Import(s.store, tmpPath, s.LibraryDir); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 
@@ -2199,7 +2199,7 @@ func (s *Server) handleSettingsSchema(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.GetAllSettings()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	// Mask any field whose name implies it's a secret so the value can't
@@ -2324,7 +2324,7 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEmbeddingsCoverage(w http.ResponseWriter, r *http.Request) {
 	total, embedded, err := s.store.EmbeddingCoverage()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	pct := 0.0
@@ -2363,7 +2363,7 @@ func (s *Server) handleEmbeddingsRefresh(w http.ResponseWriter, r *http.Request)
 	}
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	go s.embedAllWorks()
@@ -2387,7 +2387,7 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := Rescan(s.store, s.LibraryDir)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return
 	}
 	// Nudge listeners so the web/mobile work list reflects newly-created
@@ -2531,7 +2531,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		delete(body, "auth_password")
 		if strings.TrimSpace(pw) == "" {
 			if err := s.store.SetSetting("auth_password_hash", ""); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				writeServerError(w, r, err)
 				return
 			}
 		} else {
@@ -2541,7 +2541,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := s.store.SetSetting("auth_password_hash", string(hash)); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				writeServerError(w, r, err)
 				return
 			}
 		}
@@ -2565,7 +2565,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := s.store.SetSetting(k, v); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeServerError(w, r, err)
 			return
 		}
 		if strings.HasPrefix(k, "llm_") {
@@ -2591,7 +2591,7 @@ func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, 
 
 	book, err := s.store.GetBook(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeServerError(w, r, err)
 		return nil, err
 	}
 	if book == nil {
@@ -2711,4 +2711,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("json encode error: %v", err)
 	}
+}
+
+// writeServerError logs the underlying error server-side (so the detail lands
+// in the logs / System Console) and returns a GENERIC 500 to the client. This
+// keeps internal paths, SQL, and driver text off the wire — relevant on a
+// public tunnel where an error body would otherwise be an info-disclosure
+// channel. Use for unexpected internal failures (not for client-actionable
+// 4xx, where a specific message helps).
+func writeServerError(w http.ResponseWriter, r *http.Request, err error) {
+	path := ""
+	if r != nil {
+		path = r.Method + " " + r.URL.Path
+	}
+	applog.Log(applog.LevelError, "server", "", 0, "request failed", map[string]any{
+		"path":  path,
+		"error": err.Error(),
+	})
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 }
