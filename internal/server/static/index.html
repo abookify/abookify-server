@@ -1669,7 +1669,7 @@
       <label style="font-size:0.8rem; color:var(--text-muted);">Author:</label>
       <input id="rename-author" type="text" style="width:100%; padding:8px; margin:4px 0 16px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
       <div style="display:flex; gap:8px; justify-content:flex-end;">
-        <button onclick="closeRenameDialog()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
+        <button data-modal-close onclick="closeRenameDialog()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
         <button onclick="saveRename()" style="background:var(--accent); border:none; color:#fff; border-radius:6px; padding:6px 14px; cursor:pointer;">Save</button>
       </div>
     </div>
@@ -1684,7 +1684,7 @@
       <label style="font-size:0.8rem; color:var(--text-muted);">Merge from (will be deleted):</label>
       <select id="merge-source" style="width:100%; padding:8px; margin:4px 0 16px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
-        <button onclick="closeMergeDialog()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
+        <button data-modal-close onclick="closeMergeDialog()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
         <button onclick="executeMerge()" style="background:var(--accent); border:none; color:#fff; border-radius:6px; padding:6px 14px; cursor:pointer;">Merge</button>
       </div>
     </div>
@@ -1814,7 +1814,9 @@
       </div>
       <div class="np-progress-row">
         <span class="player-time" id="player-cur">0:00</span>
-        <div class="player-scrubber" id="player-scrubber">
+        <div class="player-scrubber" id="player-scrubber"
+             role="slider" tabindex="0" aria-label="Seek"
+             aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
           <div class="scrub-track"></div>
           <canvas class="waveform" id="scrub-waveform" width="1000" height="24"></canvas>
           <div class="scrub-fill" id="scrub-fill" style="mix-blend-mode: color-dodge;"></div>
@@ -1878,6 +1880,58 @@
       e.preventDefault();
       t.click();
     });
+
+    // Accessibility modal manager (a11y pass): for any visible [role="dialog"]
+    // it traps Tab focus inside the dialog, closes it on Escape (by clicking the
+    // dialog's [data-modal-close] control so existing cleanup runs), moves focus
+    // into the dialog when it opens, and restores focus to the opener on close.
+    // Generic + self-contained — no per-modal wiring beyond data-modal-close.
+    (function modalA11y() {
+      let lastFocused = null, current = null;
+      const isVisible = (el) => el && el.offsetParent !== null;
+      const openDialog = () => {
+        const ds = [...document.querySelectorAll('[role="dialog"]')].filter(isVisible);
+        return ds[ds.length - 1] || null; // topmost
+      };
+      const focusablesIn = (el) => [...el.querySelectorAll(
+        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+      )].filter(e => e.offsetParent !== null);
+      // Detect open/close transitions → manage focus.
+      const sync = () => {
+        const dlg = openDialog();
+        if (dlg === current) return;
+        if (dlg) {
+          if (!current) lastFocused = document.activeElement;
+          const f = focusablesIn(dlg);
+          (f[0] || dlg).focus({ preventScroll: true });
+        } else if (lastFocused) {
+          try { lastFocused.focus({ preventScroll: true }); } catch (_) {}
+          lastFocused = null;
+        }
+        current = dlg;
+      };
+      const obs = new MutationObserver(sync);
+      obs.observe(document.body, { childList: true, subtree: true }); // JS modals add/remove
+      ['rename-dialog', 'merge-dialog'].forEach(id => {           // static modals toggle style
+        const el = document.getElementById(id);
+        if (el) obs.observe(el, { attributes: true, attributeFilter: ['style'] });
+      });
+      document.addEventListener('keydown', (e) => {
+        const dlg = openDialog();
+        if (!dlg) return;
+        if (e.key === 'Escape') {
+          const closer = dlg.querySelector('[data-modal-close]');
+          if (closer) { e.preventDefault(); closer.click(); }
+        } else if (e.key === 'Tab') {
+          const f = focusablesIn(dlg);
+          if (!f.length) { e.preventDefault(); dlg.focus(); return; }
+          const first = f[0], last = f[f.length - 1];
+          if (!dlg.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+          else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      });
+    })();
 
     let allWorks = [];
     let activeFilter = 'all';
@@ -2530,9 +2584,9 @@
         const titleForJs = escapeJs(ch.title || `Chapter ${i + 1}`);
         const isPart = ch.src === 'part';
         const rowClass = isPart ? 'chapter-row chapter-row-part' : 'chapter-row';
-        const playBtn = isPart ? '' : '<button class="play-btn">&#9654;</button>';
+        const playBtn = isPart ? '' : '<button class="play-btn" aria-hidden="true" tabindex="-1">&#9654;</button>';
         return `
-          <div class="${rowClass}" id="audio-ch-${work.id}-${ch.index}" onclick='seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, "${titleForJs}")'>
+          <div class="${rowClass}" id="audio-ch-${work.id}-${ch.index}" role="button" tabindex="0" aria-label="Play ${escapeHtml(ch.title)}" onclick='seekToAbsoluteBookTime(allWorks.find(w => w.id === ${work.id}), ${ch.start_sec || 0}, "${titleForJs}")'>
             ${playBtn}
             <span class="chapter-name">${escapeHtml(ch.title)}</span>
             <span class="chapter-size">${formatTime(dur)}</span>
@@ -2693,7 +2747,7 @@
               <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
             </details>` : ''}
             <div style="text-align:right;margin-top:1rem">
-              <button onclick="closeGapModal()">Close</button>
+              <button data-modal-close onclick="closeGapModal()">Close</button>
             </div>
           </div>
         </div>`;
@@ -2753,7 +2807,7 @@
           <div class="modal logs-modal" role="dialog" aria-modal="true" aria-label="System console" onclick="event.stopPropagation()">
             <div class="logs-head">
               <h3>System console</h3>
-              <button onclick="closeSystemConsole()">Close</button>
+              <button data-modal-close onclick="closeSystemConsole()">Close</button>
             </div>
             <div class="logs-filters">
               <select id="logs-level" onchange="refreshLogs()" aria-label="Filter logs by level">
@@ -3119,7 +3173,7 @@
       host.innerHTML = `<div class="modal-backdrop" onclick="closeAbookSummary(event)">
         <div class="modal" role="dialog" aria-modal="true" aria-label="Book summary and source comparison" onclick="event.stopPropagation()">
           <div id="abs-body"><p style="color:var(--text-muted)">Loading…</p></div>
-          <div style="text-align:right;margin-top:1rem"><button onclick="closeAbookSummary()">Close</button></div>
+          <div style="text-align:right;margin-top:1rem"><button data-modal-close onclick="closeAbookSummary()">Close</button></div>
         </div>
       </div>`;
       document.body.appendChild(host);
@@ -3153,7 +3207,7 @@
         <div class="modal recap-modal" role="dialog" aria-modal="true" aria-label="Recap" onclick="event.stopPropagation()">
           <div class="recap-head">
             <h3>&#10022; Recap</h3>
-            <button class="recap-close" onclick="closeRecap()" title="Close">&#10005;</button>
+            <button class="recap-close" data-modal-close onclick="closeRecap()" title="Close" aria-label="Close recap">&#10005;</button>
           </div>
           <p class="recap-note">Spoiler-free — built only from what you've read, through <b>${escapeHtml(chTitle)}</b>.</p>
           <div class="recap-section">
@@ -5394,6 +5448,12 @@
       document.getElementById('scrub-fill').style.width = pct + '%';
       document.getElementById('scrub-thumb').style.left = pct + '%';
       document.getElementById('player-cur').textContent = fmtPlayerTime(bookSec);
+      // Keep the role="slider" value current for assistive tech.
+      const sb = document.getElementById('player-scrubber');
+      if (sb) {
+        sb.setAttribute('aria-valuenow', Math.round(bookSec));
+        sb.setAttribute('aria-valuetext', fmtPlayerTime(bookSec) + ' of ' + fmtPlayerTime(bookTotal));
+      }
 
       // TOC progress: per-chapter fill bars + summary "Chapter X of N · Q%".
       // Re-uses the same book-absolute time we just computed.
@@ -5415,6 +5475,8 @@
       const total = totalBookDurationSec();
       const p = document.getElementById('audio-player');
       document.getElementById('player-dur').textContent = fmtPlayerTime(total || p.duration);
+      const sb = document.getElementById('player-scrubber');
+      if (sb) sb.setAttribute('aria-valuemax', Math.round(total || p.duration || 0));
       renderChapterTicks();
       if (currentPlayingId) renderWaveform(currentPlayingId);
     });
@@ -5457,6 +5519,33 @@
       // Touch support for mobile testing in desktop browser.
       bar.addEventListener('touchstart', (e) => { seekTo(e.touches[0]); });
       bar.addEventListener('touchmove', (e) => { seekTo(e.touches[0]); });
+      // Keyboard seek (a11y): the scrubber is a role="slider", so arrow keys
+      // nudge ±5s, Page keys ±30s, Home/End jump to the ends. Reuses the same
+      // book-absolute seek as a mouse click.
+      function seekFraction(pct) {
+        const p = document.getElementById('audio-player');
+        const total = totalBookDurationSec();
+        if (total > 0 && currentWorkId != null) {
+          const work = allWorks.find(w => w.id === currentWorkId);
+          if (work) { seekToAbsoluteBookTime(work, pct * total); return; }
+        }
+        if (p && p.duration) p.currentTime = pct * p.duration;
+      }
+      bar.addEventListener('keydown', (e) => {
+        const p = document.getElementById('audio-player');
+        if (!p || !p.duration) return;
+        let handled = true;
+        switch (e.key) {
+          case 'ArrowRight': case 'ArrowUp': skipTime(5); break;
+          case 'ArrowLeft': case 'ArrowDown': skipTime(-5); break;
+          case 'PageUp': skipTime(30); break;
+          case 'PageDown': skipTime(-30); break;
+          case 'Home': seekFraction(0); break;
+          case 'End': seekFraction(0.999); break;
+          default: handled = false;
+        }
+        if (handled) e.preventDefault();
+      });
     })();
 
     // Volume slider + mute toggle.
@@ -6106,7 +6195,7 @@
             const where = `<span class="lsp-work">${escapeHtml(h.work_title)}</span> &middot; ${escapeHtml(h.chapter_title || 'Chapter ' + (h.chapter_idx + 1))}`;
             const snippet = highlightQuery(h.snippet, q);
             const args = JSON.stringify({w: h.work_id, b: h.book_id, ch: h.chapter_idx, wp: h.word_position});
-            return `<div class="lsp-hit" onclick='openLibraryHit(${args})'>
+            return `<div class="lsp-hit" role="button" tabindex="0" aria-label="Open ${escapeHtml(h.work_title)} — ${escapeHtml(h.chapter_title || 'Chapter ' + (h.chapter_idx + 1))}" onclick='openLibraryHit(${args})'>
               <div class="lsp-where">${where}</div>
               <div class="lsp-snippet">${snippet}</div>
             </div>`;
