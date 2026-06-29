@@ -137,7 +137,6 @@ func GenerateWorkWaveform(work db.Work, generatedDir string) (*Waveform, error) 
 
 	perFile := make([]*Waveform, 0, len(work.AudioFiles))
 	durs := make([]float64, 0, len(work.AudioFiles))
-	totalDur := 0.0
 	for _, b := range work.AudioFiles {
 		wf, err := GenerateWaveform(b, generatedDir)
 		if err != nil {
@@ -152,6 +151,17 @@ func GenerateWorkWaveform(work db.Work, generatedDir string) (*Waveform, error) 
 		}
 		perFile = append(perFile, wf)
 		durs = append(durs, d)
+	}
+	return mergeWaveforms(perFile, durs)
+}
+
+// mergeWaveforms rescales each per-file waveform onto one book-global timeline
+// of waveformPeaks buckets, weighted by per-file duration (#180). Pure +
+// fixture-free so the merge math is unit-testable. Returns BookID 0 to mark a
+// merged (multi-file) waveform.
+func mergeWaveforms(perFile []*Waveform, durs []float64) (*Waveform, error) {
+	totalDur := 0.0
+	for _, d := range durs {
 		totalDur += d
 	}
 	if totalDur <= 0 {
