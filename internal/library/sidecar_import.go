@@ -79,6 +79,29 @@ func (s *sttSidecar) isV2() bool { return s.Version >= 2 && len(s.Silences) > 0 
 // directories or audio files. For each sidecar found, it imports word
 // timestamps into sync_data and detected chapters into the chapters table.
 // Idempotent: skips works that already have sync_data.
+// ReimportWorkSidecar force-reimports the sidecar for ONE work, ignoring the
+// "already has sync data" skip in ImportSidecars. Used to refresh a work's
+// transcript after a re-transcription (e.g. a GPU re-run). Returns the sidecar
+// path that was imported.
+func ReimportWorkSidecar(store *db.Store, libraryRoot string, workID int64) (string, error) {
+	w, err := store.GetWork(workID)
+	if err != nil || w == nil {
+		return "", fmt.Errorf("work %d not found: %w", workID, err)
+	}
+	if !w.HasAudio || len(w.AudioFiles) == 0 {
+		return "", fmt.Errorf("work %d has no audio", workID)
+	}
+	af := w.AudioFiles[0]
+	sidecarPath := findSidecar(af.Path, libraryRoot)
+	if sidecarPath == "" {
+		return "", fmt.Errorf("no sidecar found for work %d (book %s)", workID, af.Path)
+	}
+	if err := importOneSidecar(store, w.ID, af.ID, sidecarPath); err != nil {
+		return sidecarPath, err
+	}
+	return sidecarPath, nil
+}
+
 func ImportSidecars(store *db.Store, libraryRoot string) {
 	works, err := store.ListWorks()
 	if err != nil {
