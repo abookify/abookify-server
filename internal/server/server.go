@@ -2546,6 +2546,16 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Reserved keys have dedicated mutation paths and must NEVER be written
+	// straight from the settings body. auth_password_hash is derived from
+	// auth_password via bcrypt above — letting a client install a chosen
+	// digest would, on an open server (auth off, the default), let anyone
+	// reachable enable auth with a password only they know and lock out the
+	// owner; it's also defense-in-depth against CSRF when auth is on.
+	// server_install_id is rotated via POST /api/server-id/rotate. Drop them.
+	for _, k := range []string{"auth_password_hash", "server_install_id"} {
+		delete(body, k)
+	}
 	llmTouched := false
 	for k, v := range body {
 		// If a secret field came back with the mask placeholder, the
