@@ -33,6 +33,11 @@ var britIrregular = map[string]string{
 	"aluminium": "aluminum",
 	"pyjamas": "pajamas",
 	"sceptic": "skeptic", "sceptics": "skeptics", "sceptical": "skeptical", "scepticism": "skepticism",
+	"moustache": "mustache", "moustaches": "mustaches", "moustached": "mustached",
+	"draught": "draft", "draughts": "drafts", "draughty": "drafty",
+	"cosy": "cozy", "cosier": "cozier", "cosiest": "coziest", "cosily": "cozily",
+	"smoulder": "smolder", "smouldered": "smoldered", "smouldering": "smoldering",
+	"woollen": "woolen", "woollens": "woolens", "gaol": "jail", "gaoler": "jailer",
 	"practise": "practice", "practised": "practiced", "practises": "practices", "practising": "practicing",
 	// -ae-/-oe-: a blanket ae/oe→e rule wrecks poem/shoe/toe/does/canoe, so the
 	// real variants are enumerated rather than rule-derived.

@@ -59,6 +59,7 @@ func TestNormalizeForCompareSpelling(t *testing.T) {
 		{"encyclopaedia", "encyclopedia"}, {"foetus", "fetus"},
 		{"grey", "gray"}, {"tyre", "tire"}, {"programme", "program"},
 		{"aluminium", "aluminum"}, {"sceptic", "skeptic"},
+		{"moustache", "mustache"}, {"draught", "draft"}, {"smoulder", "smolder"},
 		// In a sentence (per-word folding through the full normalizer).
 		{"he travelled towards the centre", "he traveled toward the center"},
 	}
