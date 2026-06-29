@@ -50,14 +50,16 @@ var britIrregular = map[string]string{
 	"aesthetic": "esthetic", "aesthetics": "esthetics", "mediaeval": "medieval",
 }
 
-// ourExceptions: words ending in -our that are NOT British variants (and could
-// collide with a different real word). Length guards skip the short ones; this
-// covers the ≥5-char coincidences.
+// ourExceptions: -our STEMS that are NOT British variants and whose -or form
+// (incl. -ed/-ing/-er derivatives) would collide with a different real word
+// (pour→pore: pouring/poring, scour→score: scouring/scoring) or be nonsense.
+// The lookup keys off the stem (w[:idx+3]), so one entry covers every
+// inflection (pour/pours/poured/pouring/pourer). Short words (four/hour/your)
+// are handled by length guards.
 var ourExceptions = map[string]bool{
-	"flour": true, "flours": true, "scour": true, "scours": true,
-	"velour": true, "velours": true, "detour": true, "detours": true,
-	"contour": true, "contours": true, "devour": true, "devours": true,
-	"hours": true, "yours": true, "tours": true, "pours": true, "sours": true, "fours": true,
+	"flour": true, "scour": true, "velour": true, "detour": true,
+	"contour": true, "devour": true, "pour": true, "sour": true,
+	"tour": true, "dour": true,
 }
 
 // reExceptions: words ending in -re that aren't variants, where the -re→-er
@@ -130,14 +132,13 @@ func canonicalizeSpelling(w string) string {
 	case has("yse"):
 		return cut("yse", "yze")
 	}
-	// -our → -or, word-final (colour→color, honour→honor) or before a SAFE
-	// British derivational suffix (favourite→favorite, colourful→colorful,
-	// honourable→honorable, neighbourhood→neighborhood). -ed/-ing/-er are
-	// deliberately NOT folded — they collide with real words (pouring/poring,
-	// scouring/scoring) — so those derivatives stay un-normalized (safe).
+	// -our → -or, word-final (colour→color, honour→honor) or before a British
+	// derivational suffix (coloured→colored, favourite→favorite, colourful→
+	// colorful, neighbourhood→neighborhood, labourer→laborer). The colliding
+	// stems (pour/scour/sour/tour…) are in ourExceptions so pouring/poring,
+	// scouring/scoring stay distinct; short words are length-guarded.
 	if i := strings.LastIndex(w, "our"); i >= 1 {
-		base := w[:i+3]
-		if !ourExceptions[base] && !ourExceptions[w] {
+		if base := w[:i+3]; !ourExceptions[base] {
 			switch rest := w[i+3:]; rest {
 			case "": // word-final: colour→color
 				if len(w) >= 5 {
@@ -147,8 +148,8 @@ func canonicalizeSpelling(w string) string {
 				if len(w) >= 6 {
 					return w[:i] + "ors"
 				}
-			case "ite", "ites", "able", "ables", "ably", "ful", "fully",
-				"hood", "less", "ism", "ous", "y":
+			case "ed", "ing", "er", "ers", "ite", "ites", "able", "ables",
+				"ably", "ful", "fully", "hood", "less", "ism", "ous", "y":
 				return w[:i] + "or" + rest
 			}
 		}

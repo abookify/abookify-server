@@ -49,6 +49,7 @@ func TestNormalizeForCompareSpelling(t *testing.T) {
 		// -re/-er, -our/-or, -ise/-ize family, -yse/-yze.
 		{"metre", "meter"}, {"theatre", "theater"}, {"fibre", "fiber"},
 		{"colour", "color"}, {"honour", "honor"}, {"favourite", "favorite"},
+		{"coloured", "colored"}, {"colouring", "coloring"}, {"labourer", "laborer"},
 		{"organise", "organize"}, {"organisation", "organization"},
 		{"realised", "realized"}, {"analyse", "analyze"}, {"paralysed", "paralyzed"},
 		// -ogue/-og, -ence/-ense, double-l, -ae-/-oe-, irregulars.
@@ -69,11 +70,14 @@ func TestNormalizeForCompareSpelling(t *testing.T) {
 	}
 	// These must STAY distinct — the rules must not collapse different words.
 	differ := [][2]string{
-		{"four", "for"},    // -our guard (short word)
-		{"flour", "flor"},  // -our exception
+		{"four", "for"},     // -our guard (short word)
+		{"flour", "flor"},   // -our exception
+		{"pouring", "poring"},   // pour stem excepted (would collide)
+		{"scouring", "scoring"}, // scour stem excepted (would collide)
 		{"score", "scorer"}, // -re vowel guard (score stays score)
 		{"timbre", "timber"}, // -re exception (different word)
 		{"reward", "rewards"}, // -wards exception
+		{"gambolling", "gambling"}, // gambol vs gamble — real mishear, must stay
 		{"colour", "flavour"}, // both fold, but to color vs flavor (distinct)
 	}
 	for _, c := range differ {
