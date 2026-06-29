@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/xml"
 	"fmt"
+	gohtml "html"
 	"io"
 	"path"
 	"regexp"
@@ -213,6 +214,18 @@ func readZipFile(r *zip.Reader, name string) ([]byte, error) {
 
 var scriptRe = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 var styleRe = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+
+// Footnote/superscript artifacts that, once tags are stripped, glue onto the
+// preceding word as a false token ("four1", "mizzen mast bc"). We drop their
+// CONTENT (not just the tags) from the plain-text/alignment path. Superscripts
+// and footnote-reference anchors are ~always footnote markers in prose EPUBs.
+var supSubRe = regexp.MustCompile(`(?is)<(sup|sub)\b[^>]*>.*?</(sup|sub)>`)
+var noterefRe = regexp.MustCompile(`(?is)<a\b[^>]*(?:epub:type=["'][^"']*note[^"']*["']|href=["']#(?:fn|note|ftn|en|footnote)[^"']*["'])[^>]*>.*?</a>`)
+
+// Unicode space/zero-width chars (mostly from decoded &nbsp; → U+00A0 and
+// friends) that Go's \s doesn't match — normalize to a plain space so they
+// don't survive as literal whitespace or fuse tokens.
+var uniSpaceRe = regexp.MustCompile(`[\x{00A0}\x{2000}-\x{200B}\x{202F}\x{205F}\x{3000}\x{FEFF}]`)
 var blockCloseRe = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li|br|tr)>`)
 var brRe = regexp.MustCompile(`(?i)<br\s*/?\s*>`)
 
@@ -282,15 +295,23 @@ func sanitizeHTML(raw string) string {
 	return result
 }
 
-func htmlToText(html string) string {
+func htmlToText(raw string) string {
 	// Remove script and style blocks
-	html = scriptRe.ReplaceAllString(html, "")
-	html = styleRe.ReplaceAllString(html, "")
+	raw = scriptRe.ReplaceAllString(raw, "")
+	raw = styleRe.ReplaceAllString(raw, "")
+	// Drop footnote/superscript marker CONTENT before stripping tags, so it
+	// doesn't glue onto the preceding word ("four1", "mizzen mast bc").
+	raw = noterefRe.ReplaceAllString(raw, "")
+	raw = supSubRe.ReplaceAllString(raw, "")
 	// Replace block-level tags with newlines
-	html = blockCloseRe.ReplaceAllString(html, "\n")
-	html = brRe.ReplaceAllString(html, "\n")
+	raw = blockCloseRe.ReplaceAllString(raw, "\n")
+	raw = brRe.ReplaceAllString(raw, "\n")
 	// Strip remaining tags
-	text := htmlTagRe.ReplaceAllString(html, "")
+	text := htmlTagRe.ReplaceAllString(raw, "")
+	// Decode HTML entities (&nbsp; &amp; &#8217; …) so they don't survive as
+	// literal word tokens ("nbsp"), then fold unicode/zero-width spaces.
+	text = gohtml.UnescapeString(text)
+	text = uniSpaceRe.ReplaceAllString(text, " ")
 	// Normalize whitespace within lines
 	lines := strings.Split(text, "\n")
 	var result []string
