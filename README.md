@@ -4,6 +4,10 @@ The core of abookify. Runs on the user's desktop, NAS, or home server as a singl
 
 **License:** [AGPL-3.0](LICENSE). Free for personal and commercial use; modifications and network-deployed forks must publish source. Mobile and desktop client apps are distributed separately under their own licenses.
 
+> **Setting it up?** See **[SETUP.md](SETUP.md)** — a getting-started guide for
+> self-hosters: install via Docker Compose, add your library, local engines vs.
+> API keys, remote access, and optional auth.
+
 ## Components
 
 ### Core Runtime
