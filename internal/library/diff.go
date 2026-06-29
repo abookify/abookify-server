@@ -155,15 +155,25 @@ var normCompareRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 
 // normalizeForCompare folds two strings to the form we use to decide whether a
 // "replace" span is a GENUINE substitution or just a presentational artifact.
-// Lowercasing + removing all whitespace and punctuation in one pass catches:
+// It lowercases, splits on whitespace+punctuation, folds each word's British/
+// American spelling to a common form (canonicalizeSpelling), then concatenates
+// with no separator. That catches:
 //   - case differences ("You" vs "you"),
 //   - punctuation / quotation marks (incl. STT leading-quote artifacts like the
 //     apostrophe in 'he said You'),
 //   - whitespace AND word-compounding ("stomped on to" == "stomped onto",
-//     "hung over" == "hungover").
+//     "hung over" == "hungover"),
+//   - British<->American spelling ("towards"=="toward", "centre"=="center",
+//     "litre"=="liter", "recognised"=="recognized", "colour"=="color", …).
 // Only real word substitutions/insertions/deletions survive as divergences.
 func normalizeForCompare(s string) string {
-	return normCompareRe.ReplaceAllString(strings.ToLower(s), "")
+	var b strings.Builder
+	for _, w := range normCompareRe.Split(strings.ToLower(s), -1) {
+		if w != "" {
+			b.WriteString(canonicalizeSpelling(w))
+		}
+	}
+	return b.String()
 }
 
 // sliceText joins toks[start:end] (clamped) WITHOUT capping — used only to

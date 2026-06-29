@@ -34,6 +34,55 @@ func TestNormalizeForCompare(t *testing.T) {
 	}
 }
 
+// British<->American spelling variants must NOT be flagged as divergences
+// (PJ's 1984 test: British ebook vs American audio). normalizeForCompare folds
+// them via canonicalizeSpelling. Covers PJ's three exact examples plus a few
+// from each productive suffix rule, and guards against collapsing genuinely
+// different words.
+func TestNormalizeForCompareSpelling(t *testing.T) {
+	equal := [][2]string{
+		// PJ's exact examples.
+		{"towards", "toward"},
+		{"centre", "center"}, {"Centre", "Center"},
+		{"litre", "liter"}, {"Litre", "Liter"},
+		{"recognised", "recognized"},
+		// -re/-er, -our/-or, -ise/-ize family, -yse/-yze.
+		{"metre", "meter"}, {"theatre", "theater"}, {"fibre", "fiber"},
+		{"colour", "color"}, {"honour", "honor"}, {"favourite", "favorite"},
+		{"organise", "organize"}, {"organisation", "organization"},
+		{"realised", "realized"}, {"analyse", "analyze"}, {"paralysed", "paralyzed"},
+		// -ogue/-og, -ence/-ense, double-l, -ae-/-oe-, irregulars.
+		{"catalogue", "catalog"}, {"dialogue", "dialog"},
+		{"defence", "defense"}, {"licence", "license"},
+		{"travelled", "traveled"}, {"labelled", "labeled"}, {"modelling", "modeling"},
+		{"encyclopaedia", "encyclopedia"}, {"foetus", "fetus"},
+		{"grey", "gray"}, {"tyre", "tire"}, {"programme", "program"},
+		{"aluminium", "aluminum"}, {"sceptic", "skeptic"},
+		// In a sentence (per-word folding through the full normalizer).
+		{"he travelled towards the centre", "he traveled toward the center"},
+	}
+	for _, c := range equal {
+		if normalizeForCompare(c[0]) != normalizeForCompare(c[1]) {
+			t.Errorf("spelling variants should be equal: %q vs %q → %q vs %q",
+				c[0], c[1], normalizeForCompare(c[0]), normalizeForCompare(c[1]))
+		}
+	}
+	// These must STAY distinct — the rules must not collapse different words.
+	differ := [][2]string{
+		{"four", "for"},    // -our guard (short word)
+		{"flour", "flor"},  // -our exception
+		{"score", "scorer"}, // -re vowel guard (score stays score)
+		{"timbre", "timber"}, // -re exception (different word)
+		{"reward", "rewards"}, // -wards exception
+		{"colour", "flavour"}, // both fold, but to color vs flavor (distinct)
+	}
+	for _, c := range differ {
+		if normalizeForCompare(c[0]) == normalizeForCompare(c[1]) {
+			t.Errorf("must stay distinct: %q vs %q both → %q", c[0], c[1], normalizeForCompare(c[0]))
+		}
+	}
+}
+
 // The diff text recovery (BuildDiff) maps alignment word-offsets — computed
 // against the Tokenize stream — onto a case-preserving displayTokenize stream.
 // That only yields faithful span text if the two tokenizers produce the SAME
