@@ -150,6 +150,37 @@ func assembleDisplay(chapters []ChapterText) []string {
 	return toks
 }
 
+// normCompareRe strips everything that isn't a Unicode letter or digit.
+var normCompareRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+
+// normalizeForCompare folds two strings to the form we use to decide whether a
+// "replace" span is a GENUINE substitution or just a presentational artifact.
+// Lowercasing + removing all whitespace and punctuation in one pass catches:
+//   - case differences ("You" vs "you"),
+//   - punctuation / quotation marks (incl. STT leading-quote artifacts like the
+//     apostrophe in 'he said You'),
+//   - whitespace AND word-compounding ("stomped on to" == "stomped onto",
+//     "hung over" == "hungover").
+// Only real word substitutions/insertions/deletions survive as divergences.
+func normalizeForCompare(s string) string {
+	return normCompareRe.ReplaceAllString(strings.ToLower(s), "")
+}
+
+// sliceText joins toks[start:end] (clamped) WITHOUT capping — used only to
+// normalize-compare the two sides of a replace span, never stored.
+func sliceText(toks []string, start, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(toks) {
+		end = len(toks)
+	}
+	if start >= end {
+		return ""
+	}
+	return strings.Join(toks[start:end], " ")
+}
+
 // joinCapped joins toks[start:end] (clamped) into display text, capping at
 // maxSpanWords with a trailing marker so a huge run stays bounded.
 func joinCapped(toks []string, start, end int) string {
@@ -259,15 +290,28 @@ func BuildDiff(store *db.Store, workID int64) (*WorkDiff, bool, error) {
 
 	spans := make([]DiffSpan, 0, len(bestPayload.Segments))
 	for _, s := range bestPayload.Segments {
+		kind := s.Kind
+		// A "replace" whose two sides are identical once normalized (case,
+		// punctuation/quotes, whitespace + compounding) is NOT a real
+		// divergence — the aligner emits these between anchors (STT
+		// quote/punctuation artifacts, "onto" vs "on to", etc.). Fold it back
+		// to aligned at the SOURCE so the meld + any consumer stops flagging
+		// it. Coverage is unaffected: replace and aligned both count as
+		// aligned words in directionalFrom (which reads payload counts).
+		if kind == SegReplace &&
+			normalizeForCompare(sliceText(ebookToks, s.EbookStart, s.EbookEnd)) ==
+				normalizeForCompare(sliceText(transToks, s.TransStart, s.TransEnd)) {
+			kind = SegAligned
+		}
 		span := DiffSpan{
-			Kind:   string(s.Kind),
+			Kind:   string(kind),
 			AWords: s.EbookEnd - s.EbookStart,
 			BWords: s.TransEnd - s.TransStart,
 			APct:   pct(s.EbookStart, ebookWords),
 			BPct:   pct(s.TransStart, transWords),
 		}
 		// Aligned runs are summarized by counts; text omitted to bound payload.
-		if s.Kind != SegAligned {
+		if kind != SegAligned {
 			span.AText = joinCapped(ebookToks, s.EbookStart, s.EbookEnd)
 			span.BText = joinCapped(transToks, s.TransStart, s.TransEnd)
 		}

@@ -2,6 +2,38 @@ package library
 
 import "testing"
 
+// normalizeForCompare decides whether a "replace" span is a real substitution
+// or a presentational artifact. These cases (from PJ's meld testing) must
+// normalize-equal so they're NOT flagged as divergences; genuine word
+// substitutions must remain distinct.
+func TestNormalizeForCompare(t *testing.T) {
+	equal := [][2]string{
+		{"You", "you"},                         // case
+		{`he said "You`, "he said You"},         // STT leading-quote artifact
+		{"stomped on to", "stomped onto"},       // compounding + whitespace
+		{"hung over", "hungover"},               // compounding
+		{"Don't,", "dont"},                      // apostrophe + comma
+		{"well-being", "well being"},            // hyphen vs space
+		{"“Hello,” she said.", "hello she said"}, // smart quotes + punctuation
+	}
+	for _, c := range equal {
+		if normalizeForCompare(c[0]) != normalizeForCompare(c[1]) {
+			t.Errorf("should be equal after normalize: %q vs %q → %q vs %q",
+				c[0], c[1], normalizeForCompare(c[0]), normalizeForCompare(c[1]))
+		}
+	}
+	differ := [][2]string{
+		{"stomped onto", "stamped onto"}, // real substitution
+		{"he said you", "she said you"},  // real substitution
+		{"the cat sat", "the cat"},       // deletion
+	}
+	for _, c := range differ {
+		if normalizeForCompare(c[0]) == normalizeForCompare(c[1]) {
+			t.Errorf("should DIFFER after normalize (genuine change): %q vs %q", c[0], c[1])
+		}
+	}
+}
+
 // The diff text recovery (BuildDiff) maps alignment word-offsets — computed
 // against the Tokenize stream — onto a case-preserving displayTokenize stream.
 // That only yields faithful span text if the two tokenizers produce the SAME

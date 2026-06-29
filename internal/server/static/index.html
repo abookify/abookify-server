@@ -3342,14 +3342,23 @@
     const MELD_MIN_WORDS = 3; // substantive threshold (hides STT-noise + tiny artifacts)
     let _meldData = null, _meldWorkId = null, _meldShowAll = false;
 
-    // A divergence is "noise" (hidden by default) when it's tiny on both
-    // sides, OR a "replace" whose two sides are identical ignoring case (a
-    // false divergence the aligner emits between anchors). Real content
-    // divergences — skipped passages, intros/outros, reworded runs — survive.
+    // Normalize for comparison: lowercase + drop all whitespace and
+    // punctuation/quotes in one pass. Mirrors the server's normalizeForCompare
+    // (diff.go) so "You"=="you", "stomped on to"=="stomped onto",
+    // "hung over"=="hungover", and STT quote artifacts don't read as changes.
+    function meldNormalize(s) {
+      return (s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    }
+    // A divergence is "noise" (hidden by default) when it's tiny on both sides,
+    // OR a "replace" whose two sides are identical once normalized (a false
+    // divergence the aligner emits between anchors). The server already folds
+    // these back to aligned (diff.go); this is defense-in-depth for older
+    // cached payloads. Real content divergences — skipped passages,
+    // intros/outros, reworded runs — survive.
     function meldIsNoise(s) {
       if (s.kind === 'replace') {
-        const a = (s.a_text || '').toLowerCase(), b = (s.b_text || '').toLowerCase();
-        if (a && a === b) return true; // pure case/punctuation difference
+        const a = meldNormalize(s.a_text), b = meldNormalize(s.b_text);
+        if (a && a === b) return true; // case/punctuation/whitespace/compounding only
       }
       return Math.max(s.a_words || 0, s.b_words || 0) < MELD_MIN_WORDS;
     }
