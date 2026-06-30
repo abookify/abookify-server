@@ -476,7 +476,18 @@
     @media (max-width: 560px) { .meld-pair { grid-template-columns: 1fr; } }
 
     /* Spoiler-aware recap + chapter summary modal (#134). */
-    #np-recap-btn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent) !important; }
+    #np-ai-btn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent) !important; }
+    /* AI-tools drawer — mirrors the TOC drawer but docks on the right. */
+    .np-ai-drawer {
+      width: 0; flex-shrink: 0; position: relative;
+      background: var(--surface); color: var(--text);
+      border-left: 1px solid var(--border);
+      transition: width 0.16s ease; overflow: hidden;
+    }
+    .np-ai-drawer.open { width: min(440px, 46vw); overflow: visible; }
+    .np-ai-content { width: 100%; height: 100%; overflow-y: auto; }
+    /* The reused qa-panel fills the drawer (no card chrome / top border). */
+    .np-ai-content .qa-panel { border: none; border-radius: 0; margin: 0; }
     .recap-modal { max-width: 620px; width: 92%; }
     .recap-head { display: flex; align-items: center; justify-content: space-between; }
     .recap-head h3 { margin: 0; font-family: var(--serif); font-weight: 600; font-size: 1.15rem; }
@@ -1300,6 +1311,16 @@
       border-color: color-mix(in srgb, var(--accent) 35%, transparent);
       background: var(--accent-soft); color: var(--accent); font-weight: 600;
     }
+    /* Work-detail launcher for the AI tools (which live in the reader). */
+    .qa-panel.qa-launch { text-align: center; padding: 0.9rem 1rem; }
+    .ai-launch-btn {
+      display: inline-block; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+      padding: 8px 16px; border-radius: 8px; margin: 2px 0 6px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .ai-launch-btn:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+    .qa-panel.qa-launch .qa-hint { font-size: 0.76rem; color: var(--text-muted); }
     .qa-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .qa-input-row {
       display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
@@ -1785,7 +1806,7 @@
       </select>
       <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
-      <button id="np-recap-btn" onclick="openRecap()" title="Spoiler-free recap + chapter summary" style="display:none;">&#10022; Recap</button>
+      <button id="np-ai-btn" onclick="toggleNpAI()" title="AI tools — recap + ask about this book" aria-label="AI tools" style="display:none;">&#10022; AI</button>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore" aria-label="Maximize or restore reader">&#9974;</button>
       <button onclick="closeNpOverlay()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
     </div>
@@ -1799,6 +1820,12 @@
           <div class="placeholder">Select a chapter to read</div>
         </div>
       </div>
+      <!-- Unified AI-tools drawer (recap chips + Q&A), right side. Populated
+           for the active reader work by renderNpAI(); toggled by the gear "AI"
+           button. The single home for the chat so its IDs don't collide. -->
+      <aside class="np-ai-drawer" id="np-ai-drawer" aria-hidden="true">
+        <div class="np-ai-content" id="np-ai-content"></div>
+      </aside>
     </div>
   </div>
 
@@ -1960,8 +1987,8 @@
       } catch {
         llmConfigured = false;
       }
-      // The reader "Recap" affordance (#134) needs an LLM.
-      const rb = document.getElementById('np-recap-btn');
+      // The reader "AI" affordance (recap + Q&A, #130/#134) needs an LLM.
+      const rb = document.getElementById('np-ai-btn');
       if (rb) rb.style.display = llmConfigured ? '' : 'none';
     }
 
@@ -2447,37 +2474,56 @@
             </div>
             <div id="cast-list-${work.id}" class="cast-list"></div>
           </div>
-          ${work.has_text ? (llmConfigured ? `
-          <div class="qa-panel">
-            <div class="qa-header">Ask about this book</div>
-            <div class="chat-tabs" id="chat-tabs-${work.id}">
-              <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
-            </div>
-            <div class="chat-thread" id="chat-thread-${work.id}">
-              <div class="qa-empty">Pick a chat or start a new one to begin.</div>
-            </div>
-            <div class="qa-scope-row">
-              <span>This chat:</span>
-              <button class="qa-scope-chip" id="qa-scope-chip-${work.id}" onclick="toggleChatScope(${work.id})"
-                title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
-              <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
-            </div>
-            <div class="qa-chips" id="qa-chips-${work.id}"></div>
-            <div class="qa-input-row">
-              <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
-                aria-label="Ask a question about this book"
-                data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
-                onkeydown="if(event.key==='Enter')chatSend(${work.id})">
-              <button onclick="chatSend(${work.id})">Ask</button>
-            </div>
-          </div>` : `
-          <div class="qa-panel">
-            <div class="qa-header">Ask about this book</div>
-            <div style="padding:0.8rem 1rem; font-size:0.8rem; color:var(--text-muted); text-align:center;">
-              ✨ Natural-language Q&amp;A is available with an AI provider.
-              <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
-            </div>
-          </div>`) : ''}
+          ${work.has_text ? `
+          <div class="qa-panel qa-launch">
+            <div class="qa-header">&#10022; AI tools</div>
+            <button class="ai-launch-btn" onclick="openAITools(${work.id})">${llmConfigured ? '&#10022; Recap &amp; ask about this book' : '&#10022; Open AI tools'}</button>
+            <div class="qa-hint">${llmConfigured
+              ? 'Spoiler-aware recap and Q&amp;A, in the reader.'
+              : 'Add an AI provider in <a href="/settings.html">Settings</a> for recaps + Q&amp;A.'}</div>
+          </div>` : ''}
+        </div>`;
+    }
+
+    // The unified AI-tools panel markup (recap chips + Q&A chat), reused by the
+    // now-playing drawer. Single rendered instance, so the work-keyed IDs
+    // (qa-input-/chat-thread-/…) don't collide. The chat path enforces the #130
+    // spoiler bound server-side.
+    function aiPanelHtml(work) {
+      if (!work || !work.has_text) {
+        return `<div class="qa-panel"><div class="qa-empty" style="padding:1rem;">No text source for AI tools.</div></div>`;
+      }
+      if (!llmConfigured) {
+        return `<div class="qa-panel">
+          <div class="qa-header">&#10022; AI tools</div>
+          <div style="padding:0.9rem 1rem; font-size:0.82rem; color:var(--text-muted); text-align:center;">
+            ✨ Recap + natural-language Q&amp;A need an AI provider.
+            <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
+          </div></div>`;
+      }
+      const textFiles = work.text_files || [];
+      return `<div class="qa-panel">
+          <div class="qa-header">&#10022; AI tools</div>
+          <div class="chat-tabs" id="chat-tabs-${work.id}">
+            <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
+          </div>
+          <div class="chat-thread" id="chat-thread-${work.id}">
+            <div class="qa-empty">Tap a tool below, or ask a question to begin.</div>
+          </div>
+          <div class="qa-scope-row">
+            <span>This chat:</span>
+            <button class="qa-scope-chip" id="qa-scope-chip-${work.id}" onclick="toggleChatScope(${work.id})"
+              title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
+            <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
+          </div>
+          <div class="qa-chips" id="qa-chips-${work.id}"></div>
+          <div class="qa-input-row">
+            <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
+              aria-label="Ask a question about this book"
+              data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
+              onkeydown="if(event.key==='Enter')chatSend(${work.id})">
+            <button onclick="chatSend(${work.id})">Ask</button>
+          </div>
         </div>`;
     }
 
@@ -3199,65 +3245,11 @@
     // Shows the "story so far" through the reader's CURRENT chapter (server
     // bounds it to chapters ≤ that index, so nothing ahead leaks) plus a
     // summary of the current chapter. Lazy-fetched; each section regenerates.
-    function openRecap() {
-      const workId = currentReaderWorkId;
-      if (workId == null) { showToast('Open the reader first', 'err'); return; }
-      const ch = currentReaderChapter[workId];
-      if (!ch) { showToast('Open a chapter first', 'err'); return; }
-      if (!llmConfigured) { showToast('Add an AI key in Settings to use recaps', 'err'); return; }
-      const bookId = ch.bookId, idx = ch.index;
-      const chTitle = ch.title || ('Chapter ' + idx);
-      const host = document.createElement('div');
-      host.id = 'recap-host';
-      host.innerHTML = `<div class="modal-backdrop" onclick="closeRecap(event)">
-        <div class="modal recap-modal" role="dialog" aria-modal="true" aria-label="Recap" onclick="event.stopPropagation()">
-          <div class="recap-head">
-            <h3>&#10022; Recap</h3>
-            <button class="recap-close" data-modal-close onclick="closeRecap()" title="Close" aria-label="Close recap">&#10005;</button>
-          </div>
-          <p class="recap-note">Spoiler-free — built only from what you've read, through <b>${escapeHtml(chTitle)}</b>.</p>
-          <div class="recap-section">
-            <div class="recap-label">Story so far
-              <button class="recap-regen" onclick="loadRecap(${bookId},${idx},true)" title="Regenerate">&#8635;</button></div>
-            <div class="recap-body" id="recap-so-far"><span class="recap-loading">Generating…</span></div>
-          </div>
-          <div class="recap-section">
-            <div class="recap-label">This chapter
-              <button class="recap-regen" onclick="loadChapterSummary(${bookId},${idx},true)" title="Regenerate">&#8635;</button></div>
-            <div class="recap-body" id="recap-chapter"><span class="recap-loading">Generating…</span></div>
-          </div>
-        </div>
-      </div>`;
-      document.body.appendChild(host);
-      loadRecap(bookId, idx, false);
-      loadChapterSummary(bookId, idx, false);
-    }
-    function recapParas(text) { return (text || '').split(/\n\n+/).map(p => `<p>${escapeHtml(p)}</p>`).join(''); }
-    async function loadRecap(bookId, idx, refresh) {
-      const el = document.getElementById('recap-so-far');
-      if (!el) return;
-      el.innerHTML = `<span class="recap-loading">${refresh ? 'Regenerating' : 'Generating'}…</span>`;
-      try {
-        const d = await fetch(`/api/books/${bookId}/recap?up_to=${idx}${refresh ? '&refresh=1' : ''}`).then(r => r.json());
-        if (d.error) { el.innerHTML = `<span class="recap-err">${escapeHtml(d.error)}</span>`; return; }
-        el.innerHTML = d.recap ? recapParas(d.recap) : '<span class="recap-empty">Not far enough in to recap yet.</span>';
-      } catch { el.innerHTML = '<span class="recap-err">Couldn’t load the recap.</span>'; }
-    }
-    async function loadChapterSummary(bookId, idx, refresh) {
-      const el = document.getElementById('recap-chapter');
-      if (!el) return;
-      el.innerHTML = `<span class="recap-loading">${refresh ? 'Regenerating' : 'Generating'}…</span>`;
-      try {
-        const d = await fetch(`/api/books/${bookId}/chapters/${idx}/summary${refresh ? '?refresh=1' : ''}`).then(r => r.json());
-        if (d.error) { el.innerHTML = `<span class="recap-err">${escapeHtml(d.error)}</span>`; return; }
-        el.innerHTML = d.summary ? recapParas(d.summary) : '<span class="recap-empty">No summary for this chapter.</span>';
-      } catch { el.innerHTML = '<span class="recap-err">Couldn’t load the summary.</span>'; }
-    }
-    function closeRecap(e) {
-      if (e && e.target && !e.target.classList.contains('modal-backdrop')) return;
-      const h = document.getElementById('recap-host');
-      if (h) h.remove();
-    }
+    // (Recap modal removed — folded into the unified AI-tools drawer: the
+    // "Story so far" / "This chapter" chips compose prompts that run through
+    // the Q&A path, so recap shares the chat's #130 spoiler bound. The
+    // /api/books/{id}/recap + /chapters/{idx}/summary endpoints remain for the
+    // API / mobile but the web no longer drives them.)
 
     async function openAbookSummary(workId) {
       closeAllWorkMenus();
@@ -5151,6 +5143,41 @@
       drawer.classList.toggle('open', npTocOpen);
       localStorage.setItem('npTocOpen', npTocOpen ? '1' : '0');
       if (npTocOpen) renderNpToc();
+    }
+
+    // --- Unified AI-tools drawer (recap chips + Q&A) -----------------------
+    let npAIOpen = false;     // drawer visible?
+    let npAIWork = null;      // which work the drawer is currently rendered for
+    function toggleNpAI() {
+      const drawer = document.getElementById('np-ai-drawer');
+      if (!drawer) return;
+      npAIOpen = !npAIOpen;
+      drawer.classList.toggle('open', npAIOpen);
+      drawer.setAttribute('aria-hidden', npAIOpen ? 'false' : 'true');
+      if (npAIOpen) renderNpAI();
+    }
+    // Render (or re-render on work change) the unified panel for the active
+    // reader work, then wire its chat + chips. Kept across toggles so the
+    // conversation isn't lost when the drawer is hidden/shown.
+    function renderNpAI() {
+      const host = document.getElementById('np-ai-content');
+      const workId = currentReaderWorkId;
+      if (!host || workId == null) return;
+      const work = allWorks.find(w => w.id === workId);
+      if (!work) return;
+      if (npAIWork === workId && host.querySelector('.qa-panel')) return; // keep state
+      host.innerHTML = aiPanelHtml(work);
+      npAIWork = workId;
+      if (work.has_text && llmConfigured) {
+        loadChatSessions(workId);   // restores chats/thread from the server
+        loadQASuggestions(workId);  // tool chips + per-book starter chips
+      }
+    }
+    // Launcher from the work-detail card: open the reader for this work, then
+    // reveal the AI drawer. AI tools live where you read (the now-playing view).
+    async function openAITools(workId) {
+      await openOverlayFromWork(workId);
+      if (!npAIOpen) toggleNpAI(); else renderNpAI();
     }
     function renderNpToc() {
       const content = document.getElementById('np-toc-content');
