@@ -2031,7 +2031,10 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	// no bundled audio) — shareable/inspectable, audio streams from the
 	// server. Default bundles audio for a self-contained offline copy.
 	includeAudio := r.URL.Query().Get("audio") != "0"
-	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio}); err != nil {
+	// Carry chunk embeddings so a downloaded .abook can do on-device cosine
+	// retrieval offline (mobile semantic Q&A). Backward-compatible — older
+	// clients ignore the column. See the size note in ExportOptions.
+	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true}); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -2081,7 +2084,9 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out := filepath.Join(exportDir, fmt.Sprintf("work-%d.abook", wk.ID))
-		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: false}); err != nil {
+		// Offline export set (what mobile downloads): no bundled audio, but DO
+		// carry embeddings so on-device semantic Q&A works offline.
+		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: false, IncludeEmbeddings: true}); err != nil {
 			applog.Log(applog.LevelError, "server", "", wk.ID, "export-all: work failed",
 				map[string]any{"error": err.Error()})
 			failed++

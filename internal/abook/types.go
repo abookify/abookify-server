@@ -30,6 +30,11 @@ type Manifest struct {
 	AlignMethod *string  `json:"align_method"`
 	AlignUnit   *string  `json:"align_unit"`
 	Assets      Assets   `json:"assets"`
+	// HasEmbeddings advertises whether book.db's chunks carry embedding vectors,
+	// so a consumer can decide to attempt on-device cosine search without
+	// scanning the table. Additive (older readers ignore it); absent/false means
+	// keyword-only retrieval.
+	HasEmbeddings bool `json:"has_embeddings,omitempty"`
 	// Checksums maps in-zip asset path -> "sha256:<hex>". Currently book.db.
 	Checksums map[string]string `json:"checksums"`
 }

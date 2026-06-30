@@ -35,10 +35,11 @@ func Export(store *db.Store, work *db.Work, outputPath string) error {
 }
 
 // ExportWithDirs is Export with an explicit libraryDir so the cover and audio
-// files can be located. Audio is bundled; embeddings are omitted. This is the
-// shape the web "download .abook" button produces.
+// files can be located. Audio + chunk embeddings are both bundled, so the
+// container is a self-contained offline copy that supports on-device semantic
+// search. This is the shape the web "download .abook" button produces.
 func ExportWithDirs(store *db.Store, work *db.Work, outputPath, libraryDir string) error {
-	return ExportV2(store, work, outputPath, libraryDir, ExportOptions{IncludeAudio: true})
+	return ExportV2(store, work, outputPath, libraryDir, ExportOptions{IncludeAudio: true, IncludeEmbeddings: true})
 }
 
 // ExportV2 writes a v2 .abook container: manifest.json + a per-work book.db
@@ -114,6 +115,7 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		AlignMethod:    sum.AlignMethod,
 		AlignUnit:      sum.AlignUnit,
 		Assets:         Assets{DB: "book.db", AudioDir: "audio/"},
+		HasEmbeddings:  opts.IncludeEmbeddings,
 		Checksums:      map[string]string{"book.db": "sha256:" + hex.EncodeToString(sumHash[:])},
 	}
 
