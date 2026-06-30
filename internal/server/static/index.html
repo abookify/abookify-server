@@ -1294,6 +1294,12 @@
       padding: 4px 11px; border-radius: 999px;
       border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
     }
+    /* AI tool chips (recap / this-chapter) — accent-tinted to read as actions
+       distinct from the question starter chips. */
+    .qa-chip.qa-tool {
+      border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+      background: var(--accent-soft); color: var(--accent); font-weight: 600;
+    }
     .qa-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .qa-input-row {
       display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
@@ -6699,20 +6705,49 @@
         ((work.text_files || [])[0] || {}).id || '';
       let url = `/api/works/${workId}/qa-suggestions?book_id=${bookId || ''}`;
       if (cur) url += `&chapter=${cur.index}`;
+      // AI tool chips first (recap / this-chapter) — only when a chapter is
+      // open, since they're bounded to the reading position. Then the
+      // server's per-book starter chips.
+      let toolChips = '';
+      if (cur) {
+        toolChips =
+          `<button class="qa-chip qa-tool" onclick="aiRecap(${workId})" title="Spoiler-free recap of the story up to where you're reading">&#10022; Story so far</button>` +
+          `<button class="qa-chip qa-tool" onclick="aiChapterSummary(${workId})" title="Summarize just this chapter">&#10022; This chapter</button>`;
+      }
       try {
         const d = await fetch(url).then(r => r.json());
         const sugg = (d && d.suggestions) || [];
         const attr = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-        host.innerHTML = sugg.map(s =>
+        host.innerHTML = toolChips + sugg.map(s =>
           `<button class="qa-chip" data-p="${attr(s.prompt)}" onclick="fillQAInput(${workId}, this.dataset.p)">${escapeHtml(s.label)}</button>`
         ).join('');
-      } catch { host.innerHTML = ''; }
+      } catch { host.innerHTML = toolChips; }
     }
     function fillQAInput(workId, prompt) {
       const input = document.getElementById('qa-input-' + workId);
       if (!input) return;
       input.value = prompt;
       input.focus();
+    }
+
+    // AI tool chips (the unified panel): the former Recap "story so far" + "this
+    // chapter" canned summaries, now composed as prompts and run through the
+    // SAME Q&A path as the starter chips. The session's spoiler bound (#130)
+    // still applies — "Story so far" rides the session reading-scope (≤ the
+    // current chapter); "This chapter" narrows to exactly the current chapter
+    // via a per-turn scope override (never past it).
+    function aiRecap(workId) {
+      const input = document.getElementById('qa-input-' + workId);
+      if (!input) return;
+      input.value = "Give me a concise, spoiler-free recap of the story so far, up to where I'm reading.";
+      chatSend(workId);
+    }
+    function aiChapterSummary(workId) {
+      const input = document.getElementById('qa-input-' + workId);
+      const cur = currentReaderChapter[workId];
+      if (!input || !cur) { showToast('Open a chapter first', 'err'); return; }
+      input.value = "Summarize what happens in this chapter.";
+      chatSend(workId, { type: 'chapter', book_id: cur.bookId, chapter_idx: cur.index });
     }
 
     // Per-turn scope OVERRIDE: only the explicit "ask about this paragraph"
@@ -7027,7 +7062,11 @@
       } catch { alert('Failed to delete'); }
     }
 
-    async function chatSend(workId) {
+    // scopeOverride (optional): a per-turn QueryScope that takes precedence over
+    // the paragraph gesture — used by the AI tool chips (e.g. a chapter-bounded
+    // "summarize this chapter"). The chat's session spoiler bound (#130) still
+    // applies server-side; an override only ever NARROWS, never widens past it.
+    async function chatSend(workId, scopeOverride) {
       const input = document.getElementById('qa-input-' + workId);
       if (!input) return;
       const text = input.value.trim();
@@ -7052,8 +7091,9 @@
       const empty = thread.querySelector('.qa-empty');
       if (empty) empty.remove();
       // Build the scope payload first so the optimistic bubble shows
-      // the same badge the persisted message will once it lands.
-      const scope = buildScopePayload(workId);
+      // the same badge the persisted message will once it lands. An explicit
+      // tool override wins over the paragraph gesture.
+      const scope = scopeOverride || buildScopePayload(workId);
       // Optimistically render the user's message.
       thread.insertAdjacentHTML('beforeend',
         renderChatMessage({role: 'user', content: text, scope: scope || undefined}, workId, bookId));
