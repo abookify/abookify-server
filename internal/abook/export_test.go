@@ -156,6 +156,79 @@ func TestExportV2_ManifestAndAssets(t *testing.T) {
 	}
 }
 
+// Chunk embeddings must travel in the .abook when IncludeEmbeddings is set
+// (so a downloaded book supports on-device cosine), and stay out when it isn't.
+// The manifest's has_embeddings flag mirrors the choice.
+func TestExportV2_Embeddings(t *testing.T) {
+	emb := []byte{0, 1, 2, 3, 4, 5, 6, 7} // stand-in vector blob
+
+	check := func(t *testing.T, include bool) {
+		dir := t.TempDir()
+		store, work := seedWork(t, dir)
+		defer store.Close()
+		textID := bookID(t, store, filepath.Join(dir, "book.epub"))
+		if err := store.InsertChunk(db.Chunk{
+			BookID: textID, ChapterIdx: 0, ChunkIdx: 0,
+			Content: "It was a bright cold day in April.", StartWord: 0, EndWord: 8,
+			Embedding: emb,
+		}); err != nil {
+			t.Fatalf("insert chunk: %v", err)
+		}
+
+		out := filepath.Join(dir, "test.abook")
+		if err := ExportV2(store, work, out, dir, ExportOptions{IncludeAudio: false, IncludeEmbeddings: include}); err != nil {
+			t.Fatalf("export: %v", err)
+		}
+
+		// manifest flag mirrors the option.
+		zr, err := zip.OpenReader(out)
+		if err != nil {
+			t.Fatalf("open zip: %v", err)
+		}
+		mdata, _ := readFromZip(&zr.Reader, "manifest.json")
+		zr.Close()
+		var m Manifest
+		json.Unmarshal(mdata, &m)
+		if m.HasEmbeddings != include {
+			t.Errorf("manifest has_embeddings = %v, want %v", m.HasEmbeddings, include)
+		}
+
+		// Round-trip import and inspect the carried chunk's embedding.
+		destDir := t.TempDir()
+		dest, err := db.Open(filepath.Join(destDir, "monolith.db"))
+		if err != nil {
+			t.Fatalf("open dest: %v", err)
+		}
+		defer dest.Close()
+		if err := Import(dest, out, destDir); err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		works, _ := dest.ListWorks()
+		if len(works) != 1 {
+			t.Fatalf("got %d works", len(works))
+		}
+		var tid int64
+		for _, tf := range works[0].TextFiles {
+			tid = tf.ID
+		}
+		chunks, err := dest.ListChunks(tid)
+		if err != nil || len(chunks) != 1 {
+			t.Fatalf("chunks = %v (err %v)", len(chunks), err)
+		}
+		got := chunks[0].Embedding
+		if include {
+			if len(got) != len(emb) || string(got) != string(emb) {
+				t.Errorf("embedding = %v, want %v (carried)", got, emb)
+			}
+		} else if len(got) != 0 {
+			t.Errorf("embedding = %v, want empty (omitted)", got)
+		}
+	}
+
+	t.Run("included", func(t *testing.T) { check(t, true) })
+	t.Run("omitted", func(t *testing.T) { check(t, false) })
+}
+
 func TestExportV2_RoundTripImport(t *testing.T) {
 	dir := t.TempDir()
 	srcStore, work := seedWork(t, dir)
