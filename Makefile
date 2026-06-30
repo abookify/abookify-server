@@ -1,4 +1,4 @@
-.PHONY: up down restart logs build test relay relay-down health build-cli access-log access-log-remote css fonts build-server
+.PHONY: up down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server
 
 # Desktop-bundle server binaries (distribution / #56 Tauri shell). Produces a
 # STANDALONE, STATIC Go binary per target platform — CGO_ENABLED=0 (pure-Go
@@ -75,6 +75,14 @@ build:
 
 test:
 	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go test -buildvcs=false ./internal/... -v
+
+# Endpoint status-contract smoke suite against a RUNNING server (default
+# http://localhost:7654). Asserts every major route returns a sensible status
+# (2xx, or a graceful 4xx/503 with a JSON error) and NEVER a bare 500 — incl.
+# the cast graceful-degradation contract when BookNLP is not running.
+# Override the target with: make smoke BASE=https://my-server
+smoke:
+	./testing/endpoint-smoke.sh $(BASE)
 
 # Start everything + nullbore tunnel (reads engineering/relay/.env)
 relay:
