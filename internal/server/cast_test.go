@@ -123,6 +123,29 @@ func TestHandleGetCast(t *testing.T) {
 	}
 }
 
+// A work with no EPUB text source is a foreseeable input condition → graceful
+// 422, never a bare 500 (even with BookNLP configured).
+func TestHandleExtractCastNoEPUB(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.BookNLPURL = "http://127.0.0.1:5300" // configured, but never reached
+	store.SetSetting("booknlp_enabled", "true")
+	workID, _ := store.CreateWork("Audio Only", "Author") // no text book at all
+
+	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleExtractCast(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (graceful, not 500)", rec.Code)
+	}
+	var out map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if strings.Contains(out["error"], "internal server error") || out["error"] == "" {
+		t.Errorf("not a clear graceful message: %q", out["error"])
+	}
+}
+
 // #133: an invalid work id is a 400, not a panic.
 func TestHandleGetCastInvalidID(t *testing.T) {
 	srv, _, _ := newTestServer(t)

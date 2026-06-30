@@ -899,6 +899,12 @@ func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// A foreseeable input condition (no EPUB / text not extracted yet) is a
+		// 422, not a server error — still graceful, never a bare 500.
+		if errors.Is(err, library.ErrNoCastableText) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
 		applog.Log(applog.LevelError, "booknlp", "", id, "cast extraction failed",
 			map[string]any{"error": err.Error()})
 		writeServerError(w, r, err)

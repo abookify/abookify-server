@@ -23,6 +23,12 @@ var castHTTP = &http.Client{Timeout: 30 * time.Minute}
 // experimental and must degrade gracefully when the service is down.
 var ErrBookNLPUnreachable = errors.New("booknlp service unreachable")
 
+// ErrNoCastableText flags a foreseeable INPUT condition — the work has no EPUB
+// text source, or its text isn't extracted yet — so the handler can return a
+// graceful 4xx instead of a bare 500. (Distinct from a real DB/server error,
+// which stays a 500.)
+var ErrNoCastableText = errors.New("no castable text for work")
+
 // castResponse is the booknlp service's /extract payload.
 type castResponse struct {
 	Characters []struct {
@@ -60,11 +66,11 @@ func ExtractCast(store *db.Store, booknlpURL string, workID int64) (int, error) 
 		return 0, err
 	}
 	if work == nil {
-		return 0, fmt.Errorf("work %d not found", workID)
+		return 0, fmt.Errorf("%w: work %d not found", ErrNoCastableText, workID)
 	}
 	book := CastEPUBBook(work)
 	if book == nil {
-		return 0, fmt.Errorf("work %d has no EPUB text source", workID)
+		return 0, fmt.Errorf("%w: work %d has no EPUB text source (cast is EPUB-only)", ErrNoCastableText, workID)
 	}
 
 	// Concatenate the book's chapter plaintext in order.
@@ -83,7 +89,7 @@ func ExtractCast(store *db.Store, booknlpURL string, workID int64) (int, error) 
 	}
 	text := strings.TrimSpace(sb.String())
 	if text == "" {
-		return 0, fmt.Errorf("book %d has no extractable text", book.ID)
+		return 0, fmt.Errorf("%w: book %d has no extractable text yet", ErrNoCastableText, book.ID)
 	}
 
 	applog.Log(applog.LevelInfo, "booknlp", "", workID, "cast extraction started",
