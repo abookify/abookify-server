@@ -35,6 +35,13 @@ type Manifest struct {
 	// scanning the table. Additive (older readers ignore it); absent/false means
 	// keyword-only retrieval.
 	HasEmbeddings bool `json:"has_embeddings,omitempty"`
+	// EmbeddingModel + EmbeddingDim identify which model produced the stored
+	// vectors, so a consumer embeds the QUERY with a matching model (otherwise
+	// cosine is meaningless — vectors from different models/dims aren't
+	// comparable). EmbeddingDim is authoritative (bytes/4 of a stored blob);
+	// EmbeddingModel is the matching model name. Empty when no embeddings.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+	EmbeddingDim   int    `json:"embedding_dim,omitempty"`
 	// Checksums maps in-zip asset path -> "sha256:<hex>". Currently book.db.
 	Checksums map[string]string `json:"checksums"`
 }

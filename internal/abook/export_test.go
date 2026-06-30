@@ -160,7 +160,10 @@ func TestExportV2_ManifestAndAssets(t *testing.T) {
 // (so a downloaded book supports on-device cosine), and stay out when it isn't.
 // The manifest's has_embeddings flag mirrors the choice.
 func TestExportV2_Embeddings(t *testing.T) {
-	emb := []byte{0, 1, 2, 3, 4, 5, 6, 7} // stand-in vector blob
+	emb := make([]byte, 1536*4) // 1536-dim float32 → text-embedding-3-small
+	for i := range emb {
+		emb[i] = byte(i % 251)
+	}
 
 	check := func(t *testing.T, include bool) {
 		dir := t.TempDir()
@@ -191,6 +194,13 @@ func TestExportV2_Embeddings(t *testing.T) {
 		json.Unmarshal(mdata, &m)
 		if m.HasEmbeddings != include {
 			t.Errorf("manifest has_embeddings = %v, want %v", m.HasEmbeddings, include)
+		}
+		if include {
+			if m.EmbeddingDim != 1536 || m.EmbeddingModel != "text-embedding-3-small" {
+				t.Errorf("embedding model/dim = %q/%d, want text-embedding-3-small/1536", m.EmbeddingModel, m.EmbeddingDim)
+			}
+		} else if m.EmbeddingDim != 0 || m.EmbeddingModel != "" {
+			t.Errorf("omitted: embedding model/dim = %q/%d, want empty", m.EmbeddingModel, m.EmbeddingDim)
 		}
 
 		// Round-trip import and inspect the carried chunk's embedding.

@@ -82,6 +82,14 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		return fmt.Errorf("build book.db: %w", err)
 	}
 
+	// Identify the embedding model/dim from the carved vectors so a consumer
+	// embeds queries with a matching model (cross-model cosine is meaningless).
+	embedDim, embedModel := 0, ""
+	if opts.IncludeEmbeddings {
+		embedDim = embeddingDimOf(tmpPath)
+		embedModel = embedModelForDim(embedDim)
+	}
+
 	dbBytes, err := os.ReadFile(tmpPath)
 	if err != nil {
 		return fmt.Errorf("read book.db: %w", err)
@@ -115,7 +123,9 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		AlignMethod:    sum.AlignMethod,
 		AlignUnit:      sum.AlignUnit,
 		Assets:         Assets{DB: "book.db", AudioDir: "audio/"},
-		HasEmbeddings:  opts.IncludeEmbeddings,
+		HasEmbeddings:  opts.IncludeEmbeddings && embedDim > 0,
+		EmbeddingModel: embedModel,
+		EmbeddingDim:   embedDim,
 		Checksums:      map[string]string{"book.db": "sha256:" + hex.EncodeToString(sumHash[:])},
 	}
 

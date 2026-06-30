@@ -181,6 +181,37 @@ func SummarizeWork(store *db.Store, work *db.Work) WorkSummary {
 	return sum
 }
 
+// embeddingDimOf returns the vector dimension of the carved book.db's chunk
+// embeddings (bytes/4 of the first non-null blob, float32), or 0 if none.
+func embeddingDimOf(dbPath string) int {
+	bdb, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0
+	}
+	defer bdb.Close()
+	var n int
+	if err := bdb.QueryRow(
+		`SELECT LENGTH(embedding) FROM chunks WHERE embedding IS NOT NULL AND LENGTH(embedding) > 0 LIMIT 1`,
+	).Scan(&n); err != nil {
+		return 0
+	}
+	return n / 4
+}
+
+// embedModelForDim names the embedding model that produces a given dimension,
+// so a consumer embeds queries with a matching model. Covers the two providers
+// the server supports (OpenAI / Ollama); "" for an unrecognized dim.
+func embedModelForDim(dim int) string {
+	switch dim {
+	case 1536:
+		return "text-embedding-3-small" // OpenAI
+	case 768:
+		return "nomic-embed-text" // Ollama
+	default:
+		return ""
+	}
+}
+
 // buildBookDB writes a fresh book.db at dbPath containing the carved slice of
 // the monolith for this work. assetPaths maps each audio book id to its
 // intended in-zip path ("audio/book-{id}.mp3"); pass nil for text-only works.
