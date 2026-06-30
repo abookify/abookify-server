@@ -30,6 +30,58 @@ jobs:
       - name: Run Go tests
         run: go test -buildvcs=false ./... -count=1
 
+  # Endpoint status-contract smoke. Boots the server with the optional BookNLP
+  # service intentionally NOT running, then asserts every major route returns a
+  # sensible status (2xx, or a graceful 4xx/503 with a JSON error) and NEVER a
+  # bare 500 — locking the cast graceful-degradation contract PJ hit.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build server
+        run: go build -buildvcs=false -o bin/abookify ./cmd/abookify
+
+      - name: Generate fixture library (one EPUB work, no binary committed)
+        run: python3 testing/make_fixture_epub.py /tmp/smoke-lib
+
+      - name: Boot server — no engines, BookNLP intentionally NOT started
+        run: |
+          mkdir -p /tmp/smoke-data
+          # BookNLP URL points at a closed port → connection refused → the
+          # extract-cast handler must return a graceful 503, never a 500.
+          ABOOKIFY_LIBRARY_PATH=/tmp/smoke-lib \
+          ABOOKIFY_DB_PATH=/tmp/smoke-data/smoke.db \
+          ABOOKIFY_GENERATED_PATH=/tmp/smoke-data/gen \
+          ABOOKIFY_BOOKNLP_URL=http://127.0.0.1:5300 \
+          ABOOKIFY_PORT=7654 \
+          ./bin/abookify > /tmp/smoke-data/server.log 2>&1 &
+
+      - name: Wait for health + library scan
+        run: |
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:7654/api/health)" = "200" ] && break
+            sleep 1
+          done
+          for i in $(seq 1 30); do
+            n=$(curl -s http://localhost:7654/api/works | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
+            [ "$n" -gt 0 ] 2>/dev/null && { echo "library: $n works"; break; }
+            sleep 1
+          done
+
+      - name: Endpoint smoke (graceful-degradation contract; BookNLP is down)
+        run: ./testing/endpoint-smoke.sh http://localhost:7654
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -200 /tmp/smoke-data/server.log || true
+
   shared-js:
     runs-on: ubuntu-latest
     timeout-minutes: 2
