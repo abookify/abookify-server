@@ -954,9 +954,23 @@ func (s *Store) GetBook(id int64) (*Book, error) {
 }
 
 func (s *Store) ListWorks() ([]Work, error) {
+	// Title ordering uses a library "filing title": a leading article
+	// ("The "/"A "/"An ", case-insensitive) is stripped to form the sort key,
+	// so "The Moral Landscape" files under M and "A Clockwork Orange" under C.
+	// The displayed title is unchanged. This is the source of truth for the
+	// works list + catalog (web + mobile render this order). SQLite LIKE is
+	// ASCII-case-insensitive, and the patterns are mutually exclusive
+	// ("A %" can't match "An "), so order of the WHENs doesn't matter.
 	rows, err := s.db.Query(`
 		SELECT id, title, author, series, series_index, display_text_book_id, schema_version, content_version, created_at, updated_at
-		FROM works ORDER BY series, series_index, title
+		FROM works
+		ORDER BY series, series_index,
+			CASE
+				WHEN title LIKE 'The %' THEN SUBSTR(title, 5)
+				WHEN title LIKE 'An %'  THEN SUBSTR(title, 4)
+				WHEN title LIKE 'A %'   THEN SUBSTR(title, 3)
+				ELSE title
+			END COLLATE NOCASE
 	`)
 	if err != nil {
 		return nil, err

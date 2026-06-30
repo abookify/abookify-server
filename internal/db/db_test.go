@@ -67,6 +67,49 @@ func TestUpsertAndListBooks(t *testing.T) {
 	}
 }
 
+// ListWorks orders by a library "filing title": a leading article (The/A/An,
+// case-insensitive) is stripped to form the sort key, but the displayed title
+// is unchanged. So "The Moral Landscape" files under M, "A Clockwork Orange"
+// under C, while "Theory…" (not the article "The ") is left alone.
+func TestListWorksFilingTitleSort(t *testing.T) {
+	store := testStore(t)
+	// Insert deliberately out of order.
+	for _, title := range []string{
+		"Zebra", "The Moral Landscape", "A Clockwork Orange", "an apple",
+		"Brave New World", "Theory of Everything", "THE Iliad",
+	} {
+		if _, err := store.CreateWork(title, "Author"); err != nil {
+			t.Fatalf("create %q: %v", title, err)
+		}
+	}
+	works, err := store.ListWorks()
+	if err != nil {
+		t.Fatalf("list works: %v", err)
+	}
+	got := make([]string, len(works))
+	for i, w := range works {
+		got[i] = w.Title
+	}
+	want := []string{
+		"an apple",            // -> apple
+		"Brave New World",     // -> brave
+		"A Clockwork Orange",  // -> clockwork
+		"THE Iliad",           // -> iliad (case-insensitive article strip)
+		"The Moral Landscape", // -> moral
+		"Theory of Everything", // -> theory (NOT stripped — "Theory" != "The ")
+		"Zebra",               // -> zebra
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d works, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: got %q, want %q\n  full order: %v", i, got[i], want[i], got)
+			break
+		}
+	}
+}
+
 func TestWorksLifecycle(t *testing.T) {
 	store := testStore(t)
 
