@@ -3659,7 +3659,13 @@
         const res = await fetch(`/api/works/${workId}/extract-cast`, { method: 'POST' });
         if (!res.ok) {
           const j = await res.json().catch(() => ({}));
-          throw new Error(j.error || ('HTTP ' + res.status));
+          const msg = j.error || ('HTTP ' + res.status);
+          // 503 = the (opt-in, experimental) BookNLP service isn't running.
+          // Render the actionable message softly, not as a hard failure.
+          const prefix = res.status === 503 ? '' : 'Extraction failed: ';
+          if (list) list.innerHTML = `<span class="cast-empty">${prefix}${escapeHtml(msg)}</span>
+            <button class="cast-extract-btn" onclick="extractCast(${workId})">Retry</button>`;
+          return;
         }
         await loadCast(workId);
       } catch (e) {

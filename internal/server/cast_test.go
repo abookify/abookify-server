@@ -2,12 +2,53 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/pj/abookify/internal/db"
 )
+
+// When BookNLP is configured but NOT running (the default — it's opt-in), an
+// extract-cast must fail SOFT: a 503 with an actionable "start it" message,
+// never a bare 500. This is the exact bug PJ hit clicking "Extract cast".
+func TestHandleExtractCastServiceDown(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+
+	// A reliably-closed port → connection refused (no real booknlp).
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	srv.BookNLPURL = "http://" + addr
+
+	store.SetSetting("booknlp_enabled", "true")
+	workID, _ := store.CreateWork("Frankenstein", "Shelley")
+	epub := dir + "/f.epub"
+	store.UpsertBook(db.Book{WorkID: workID, Path: epub, Filename: "f.epub",
+		Format: "epub", MediaType: "text", Title: "Frankenstein", Origin: "publisher_epub"})
+	bookID := bookIDByPath(t, store, epub)
+	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "Ch1",
+		Content: strings.Repeat("word ", 50), WordCount: 50})
+
+	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
+	req.SetPathValue("id", itoa(workID))
+	rec := httptest.NewRecorder()
+	srv.handleExtractCast(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (graceful, not 500)", rec.Code)
+	}
+	var out map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if !strings.Contains(out["error"], "BookNLP") || !strings.Contains(out["error"], "--profile booknlp") {
+		t.Errorf("error message not actionable: %q", out["error"])
+	}
+	if strings.Contains(out["error"], "internal server error") {
+		t.Errorf("leaked a bare 500 message: %q", out["error"])
+	}
+}
 
 // #133: the cast endpoint always reports experimental:true, gates `enabled`
 // on BOTH the booknlp_enabled flag and a configured service URL, and returns

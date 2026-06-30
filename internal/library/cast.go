@@ -3,6 +3,7 @@ package library
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +15,13 @@ import (
 
 // castHTTP gives BookNLP plenty of time — a full novel is minutes of CPU.
 var castHTTP = &http.Client{Timeout: 30 * time.Minute}
+
+// ErrBookNLPUnreachable wraps a connection-level failure talking to the BookNLP
+// service (it's opt-in via `docker compose --profile booknlp up` and usually
+// not running). Callers use errors.Is to fail SOFT — a clear 503 with a
+// start-it hint — instead of surfacing a bare 500. The cast feature is
+// experimental and must degrade gracefully when the service is down.
+var ErrBookNLPUnreachable = errors.New("booknlp service unreachable")
 
 // castResponse is the booknlp service's /extract payload.
 type castResponse struct {
@@ -85,7 +93,9 @@ func ExtractCast(store *db.Store, booknlpURL string, workID int64) (int, error) 
 	resp, err := castHTTP.Post(strings.TrimRight(booknlpURL, "/")+"/extract",
 		"application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return 0, fmt.Errorf("booknlp request: %w", err)
+		// Connection-level failure (refused / DNS / timeout) → the service is
+		// down or unreachable. Flag it so the handler returns a soft 503.
+		return 0, fmt.Errorf("%w: %v", ErrBookNLPUnreachable, err)
 	}
 	defer resp.Body.Close()
 

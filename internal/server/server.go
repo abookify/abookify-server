@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -887,6 +888,17 @@ func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := library.ExtractCast(s.store, s.BookNLPURL, id)
 	if err != nil {
+		// The BookNLP service is opt-in and usually not running. A
+		// connection-level failure must fail SOFT (the feature is
+		// experimental) — a clear, actionable 503, never a bare 500.
+		if errors.Is(err, library.ErrBookNLPUnreachable) {
+			applog.Log(applog.LevelWarn, "booknlp", "", id, "cast extraction unavailable — service not running",
+				map[string]any{"error": err.Error()})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "Cast extraction (experimental) needs the BookNLP service — start it: docker compose --profile booknlp up -d booknlp",
+			})
+			return
+		}
 		applog.Log(applog.LevelError, "booknlp", "", id, "cast extraction failed",
 			map[string]any{"error": err.Error()})
 		writeServerError(w, r, err)
