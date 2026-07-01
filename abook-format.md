@@ -160,3 +160,34 @@ The sync data is negligible (<1%) compared to the audio.
 - Import: unzip, read manifest, ingest into library
 - Export: bundle existing work data into .abook
 - The format is versioned; readers should check `version` field
+
+## Command-line tool (`abook`)
+
+A standalone companion CLI ships with abookify-server (`cmd/abook`) for
+inspecting, extracting, and building `.abook` files without a running server.
+It's a static, dependency-free binary (pure-Go SQLite, no CGO).
+
+```
+abook info <file.abook> [--json]   print manifest + source/file summary
+abook extract <file.abook> [dir]   unzip the archive (default: <name>/)
+abook pack <dir> [out.abook]       build a .abook from an unpacked directory
+abook version
+```
+
+- **`info`** reads `manifest.json`, lists the ZIP members, and summarizes
+  `book.db` (sources, chapter counts, RAG chunks + how many carry embeddings,
+  alignment coverage). `--json` emits the same data as JSON. It also flags if
+  any entry uses a non-DEFLATE compression method — all standard `.abook` files
+  are STORE/DEFLATE, so they open in any ZIP tool or in a browser via
+  `DecompressionStream`.
+- **`extract`** unzips to a directory (zip-slip guarded). Because a `.abook` is
+  a standard deflate ZIP, `unzip file.abook` works too.
+- **`pack`** zips an unpacked directory back into a `.abook`, recomputing
+  `book.db`'s `sha256` in the manifest so an edited `book.db` stays consistent.
+
+**Build** (cross-platform static binaries into `dist/`):
+
+```
+make build-abook                                   # all platforms
+make build-abook PLATFORMS="linux/amd64 darwin/arm64"
+```
