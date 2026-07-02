@@ -345,10 +345,17 @@
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
           Regenerate exports
         </button>
+        <label style="margin-left:10px; font-size:0.8rem; color:var(--text-muted); cursor:pointer;">
+          <input type="checkbox" id="export-lite"> Text-only (lite, no audio)
+        </label>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Writes a per-work <code>.abook</code> (book.db + cover, no audio) for every aligned
-          work to <code>library/exports/</code> — the offline bundles mobile can sideload.
-          Safe to re-run; overwrites in place. Audio streams from the server.
+          Writes a self-contained <code>.abook</code> per aligned work to
+          <code>library/exports/</code> — the offline bundles mobile sideloads. By default each
+          bundles the <b>audiobook + original ebook + alignment</b>: the alignment is
+          edition-locked to that exact recording, so a bundle without its audio isn't portable.
+          The full set is therefore large (multi-GB). Tick <b>Text-only</b> for a small,
+          book.db-only set (audio then streams from the server). Runs in the background; safe
+          to re-run.
         </div>
         <div id="exports-list" style="display:none; margin-top:8px; font-size:0.8rem; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;"></div>
         <div id="export-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
@@ -1047,19 +1054,38 @@
     async function regenerateExports() {
       const btn = document.getElementById('export-all-btn');
       const msg = document.getElementById('export-all-msg');
+      const lite = document.getElementById('export-lite').checked;
       btn.disabled = true;
-      btn.textContent = 'Exporting…';
+      btn.textContent = 'Starting…';
       msg.style.display = 'none';
       msg.style.borderLeftColor = 'var(--accent)';
       try {
-        const res = await fetch('/api/export-all', { method: 'POST' });
+        const res = await fetch('/api/export-all' + (lite ? '?lite=1' : ''), { method: 'POST' });
+        if (res.status === 409) {
+          msg.style.display = 'block';
+          msg.textContent = 'An export sweep is already running.';
+          return;
+        }
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const d = await res.json();
+        const started = await res.json();
         msg.style.display = 'block';
-        msg.innerHTML =
-          'Exported <b>' + d.exported + '</b> aligned works · ' +
-          'skipped ' + d.skipped + ' (not aligned) · ' +
-          'failed ' + d.failed + '.';
+        msg.innerHTML = 'Export started in the background' +
+          (started.include_audio ? ' — bundling audio, this can take a while…' : ' (text-only)…');
+        btn.textContent = 'Exporting…';
+        // Poll progress until the background sweep finishes.
+        await new Promise((resolve) => {
+          const t = setInterval(async () => {
+            try {
+              const st = await fetch('/api/export-all/status').then(r => r.json());
+              if (st.total) {
+                msg.innerHTML = 'Exporting… <b>' + st.done + '</b> / ' + st.total +
+                  (st.include_audio ? ' (with audio)' : '') + '.';
+              }
+              if (!st.running) { clearInterval(t); resolve(); }
+            } catch { clearInterval(t); resolve(); }
+          }, 1500);
+        });
+        msg.innerHTML = 'Export complete.';
         loadExports();
       } catch (e) {
         msg.style.display = 'block';

@@ -79,6 +79,14 @@ type Server struct {
 	// once more — catching works added after it swept past them.
 	embedAllMu      sync.Mutex
 	embedAllRunning bool
+
+	// export-all is a big (multi-GB with audio) background sweep — single-flight
+	// + a little progress state for a status readout.
+	exportAllMu      sync.Mutex
+	exportAllRunning bool
+	exportAllDone    int
+	exportAllTotal   int
+	exportAllAudio   bool
 	embedAllDirty   bool
 
 	// alignment dedupe — same shape as embedInFlight; protects against two
@@ -402,6 +410,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("DELETE /api/bookmarks/{id}", s.handleDeleteBookmark)
 	mux.HandleFunc("GET /api/works/{id}/export.abook", s.handleExportAbook)
 	mux.HandleFunc("POST /api/export-all", s.handleExportAll)
+	mux.HandleFunc("GET /api/export-all/status", s.handleExportAllStatus)
 	mux.HandleFunc("GET /api/exports", s.handleListExports)
 	mux.HandleFunc("GET /api/exports/{file}", s.handleGetExport)
 	mux.HandleFunc("POST /api/import", s.handleImportAbook)
@@ -2085,25 +2094,70 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, tmpPath)
 }
 
-// handleExportAll regenerates the derived v2 .abook set for every aligned
-// work into {libraryDir}/exports/<Title> - <Author>.abook (metadata-derived,
-// filesystem-safe; collisions get a " (N)" suffix). Audio is omitted (book.db +
-// manifest + cover only) so a full sweep stays small; audio streams from the
-// server or is pulled separately. The exports dir is cleared first so stale
-// files from prior sweeps (or renamed works) don't linger.
+// handleExportAll regenerates the derived v2 .abook set for every aligned work
+// into {libraryDir}/exports/<Title> - <Author>.abook (metadata-derived,
+// filesystem-safe; collisions get a " (N)" suffix). Audio + the original ebook
+// bundle BY DEFAULT — book.db's alignment is edition-locked to one exact
+// recording + edition, so a .abook without its audio isn't portable. This makes
+// the set multi-GB (accepted). ?audio=0 (or ?lite=1) produces a small text-only
+// set. Because a full sweep with audio is large + slow, it runs in the
+// BACKGROUND (single-flight); the handler returns 202 immediately and progress
+// is available at GET /api/export-all/status.
 func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
+	includeAudio := r.URL.Query().Get("audio") != "0" && r.URL.Query().Get("lite") != "1"
+
+	s.exportAllMu.Lock()
+	if s.exportAllRunning {
+		s.exportAllMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "export-all is already running"})
+		return
+	}
+	s.exportAllRunning = true
+	s.exportAllDone, s.exportAllTotal, s.exportAllAudio = 0, 0, includeAudio
+	s.exportAllMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.exportAllMu.Lock()
+			s.exportAllRunning = false
+			s.exportAllMu.Unlock()
+		}()
+		s.runExportAll(includeAudio)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":        "started",
+		"include_audio": includeAudio,
+		"note":          "running in the background — poll GET /api/export-all/status",
+	})
+}
+
+// handleExportAllStatus reports the background sweep's progress.
+func (s *Server) handleExportAllStatus(w http.ResponseWriter, r *http.Request) {
+	s.exportAllMu.Lock()
+	defer s.exportAllMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running":       s.exportAllRunning,
+		"done":          s.exportAllDone,
+		"total":         s.exportAllTotal,
+		"include_audio": s.exportAllAudio,
+	})
+}
+
+// runExportAll performs the sweep (called in a goroutine by handleExportAll).
+func (s *Server) runExportAll(includeAudio bool) {
 	works, err := s.store.ListWorks()
 	if err != nil {
-		writeServerError(w, r, err)
+		applog.Log(applog.LevelError, "server", "", 0, "export-all: list works failed", map[string]any{"error": err.Error()})
 		return
 	}
 	exportDir := filepath.Join(s.LibraryDir, "exports")
 	if err := os.MkdirAll(exportDir, 0755); err != nil {
-		writeServerError(w, r, err)
+		applog.Log(applog.LevelError, "server", "", 0, "export-all: mkdir failed", map[string]any{"error": err.Error()})
 		return
 	}
 	// Clear the previous set first so renamed/removed works don't leave stale
-	// files behind (filenames are metadata-derived now, not work-<id>).
+	// files behind (filenames are metadata-derived, not work-<id>).
 	if old, err := os.ReadDir(exportDir); err == nil {
 		for _, e := range old {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".abook") {
@@ -2112,22 +2166,25 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	usedNames := map[string]bool{} // collision guard within this sweep
-	var exported, skipped, failed int
+	// Pre-count the aligned works for a progress denominator.
+	var candidates []*db.Work
 	for i := range works {
-		wk := &works[i]
-		if abook.SummarizeWork(s.store, wk).SourceKind != "aligned" {
-			skipped++
-			continue
+		if abook.SummarizeWork(s.store, &works[i]).SourceKind == "aligned" {
+			candidates = append(candidates, &works[i])
 		}
-		// GetWork loads the audio/text book rows the carve needs.
+	}
+	s.exportAllMu.Lock()
+	s.exportAllTotal = len(candidates)
+	s.exportAllMu.Unlock()
+
+	usedNames := map[string]bool{}
+	var exported, failed int
+	for _, wk := range candidates {
 		full, err := s.store.GetWork(wk.ID)
 		if err != nil || full == nil {
 			failed++
 			continue
 		}
-		// Meaningful filename "<Title> - <Author>.abook"; disambiguate any
-		// collision with a " (N)" suffix.
 		base := abookBaseName(wk.Title, wk.Author, wk.ID)
 		name := base
 		for n := 2; usedNames[name]; n++ {
@@ -2135,24 +2192,17 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 		}
 		usedNames[name] = true
 		out := filepath.Join(exportDir, name+".abook")
-		// Offline export set (what mobile downloads): no bundled audio, but DO
-		// carry embeddings so on-device semantic Q&A works offline.
-		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: false, IncludeEmbeddings: true}); err != nil {
-			applog.Log(applog.LevelError, "server", "", wk.ID, "export-all: work failed",
-				map[string]any{"error": err.Error()})
+		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true}); err != nil {
+			applog.Log(applog.LevelError, "server", "", wk.ID, "export-all: work failed", map[string]any{"error": err.Error()})
 			failed++
 			continue
 		}
 		exported++
+		s.exportAllMu.Lock()
+		s.exportAllDone = exported
+		s.exportAllMu.Unlock()
 	}
-	applog.Info("server", fmt.Sprintf("export-all: exported=%d skipped=%d failed=%d dir=%s",
-		exported, skipped, failed, exportDir))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"exported": exported,
-		"skipped":  skipped,
-		"failed":   failed,
-		"dir":      exportDir,
-	})
+	applog.Info("server", fmt.Sprintf("export-all: exported=%d failed=%d audio=%v dir=%s", exported, failed, includeAudio, exportDir))
 }
 
 // handleListExports lists the pre-generated v2 .abook set written by
