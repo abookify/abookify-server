@@ -2003,6 +2003,45 @@ func (s *Server) handleSavePosition(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// abookBaseName builds a meaningful, filesystem-safe base name (no extension)
+// for a work's .abook: "<Title> - <Author>", falling back to "work-<id>" when
+// the title is empty. Used by the single-work download + the export-all set so
+// served files are self-describing (not "work-22.abook").
+func abookBaseName(title, author string, workID int64) string {
+	name := strings.TrimSpace(title)
+	if a := strings.TrimSpace(author); a != "" {
+		name += " - " + a
+	}
+	name = sanitizeFilename(name)
+	if name == "" {
+		return fmt.Sprintf("work-%d", workID)
+	}
+	return name
+}
+
+// sanitizeFilename strips characters unsafe on Windows/macOS/Linux, collapses
+// whitespace, drops leading/trailing dots+spaces (Windows), and caps length.
+func sanitizeFilename(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r < 0x20: // control chars
+			b.WriteRune(' ')
+		case r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' ||
+			r == '"' || r == '<' || r == '>' || r == '|':
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Join(strings.Fields(b.String()), " ") // collapse whitespace runs
+	out = strings.Trim(out, " .")
+	if len(out) > 120 {
+		out = strings.Trim(out[:120], " .")
+	}
+	return out
+}
+
 func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimSpace(r.PathValue("id"))
 	workID, err := strconv.ParseInt(idStr, 10, 64)
@@ -2039,15 +2078,7 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	safeName := strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == '"' {
-			return '-'
-		}
-		return r
-	}, work.Title)
-	if !includeAudio {
-		safeName += " (text+sync)"
-	}
+	safeName := abookBaseName(work.Title, work.Author, work.ID)
 
 	w.Header().Set("Content-Type", "application/x-abook+zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.abook"`, safeName))
@@ -2055,9 +2086,11 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleExportAll regenerates the derived v2 .abook set for every aligned
-// work into {libraryDir}/exports/work-{id}.abook. Audio is omitted (book.db +
+// work into {libraryDir}/exports/<Title> - <Author>.abook (metadata-derived,
+// filesystem-safe; collisions get a " (N)" suffix). Audio is omitted (book.db +
 // manifest + cover only) so a full sweep stays small; audio streams from the
-// server or is pulled separately. Idempotent — overwrites existing files.
+// server or is pulled separately. The exports dir is cleared first so stale
+// files from prior sweeps (or renamed works) don't linger.
 func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 	works, err := s.store.ListWorks()
 	if err != nil {
@@ -2069,7 +2102,17 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	// Clear the previous set first so renamed/removed works don't leave stale
+	// files behind (filenames are metadata-derived now, not work-<id>).
+	if old, err := os.ReadDir(exportDir); err == nil {
+		for _, e := range old {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".abook") {
+				os.Remove(filepath.Join(exportDir, e.Name()))
+			}
+		}
+	}
 
+	usedNames := map[string]bool{} // collision guard within this sweep
 	var exported, skipped, failed int
 	for i := range works {
 		wk := &works[i]
@@ -2083,7 +2126,15 @@ func (s *Server) handleExportAll(w http.ResponseWriter, r *http.Request) {
 			failed++
 			continue
 		}
-		out := filepath.Join(exportDir, fmt.Sprintf("work-%d.abook", wk.ID))
+		// Meaningful filename "<Title> - <Author>.abook"; disambiguate any
+		// collision with a " (N)" suffix.
+		base := abookBaseName(wk.Title, wk.Author, wk.ID)
+		name := base
+		for n := 2; usedNames[name]; n++ {
+			name = fmt.Sprintf("%s (%d)", base, n)
+		}
+		usedNames[name] = true
+		out := filepath.Join(exportDir, name+".abook")
 		// Offline export set (what mobile downloads): no bundled audio, but DO
 		// carry embeddings so on-device semantic Q&A works offline.
 		if err := abook.ExportV2(s.store, full, out, s.LibraryDir, abook.ExportOptions{IncludeAudio: false, IncludeEmbeddings: true}); err != nil {
