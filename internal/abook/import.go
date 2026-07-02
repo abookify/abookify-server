@@ -204,6 +204,11 @@ func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) er
 	}
 
 	store.StampVersions(newWorkID, BookDBSchemaVersion)
+	// Preserve the manifest's generation stamp (StampVersions set it to "now"),
+	// so a sideloaded work reports when it was produced — dedupe-by-generation.
+	if manifest.ContentVersion != "" {
+		store.SetContentVersion(newWorkID, manifest.ContentVersion)
+	}
 	log.Printf("abook import: completed %q → work %d (%d books)", manifest.Title, newWorkID, len(bookRemap))
 	return nil
 }

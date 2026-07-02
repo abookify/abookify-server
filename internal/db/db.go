@@ -851,6 +851,15 @@ func (s *Store) StampVersions(workID int64, schemaVersion int) error {
 	return err
 }
 
+// SetContentVersion overrides a work's content_version. Used by .abook import to
+// PRESERVE the generation stamp from the manifest (vs stamping the import time),
+// so dedupe-by-generation works: an imported work reports when it was actually
+// produced, not when it was sideloaded.
+func (s *Store) SetContentVersion(workID int64, contentVersion string) error {
+	_, err := s.db.Exec(`UPDATE works SET content_version = ? WHERE id = ?`, contentVersion, workID)
+	return err
+}
+
 // GetVersions returns the work's (schema_version, content_version) stamps.
 // found is false when no such work exists. This is the read side of the
 // cheap update-check endpoint.
@@ -913,6 +922,25 @@ func (s *Store) FindWorkByAudioDir(dirPrefix string) (int64, error) {
 		return 0, err
 	}
 	return workID, nil
+}
+
+// FindWorkByTitleAuthor returns the id + content_version of the most-recent
+// existing work matching title/author (case-insensitive), or found=false. Used
+// to dedupe .abook imports from a device (an import of a title we already have
+// is a re-generation; content_version decides which is newer).
+func (s *Store) FindWorkByTitleAuthor(title, author string) (id int64, contentVersion string, found bool, err error) {
+	e := s.db.QueryRow(`
+		SELECT id, content_version FROM works
+		WHERE LOWER(title) = LOWER(?) AND LOWER(author) = LOWER(?)
+		ORDER BY id DESC LIMIT 1
+	`, title, author).Scan(&id, &contentVersion)
+	if e == sql.ErrNoRows {
+		return 0, "", false, nil
+	}
+	if e != nil {
+		return 0, "", false, e
+	}
+	return id, contentVersion, true, nil
 }
 
 func (s *Store) ListBooks() ([]Book, error) {

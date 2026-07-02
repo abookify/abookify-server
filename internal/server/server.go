@@ -2270,9 +2270,15 @@ func (s *Server) handleGetExport(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
+// handleImportAbook accepts a .abook upload (multipart "file") from an authed
+// client — the reverse of download — and imports it as a work. It dedupes vs
+// existing works by title+author using content_version: on a match it returns a
+// 409 conflict (with which side is newer) for the client to resolve, unless the
+// caller passes ?on_conflict=replace|skip|new.
 func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
-	// Limit upload to 500MB
-	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
+	// A .abook is multi-GB when audio is bundled (edition-locked), so allow a
+	// generous upload from an authed device.
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<30) // 20 GB
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -2281,12 +2287,11 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	if !strings.HasSuffix(header.Filename, ".abook") {
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".abook") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file must have .abook extension"})
 		return
 	}
 
-	// Save to temp file
 	tmpFile, err := os.CreateTemp("", "abook-import-*.abook")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
@@ -2294,7 +2299,6 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
-
 	if _, err := io.Copy(tmpFile, file); err != nil {
 		tmpFile.Close()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save upload"})
@@ -2302,14 +2306,65 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpFile.Close()
 
+	// Read identity up front to dedupe.
+	manifest, err := abook.ReadManifest(tmpPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a valid .abook: " + err.Error()})
+		return
+	}
+	onConflict := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("on_conflict"))) // prompt(default)|replace|skip|new
+
+	existingID, existingCV, exists, err := s.store.FindWorkByTitleAuthor(manifest.Title, manifest.Author)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	replaced := false
+	if exists && onConflict != "new" {
+		switch onConflict {
+		case "skip":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "skipped", "reason": "a work with this title/author already exists",
+				"existing_work_id": existingID,
+			})
+			return
+		case "replace":
+			if err := s.store.DeleteWork(existingID); err != nil {
+				writeServerError(w, r, err)
+				return
+			}
+			replaced = true
+		default: // "prompt" / unset / unknown → let the client decide.
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"status":                   "conflict",
+				"title":                    manifest.Title,
+				"author":                   manifest.Author,
+				"existing_work_id":         existingID,
+				"existing_content_version": existingCV,
+				"incoming_content_version": manifest.ContentVersion,
+				// content_version is an RFC3339 UTC stamp — lexically sortable.
+				"incoming_newer": manifest.ContentVersion > existingCV,
+				"message":        "resend with ?on_conflict=replace (newer wins), skip, or new",
+			})
+			return
+		}
+	}
+
 	if err := abook.Import(s.store, tmpPath, s.LibraryDir); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-
 	s.Events.Broadcast(Event{Type: "library_updated"})
 	s.EmbedNewWorks() // #159b: embed the imported work without a restart
-	writeJSON(w, http.StatusOK, map[string]string{"status": "imported"})
+
+	newID, _, _, _ := s.store.FindWorkByTitleAuthor(manifest.Title, manifest.Author)
+	status := "imported"
+	if replaced {
+		status = "replaced"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": status, "work_id": newID, "title": manifest.Title,
+	})
 }
 
 // handleSettingsSchema serves the backend-driven settings schema (#202) — the
