@@ -239,6 +239,56 @@ func TestExportV2_Embeddings(t *testing.T) {
 	t.Run("omitted", func(t *testing.T) { check(t, false) })
 }
 
+// The original ebook source file bundles under originals/ by default, and the
+// manifest advertises it (has_original_ebook + originals list + minor v1).
+func TestExportV2_OriginalsBundled(t *testing.T) {
+	dir := t.TempDir()
+	store, work := seedWork(t, dir)
+	defer store.Close()
+	// seedWork registers a text book at dir/book.epub but doesn't write it;
+	// write real bytes so the export bundles the original.
+	epubBytes := []byte("PK\x03\x04 fake epub bytes for fidelity")
+	if err := os.WriteFile(filepath.Join(dir, "book.epub"), epubBytes, 0o644); err != nil {
+		t.Fatalf("write epub: %v", err)
+	}
+
+	out := filepath.Join(dir, "test.abook")
+	if err := ExportV2(store, work, out, dir, ExportOptions{IncludeAudio: false}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	info, err := Inspect(out)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	m := info.Manifest
+	if m.MinorVersion != 1 {
+		t.Errorf("minor_version = %d, want 1", m.MinorVersion)
+	}
+	if !m.HasOriginalEbook || len(m.Originals) != 1 {
+		t.Fatalf("has_original_ebook=%v originals=%+v, want 1 bundled", m.HasOriginalEbook, m.Originals)
+	}
+	if m.Originals[0].Format != "epub" || m.Originals[0].Path != "originals/book.epub" {
+		t.Errorf("original = %+v", m.Originals[0])
+	}
+	if m.HasAudio { // audio omitted for this export
+		t.Error("has_audio should be false (IncludeAudio: false)")
+	}
+	// The bundled file must be present + byte-identical.
+	var found bool
+	for _, f := range info.Files {
+		if f.Name == "originals/book.epub" {
+			found = true
+			if f.Size != int64(len(epubBytes)) {
+				t.Errorf("bundled original size = %d, want %d", f.Size, len(epubBytes))
+			}
+		}
+	}
+	if !found {
+		t.Errorf("originals/book.epub not in the archive; files = %v", info.Files)
+	}
+}
+
 func TestExportV2_RoundTripImport(t *testing.T) {
 	dir := t.TempDir()
 	srcStore, work := seedWork(t, dir)

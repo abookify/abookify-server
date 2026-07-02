@@ -12,8 +12,12 @@ const BookDBSchemaVersion = 1
 // book.db; this file is what mobile reads first to decide install/update.
 type Manifest struct {
 	Format   string `json:"format"`  // always "abook"
-	Version  int    `json:"version"` // container format version (2)
-	WorkID   int64  `json:"work_id"`
+	Version  int    `json:"version"` // container format MAJOR version (2)
+	// MinorVersion is the container format minor version. Additive features bump
+	// it (readers keying off major Version==2 stay compatible). Minor 1 added
+	// bundled original ebook source files under originals/.
+	MinorVersion int   `json:"minor_version,omitempty"`
+	WorkID       int64 `json:"work_id"`
 	Title    string `json:"title"`
 	Author   string `json:"author"`
 	Language string `json:"language"`
@@ -42,13 +46,30 @@ type Manifest struct {
 	// EmbeddingModel is the matching model name. Empty when no embeddings.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 	EmbeddingDim   int    `json:"embedding_dim,omitempty"`
+	// HasAudio / HasOriginalEbook make the container's contents explicit (vs
+	// inferring from the file list). Audio is opt-in (size); the original ebook
+	// source file(s) bundle by default (small, for fidelity + portability).
+	HasAudio         bool           `json:"has_audio"`
+	HasOriginalEbook bool           `json:"has_original_ebook"`
+	// Originals lists the bundled original source files under originals/. The
+	// carved book.db remains the render source; these are the untouched inputs.
+	Originals []OriginalFile `json:"originals,omitempty"`
 	// Checksums maps in-zip asset path -> "sha256:<hex>". Currently book.db.
 	Checksums map[string]string `json:"checksums"`
 }
 
+// OriginalFile is one bundled original source file (an untouched ebook input).
+type OriginalFile struct {
+	Path     string `json:"path"`     // in-zip path, e.g. "originals/frankenstein.epub"
+	Filename string `json:"filename"` // original filename
+	Format   string `json:"format"`   // epub | mobi | azw3 | azw | txt | pdf
+	Origin   string `json:"origin"`   // publisher_epub, user_upload, …
+}
+
 // Assets maps the logical assets to their paths inside the zip.
 type Assets struct {
-	DB       string `json:"db"`        // "book.db"
-	AudioDir string `json:"audio_dir"` // "audio/"
-	Cover    string `json:"cover"`     // "cover.jpg" ("" when absent)
+	DB           string `json:"db"`            // "book.db"
+	AudioDir     string `json:"audio_dir"`     // "audio/"
+	OriginalsDir string `json:"originals_dir"` // "originals/"
+	Cover        string `json:"cover"`         // "cover.jpg" ("" when absent)
 }

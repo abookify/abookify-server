@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -27,6 +28,17 @@ type ExportOptions struct {
 	// IncludeEmbeddings carries chunk embedding blobs in book.db (larger file,
 	// enables future on-device vector search). Omitted by default.
 	IncludeEmbeddings bool
+}
+
+// isOriginalEbookFormat reports whether a text book is an ORIGINAL user-supplied
+// ebook worth bundling (vs a derived transcript / tts-preprocessed text, which
+// live only in book.db).
+func isOriginalEbookFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "epub", "mobi", "azw3", "azw", "txt", "pdf":
+		return true
+	}
+	return false
 }
 
 // Export creates a v2 .abook for a work (audio bundled, embeddings omitted).
@@ -69,6 +81,41 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		}
 	}
 
+	// Bundle the ORIGINAL ebook source file(s) under originals/ by default —
+	// they're small and give fidelity/portability beyond the carved book.db
+	// (which stays the render source). Only real on-disk, visible, original
+	// ebook formats (not derived transcripts / tts-preprocessed text).
+	type origAsset struct{ srcPath, zipPath string }
+	var origAssets []origAsset
+	var origManifest []OriginalFile
+	usedOrig := map[string]bool{}
+	for i := range work.TextFiles {
+		bk := &work.TextFiles[i]
+		if bk.Path == "" || bk.Visibility == "internal" || !isOriginalEbookFormat(bk.Format) {
+			continue
+		}
+		if _, err := os.Stat(bk.Path); err != nil {
+			continue // generated / missing — nothing to bundle
+		}
+		base := sanitizeFilename(filepath.Base(bk.Filename))
+		if base == "" {
+			base = fmt.Sprintf("book-%d.%s", bk.ID, bk.Format)
+		}
+		zipPath := "originals/" + base
+		for n := 2; usedOrig[zipPath]; n++ { // de-dup identical filenames
+			zipPath = fmt.Sprintf("originals/book-%d-%s", bk.ID, base)
+			if !usedOrig[zipPath] {
+				break
+			}
+			_ = n
+		}
+		usedOrig[zipPath] = true
+		origAssets = append(origAssets, origAsset{srcPath: bk.Path, zipPath: zipPath})
+		origManifest = append(origManifest, OriginalFile{
+			Path: zipPath, Filename: bk.Filename, Format: bk.Format, Origin: bk.Origin,
+		})
+	}
+
 	// Build book.db in a temp file, then stream it into the zip.
 	tmpDB, err := os.CreateTemp("", "abook-book-*.db")
 	if err != nil {
@@ -109,24 +156,28 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 	}
 
 	manifest := Manifest{
-		Format:         "abook",
-		Version:        2,
-		WorkID:         work.ID,
-		Title:          work.Title,
-		Author:         work.Author,
-		Language:       language,
-		SourceKind:     sum.SourceKind,
-		SchemaVersion:  BookDBSchemaVersion,
-		ContentVersion: work.ContentVersion,
-		Generator:      generator,
-		CoveragePct:    sum.CoveragePct,
-		AlignMethod:    sum.AlignMethod,
-		AlignUnit:      sum.AlignUnit,
-		Assets:         Assets{DB: "book.db", AudioDir: "audio/"},
-		HasEmbeddings:  opts.IncludeEmbeddings && embedDim > 0,
-		EmbeddingModel: embedModel,
-		EmbeddingDim:   embedDim,
-		Checksums:      map[string]string{"book.db": "sha256:" + hex.EncodeToString(sumHash[:])},
+		Format:           "abook",
+		Version:          2,
+		MinorVersion:     1, // originals/ bundling
+		WorkID:           work.ID,
+		Title:            work.Title,
+		Author:           work.Author,
+		Language:         language,
+		SourceKind:       sum.SourceKind,
+		SchemaVersion:    BookDBSchemaVersion,
+		ContentVersion:   work.ContentVersion,
+		Generator:        generator,
+		CoveragePct:      sum.CoveragePct,
+		AlignMethod:      sum.AlignMethod,
+		AlignUnit:        sum.AlignUnit,
+		Assets:           Assets{DB: "book.db", AudioDir: "audio/", OriginalsDir: "originals/"},
+		HasEmbeddings:    opts.IncludeEmbeddings && embedDim > 0,
+		EmbeddingModel:   embedModel,
+		EmbeddingDim:     embedDim,
+		HasAudio:         len(audioAssets) > 0,
+		HasOriginalEbook: len(origManifest) > 0,
+		Originals:        origManifest,
+		Checksums:        map[string]string{"book.db": "sha256:" + hex.EncodeToString(sumHash[:])},
 	}
 
 	// Cover. Covers live at {libraryDir}/covers/work-{id}.jpg.
@@ -149,6 +200,13 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 	for _, a := range audioAssets {
 		if err := copyFileToZip(w, a.zipPath, a.srcPath); err != nil {
 			return fmt.Errorf("bundle audio %s: %w", a.zipPath, err)
+		}
+	}
+
+	// Original ebook source files.
+	for _, a := range origAssets {
+		if err := copyFileToZip(w, a.zipPath, a.srcPath); err != nil {
+			return fmt.Errorf("bundle original %s: %w", a.zipPath, err)
 		}
 	}
 

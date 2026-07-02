@@ -105,6 +105,20 @@ func printInfo(path string, info *abook.ArchiveInfo) {
 			fmt.Printf("  Alignment   : %.1f%% coverage  (%s/%s)\n", *m.CoveragePct, orDash(deref(m.AlignMethod)), orDash(deref(m.AlignUnit)))
 		}
 		fmt.Printf("  Embeddings  : %s\n", embStr(m))
+		if m.HasAudio {
+			fmt.Printf("  Audio       : bundled\n")
+		} else {
+			fmt.Printf("  Audio       : not bundled (streams from your server)\n")
+		}
+		if m.HasOriginalEbook {
+			names := make([]string, 0, len(m.Originals))
+			for _, o := range m.Originals {
+				names = append(names, o.Filename)
+			}
+			fmt.Printf("  Original    : %s\n", strings.Join(names, ", "))
+		} else {
+			fmt.Printf("  Original    : not bundled\n")
+		}
 		fmt.Printf("  Generator   : %s\n", m.Generator)
 	}
 
