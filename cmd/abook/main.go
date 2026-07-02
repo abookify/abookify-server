@@ -99,8 +99,12 @@ func printInfo(path string, info *abook.ArchiveInfo) {
 	} else {
 		fmt.Printf("  Title       : %s\n", m.Title)
 		fmt.Printf("  Author      : %s\n", m.Author)
-		fmt.Printf("  Format      : abook v%d  (source: %s)\n", m.Version, m.SourceKind)
+		fmt.Printf("  Format      : abook v%d.%d  (source: %s)\n", m.Version, m.MinorVersion, m.SourceKind)
 		fmt.Printf("  Schema/Ver  : book.db v%d  ·  content %s\n", m.SchemaVersion, orDash(m.ContentVersion))
+		fmt.Printf("  Generated   : %s\n", orDash(m.GeneratedAt))
+		if m.Provenance != "" {
+			fmt.Printf("  Provenance  : %s\n", m.Provenance)
+		}
 		if m.CoveragePct != nil {
 			fmt.Printf("  Alignment   : %.1f%% coverage  (%s/%s)\n", *m.CoveragePct, orDash(deref(m.AlignMethod)), orDash(deref(m.AlignUnit)))
 		}

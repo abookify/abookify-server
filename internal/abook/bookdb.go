@@ -3,6 +3,7 @@ package abook
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pj/abookify/internal/db"
@@ -137,6 +138,10 @@ type WorkSummary struct {
 	CoveragePct *float64
 	AlignMethod *string
 	AlignUnit   *string
+	// Provenance is a short human-readable line describing how this generation
+	// was produced (audio source, alignment method, text source) so a .abook is
+	// self-describing about WHICH generation it is.
+	Provenance string
 }
 
 // SummarizeWork derives the listing badge fields (source_kind, coverage,
@@ -178,7 +183,58 @@ func SummarizeWork(store *db.Store, work *db.Work) WorkSummary {
 	case work.HasAudio:
 		sum.SourceKind = "audio-only"
 	}
+	sum.Provenance = provenanceLine(work, sum)
 	return sum
+}
+
+// provenanceLine builds a short human-readable description of how this
+// generation was produced — the audio source (TTS vs narration), the alignment
+// method, and the text source — so a reader can tell a re-TTS'd or re-aligned
+// .abook from an older one at a glance.
+func provenanceLine(work *db.Work, sum WorkSummary) string {
+	var parts []string
+	// Audio source.
+	if work.HasAudio {
+		tts := false
+		for _, b := range work.AudioFiles {
+			if b.Origin == "tts_kokoro" || b.Origin == "tts_preprocessed" {
+				tts = true
+				break
+			}
+		}
+		if tts {
+			parts = append(parts, "TTS-generated audio (Kokoro)")
+		} else {
+			parts = append(parts, "narrated audio")
+		}
+	}
+	// Alignment.
+	if sum.AlignMethod != nil && *sum.AlignMethod != "" {
+		unit := ""
+		if sum.AlignUnit != nil && *sum.AlignUnit != "" {
+			unit = "/" + *sum.AlignUnit
+		}
+		parts = append(parts, *sum.AlignMethod+unit+" alignment")
+	}
+	// Text source (prefer a visible publisher ebook over a transcript).
+	text := ""
+	for _, b := range work.TextFiles {
+		if b.Visibility == "internal" {
+			continue
+		}
+		switch b.Origin {
+		case "publisher_epub", "publisher_mobi", "publisher_pdf", "user_upload":
+			text = "publisher ebook"
+		case "whisper_transcript":
+			if text == "" {
+				text = "Whisper transcript"
+			}
+		}
+	}
+	if text != "" {
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // embeddingDimOf returns the vector dimension of the carved book.db's chunk

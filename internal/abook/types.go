@@ -25,10 +25,16 @@ type Manifest struct {
 	// "text-only" | "audio-only". Drives the library listing badge.
 	SourceKind string `json:"source_kind"`
 	// Version stamps mirrored from works (and into book.db.meta). SchemaVersion
-	// is the book.db shape; ContentVersion is the RFC3339 UTC last-process time.
+	// is the book.db shape; ContentVersion is the RFC3339 UTC last-process time
+	// (bumped on reprocess / re-align / re-TTS), so a consumer can tell which
+	// generation this is. GeneratedAt is when THIS .abook was exported.
 	SchemaVersion  int    `json:"schema_version"`
 	ContentVersion string `json:"content_version"`
-	Generator      string `json:"generator"`
+	GeneratedAt    string `json:"generated_at,omitempty"`
+	// Provenance is a human-readable one-liner describing how this generation was
+	// produced (audio source · alignment · text source).
+	Provenance string `json:"provenance,omitempty"`
+	Generator  string `json:"generator"`
 	// Alignment summary — null when the work has no alignment.
 	CoveragePct *float64 `json:"coverage_pct"`
 	AlignMethod *string  `json:"align_method"`

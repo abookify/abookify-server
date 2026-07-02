@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pj/abookify/internal/db"
@@ -264,6 +265,15 @@ func TestExportV2_OriginalsBundled(t *testing.T) {
 	m := info.Manifest
 	if m.MinorVersion != 1 {
 		t.Errorf("minor_version = %d, want 1", m.MinorVersion)
+	}
+	if m.GeneratedAt == "" {
+		t.Error("generated_at is empty, want an export timestamp")
+	}
+	// seedWork = narrator audio + anchored-dp/word alignment + publisher epub.
+	if !strings.Contains(m.Provenance, "narrated audio") ||
+		!strings.Contains(m.Provenance, "alignment") ||
+		!strings.Contains(m.Provenance, "publisher ebook") {
+		t.Errorf("provenance = %q, want narrated audio · …alignment · publisher ebook", m.Provenance)
 	}
 	if !m.HasOriginalEbook || len(m.Originals) != 1 {
 		t.Fatalf("has_original_ebook=%v originals=%+v, want 1 bundled", m.HasOriginalEbook, m.Originals)

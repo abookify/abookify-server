@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -166,6 +167,8 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		SourceKind:       sum.SourceKind,
 		SchemaVersion:    BookDBSchemaVersion,
 		ContentVersion:   work.ContentVersion,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		Provenance:       sum.Provenance,
 		Generator:        generator,
 		CoveragePct:      sum.CoveragePct,
 		AlignMethod:      sum.AlignMethod,
