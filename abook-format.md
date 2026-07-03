@@ -5,6 +5,8 @@
 
 A lightweight, open container format that bundles an audiobook with its ebook counterpart and word-level synchronization data. Designed to be simple, portable, and tooling-friendly.
 
+> **Try one:** download a free public-domain sample `.abook` from the [showcase](https://abookify.com/showcase) (or the [`showcase-v1` release](https://github.com/abookify/abookify-server/releases/tag/showcase-v1)), then open it in your browser at [abookify.com/open](https://abookify.com/open) or inspect it with `abook info <file>`.
+
 ## Container
 
 An `.abook` file is a **ZIP archive** with a `.abook` extension. Standard ZIP tools can open it.

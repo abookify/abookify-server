@@ -8,6 +8,12 @@ The core of abookify. Runs on the user's desktop, NAS, or home server as a singl
 > self-hosters: install via Docker Compose, add your library, local engines vs.
 > API keys, remote access, and optional auth.
 
+> **Try a sample `.abook`** — grab a free public-domain example (word-level
+> audio↔text read-along) from the **[showcase](https://abookify.com/showcase)**
+> (or the [`showcase-v1` release](https://github.com/abookify/abookify-server/releases/tag/showcase-v1)),
+> then open it in the browser at [abookify.com/open](https://abookify.com/open)
+> or inspect it with `abook info <file>`.
+
 ## Components
 
 ### Core Runtime
