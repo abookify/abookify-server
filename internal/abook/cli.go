@@ -50,6 +50,20 @@ type ArchiveInfo struct {
 	// StandardDeflate is true when every entry uses STORE or DEFLATE — i.e. a
 	// browser (DecompressionStream) or any stock ZIP tool can read it.
 	StandardDeflate bool `json:"standard_deflate"`
+	// Directional is the best word-alignment's both-direction coverage (nil when
+	// the work has no word-level alignment, e.g. a pure TTS transcript).
+	Directional *DirectionalCoverage `json:"directional,omitempty"`
+}
+
+// DirectionalCoverage expresses an alignment's coverage in both directions
+// (mirrors internal/library; the two numbers mean different things):
+//   Quality (audio→ebook) = how much of the narration is backed by ebook text.
+//   Scope   (ebook→audio) = how much of the ebook is actually narrated.
+type DirectionalCoverage struct {
+	QualityPct float64 `json:"quality_pct"` // audio→ebook (aligned_trans/trans)
+	ScopePct   float64 `json:"scope_pct"`   // ebook→audio (aligned_ebook/ebook)
+	EbookWords int     `json:"ebook_words"`
+	TransWords int     `json:"trans_words"`
 }
 
 // Inspect reads a .abook and returns its manifest, file list, and a book.db
@@ -143,7 +157,55 @@ func summarizeBookDB(f *zip.File, info *ArchiveInfo) error {
 	dbc.QueryRow(`SELECT COUNT(*) FROM chunks`).Scan(&info.Chunks)
 	dbc.QueryRow(`SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL AND LENGTH(embedding) > 0`).Scan(&info.EmbeddedChunks)
 	dbc.QueryRow(`SELECT COUNT(*) FROM paragraphs`).Scan(&info.Paragraphs)
+
+	info.Directional = directionalCoverage(dbc)
 	return nil
+}
+
+// directionalCoverage reads the highest-confidence word-unit alignment's
+// payload and forms both-direction coverage. Returns nil when there's no such
+// alignment (e.g. a TTS transcript with only sync data).
+func directionalCoverage(dbc *sql.DB) *DirectionalCoverage {
+	var pairs string
+	err := dbc.QueryRow(`
+		SELECT pairs FROM alignments
+		WHERE unit = 'word' AND pairs != '' AND pairs != '[]'
+		ORDER BY confidence DESC LIMIT 1
+	`).Scan(&pairs)
+	if err != nil || pairs == "" {
+		return nil
+	}
+	var p struct {
+		EbookWords int `json:"ebook_words"`
+		TransWords int `json:"trans_words"`
+		Divergence struct {
+			EbookOnlyWords int `json:"ebook_only_words"`
+			TransOnlyWords int `json:"trans_only_words"`
+		} `json:"divergence"`
+	}
+	if json.Unmarshal([]byte(pairs), &p) != nil || (p.EbookWords == 0 && p.TransWords == 0) {
+		return nil
+	}
+	ratio := func(n, d int) float64 {
+		if d <= 0 {
+			return 0
+		}
+		return float64(n) / float64(d) * 100
+	}
+	alignedEb := p.EbookWords - p.Divergence.EbookOnlyWords
+	alignedTr := p.TransWords - p.Divergence.TransOnlyWords
+	if alignedEb < 0 {
+		alignedEb = 0
+	}
+	if alignedTr < 0 {
+		alignedTr = 0
+	}
+	return &DirectionalCoverage{
+		QualityPct: ratio(alignedTr, p.TransWords),
+		ScopePct:   ratio(alignedEb, p.EbookWords),
+		EbookWords: p.EbookWords,
+		TransWords: p.TransWords,
+	}
 }
 
 // ExtractTo unzips a .abook into outDir (created if absent) and returns the
