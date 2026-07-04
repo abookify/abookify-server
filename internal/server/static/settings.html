@@ -1127,10 +1127,11 @@
       const voice = document.getElementById('tts-voice').value;
       const btn = document.getElementById('preview-btn');
       const audio = document.getElementById('preview-audio');
-      btn.textContent = 'Generating...';
+      btn.textContent = 'Loading…';
       btn.disabled = true;
       try {
-        audio.src = `/api/tts/preview?voice=${encodeURIComponent(voice)}&_=${Date.now()}`;
+        // Pre-generated static clip (cached server-side) — no realtime wait.
+        audio.src = `/api/tts/voices/${encodeURIComponent(voice)}/preview.mp3`;
         audio.style.display = 'block';
         await audio.play();
       } catch (e) {

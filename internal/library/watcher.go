@@ -66,7 +66,7 @@ func NewWatcher(store *db.Store, root string, onChange func()) (*Watcher, error)
 		if d.IsDir() {
 			rel, _ := filepath.Rel(root, path)
 			top := strings.SplitN(rel, string(filepath.Separator), 2)[0]
-			if top == "incoming" || top == "processing" || top == "failed" {
+			if top == "incoming" || top == "processing" || top == "failed" || top == "tts-previews" {
 				return filepath.SkipDir
 			}
 			return fsw.Add(path)

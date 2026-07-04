@@ -87,6 +87,9 @@ type Server struct {
 	exportAllDone    int
 	exportAllTotal   int
 	exportAllAudio   bool
+
+	// serializes on-demand voice-preview generation (see voice_preview.go).
+	voicePreviewMu sync.Mutex
 	embedAllDirty   bool
 
 	// alignment dedupe — same shape as embedInFlight; protects against two
@@ -395,6 +398,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
+	mux.HandleFunc("GET /api/tts/voices/{voice}/preview.mp3", s.handleVoicePreview)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/settings/schema", s.handleSettingsSchema)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
@@ -443,7 +447,14 @@ func (s *Server) ListenAndServe() error {
 }
 
 // SetReady marks the server booted (or draining). GET /api/ready reflects it.
-func (s *Server) SetReady(v bool) { s.ready.Store(v) }
+// On the boot→ready transition it kicks off a background pre-warm of the voice
+// previews so the settings UI shows instant, pre-cached samples.
+func (s *Server) SetReady(v bool) {
+	s.ready.Store(v)
+	if v {
+		go s.prewarmVoicePreviews()
+	}
+}
 
 // Shutdown gracefully drains the HTTP server: stop accepting new connections,
 // let in-flight requests finish (bounded by ctx). Marks not-ready first so a

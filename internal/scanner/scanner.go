@@ -61,6 +61,12 @@ func scan(root string, known map[string]int64) ([]db.Book, error) {
 			return nil
 		}
 		if d.IsDir() {
+			// Server-owned cache dirs under the library root that are NOT user
+			// content (e.g. pre-generated voice-preview clips) must not be
+			// ingested as audiobooks.
+			if d.Name() == "tts-previews" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

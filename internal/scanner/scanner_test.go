@@ -43,6 +43,23 @@ func TestScanIncremental_AllNew(t *testing.T) {
 	}
 }
 
+// TestScanIncremental_SkipsTTSPreviews: server-owned cache dirs under the
+// library root (tts-previews) must not be ingested as audiobooks.
+func TestScanIncremental_SkipsTTSPreviews(t *testing.T) {
+	root := t.TempDir()
+	touch(t, filepath.Join(root, "book.mp3"), 100)
+	touch(t, filepath.Join(root, "tts-previews", "af_heart.v1.mp3"), 40)
+	touch(t, filepath.Join(root, "tts-previews", "am_michael.v1.mp3"), 40)
+
+	books, err := ScanIncremental(root, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(books) != 1 || filepath.Base(books[0].Path) != "book.mp3" {
+		t.Fatalf("want only book.mp3, got %d books: %+v", len(books), books)
+	}
+}
+
 // TestScanIncremental_UnchangedSkipped is the core skip-set assertion:
 // a file already in the DB with matching size must NOT be returned —
 // the existing row is correct, no metadata re-extraction needed.
