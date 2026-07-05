@@ -1134,6 +1134,26 @@
       box-shadow: 0 -10px 30px rgba(60,40,20,0.07);
     }
     .now-playing.visible { display: grid; }
+
+    /* Settings overlay: full-viewport iframe UNDER the now-playing bar so the
+       bar stays docked + audio keeps playing while Settings is open. */
+    #settings-overlay {
+      display: none; position: fixed; inset: 0; z-index: 90;
+      background: var(--bg); flex-direction: column;
+    }
+    #settings-overlay.visible { display: flex; }
+    .settings-overlay-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+    }
+    .settings-overlay-bar button {
+      background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 12px; font-size: 0.9rem; cursor: pointer;
+    }
+    #settings-frame { flex: 1; width: 100%; border: 0; }
+    /* Reserve the bar's height so the floating now-playing bar doesn't cover
+       Settings' own bottom controls while something is playing. */
+    body.np-active #settings-frame { margin-bottom: var(--np-height); }
     .np-bigplay {
       background: var(--accent); color: #fff;
       border: none; border-radius: 50%;
@@ -1674,7 +1694,7 @@
     <div style="display:flex; align-items:center; gap:1.5rem;">
       <div class="status"><span class="dot"></span><span id="status-text">connecting...</span></div>
       <a href="#" onclick="openSystemConsole(event)" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem;" title="System console — recent logs (#214)">Console</a>
-      <a href="/settings.html" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem;">Settings</a>
+      <a href="/settings.html" onclick="openSettings(); return false;" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem;">Settings</a>
     </div>
   </header>
 
@@ -1768,6 +1788,19 @@
     </form>
   </div>
   <audio id="audio-player" preload="auto" style="display:none;"></audio>
+
+  <!-- Settings as an in-page overlay (iframe) so opening Settings never unloads
+       this page — audio keeps playing and the now-playing bar (z-index 100)
+       stays docked above it (overlay is z-index 90). Replaces the full-page
+       navigation to /settings.html that used to stop playback (bug: the bar +
+       audio vanished when you went to Settings). -->
+  <div id="settings-overlay">
+    <div class="settings-overlay-bar">
+      <button type="button" onclick="closeSettings()" aria-label="Back to library">&larr; Back</button>
+      <strong>Settings</strong>
+    </div>
+    <iframe id="settings-frame" title="Settings"></iframe>
+  </div>
 
   <!-- Ebook overlay: docked above the now-playing bar, resizable via top grip,
        can be maximized to cover everything except the bar, hidden via ✕.
@@ -2487,7 +2520,7 @@
             <button class="ai-launch-btn" onclick="openAITools(${work.id})">${llmConfigured ? '&#10022; Recap &amp; ask about this book' : '&#10022; Open AI tools'}</button>
             <div class="qa-hint">${llmConfigured
               ? 'Spoiler-aware recap and Q&amp;A, in the reader.'
-              : 'Add an AI provider in <a href="/settings.html">Settings</a> for recaps + Q&amp;A.'}</div>
+              : 'Add an AI provider in <a href="/settings.html" onclick="openSettings(); return false;">Settings</a> for recaps + Q&amp;A.'}</div>
           </div>` : ''}
         </div>`;
     }
@@ -2505,7 +2538,7 @@
           <div class="qa-header">&#10022; AI tools</div>
           <div style="padding:0.9rem 1rem; font-size:0.82rem; color:var(--text-muted); text-align:center;">
             ✨ Recap + natural-language Q&amp;A need an AI provider.
-            <a href="/settings.html" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
+            <a href="/settings.html" onclick="openSettings(); return false;" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
           </div></div>`;
       }
       const textFiles = work.text_files || [];
@@ -4480,6 +4513,49 @@
         resumeIfSaved(currentWorkId);
       } catch {}
     }
+
+    // Flush the latest playback position on any page-hide (navigating away to
+    // settings.html, tab close, backgrounding) via sendBeacon, which survives
+    // an unload where the async savePosition() fetch would be dropped. Without
+    // this the last up-to-10s of listening was lost when leaving the page, so a
+    // reopen didn't resume where you were.
+    function flushPositionBeacon() {
+      const player = document.getElementById('audio-player');
+      if (!currentWorkId || !currentPlayingId || !player.src || !(player.currentTime > 0)) return;
+      const body = JSON.stringify({
+        book_id: currentPlayingId,
+        file_index: currentAudioIndex,
+        position_secs: player.currentTime,
+      });
+      try {
+        navigator.sendBeacon(`/api/works/${currentWorkId}/position`, new Blob([body], { type: 'application/json' }));
+      } catch {}
+    }
+    window.addEventListener('pagehide', flushPositionBeacon);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPositionBeacon();
+    });
+
+    // Settings opens as an in-page iframe overlay instead of navigating to
+    // /settings.html, so this page (and its audio element) is never unloaded —
+    // playback continues and the now-playing bar stays docked over the overlay.
+    function openSettings() {
+      const ov = document.getElementById('settings-overlay');
+      const fr = document.getElementById('settings-frame');
+      if (!fr.getAttribute('src')) fr.setAttribute('src', '/settings.html');
+      // Reserve room for the floating bar if something is playing.
+      const npVisible = document.getElementById('now-playing').classList.contains('visible');
+      document.body.classList.toggle('np-active', npVisible);
+      ov.classList.add('visible');
+    }
+    function closeSettings() {
+      document.getElementById('settings-overlay').classList.remove('visible');
+    }
+    // settings.html's own "← Library" link posts this when it's framed, so its
+    // internal back button closes the overlay instead of loading index in the frame.
+    window.addEventListener('message', (e) => {
+      if (e.origin === location.origin && e.data === 'close-settings') closeSettings();
+    });
 
     // Resume playback indicator. Re-renders in place so the timestamp stays
     // fresh as playback advances. Call after every savePosition().

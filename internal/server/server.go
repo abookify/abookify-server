@@ -1310,11 +1310,15 @@ func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request
 		return
 	}
 	coversDir := filepath.Join(s.LibraryDir, "covers")
+	// First delete any corrupt/truncated covers so the backfill below refetches
+	// them (fixes half-drawn covers from earlier partial downloads).
+	_, purged := library.SweepCorruptCovers(coversDir)
 	var fetched, missing, skipped int
 	for i := range works {
 		wk := &works[i]
-		if _, err := os.Stat(filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", wk.ID))); err == nil {
-			continue // already has a cover
+		coverFile := filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", wk.ID))
+		if fi, err := os.Stat(coverFile); err == nil && fi.Size() > 0 {
+			continue // already has a (valid — corrupt ones were just purged) cover
 		}
 		if strings.TrimSpace(wk.Title) == "" {
 			skipped++
@@ -1326,11 +1330,11 @@ func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request
 			missing++
 		}
 	}
-	applog.Info("server", fmt.Sprintf("fetch-missing-covers: fetched=%d not_found=%d skipped=%d", fetched, missing, skipped))
-	if fetched > 0 && s.Events != nil {
+	applog.Info("server", fmt.Sprintf("fetch-missing-covers: purged_corrupt=%d fetched=%d not_found=%d skipped=%d", purged, fetched, missing, skipped))
+	if (fetched > 0 || purged > 0) && s.Events != nil {
 		s.Events.Broadcast(Event{Type: "library_updated"})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"fetched": fetched, "not_found": missing, "skipped": skipped})
+	writeJSON(w, http.StatusOK, map[string]any{"purged_corrupt": purged, "fetched": fetched, "not_found": missing, "skipped": skipped})
 }
 
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {

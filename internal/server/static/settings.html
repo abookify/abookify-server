@@ -217,9 +217,20 @@
 </head>
 <body>
   <header>
-    <a href="/">&larr; Library</a>
+    <a href="/" id="back-library">&larr; Library</a>
     <h1>Settings</h1>
   </header>
+  <script>
+    // When embedded as the in-page Settings overlay (index.html opens this in an
+    // iframe so audio keeps playing), the "← Library" link closes the overlay
+    // instead of loading index.html inside the frame.
+    if (window.parent !== window) {
+      document.getElementById('back-library').addEventListener('click', (e) => {
+        e.preventDefault();
+        window.parent.postMessage('close-settings', location.origin);
+      });
+    }
+  </script>
 
   <div class="settings">
     <div class="section">
