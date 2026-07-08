@@ -200,7 +200,7 @@ func SettingsSchema() SettingsSchemaDoc {
 				Key:          "cast",
 				Title:        "Cast of Characters",
 				Experimental: true,
-				Description:  "Extracts a named cast from a work's EPUB via the optional booknlp service (docker compose --profile booknlp up -d booknlp). Extraction quality varies by genre/translation and aliases may over-split — hence the experimental label. Disabled by default; cast panels stay hidden until enabled.",
+				Description:  "Detects a named cast of characters from a work's EPUB. Enable it from the cast panel on any ebook — the server downloads (~6.5 GB) and runs the engine on demand, then stops it after it's idle to free memory. Extraction quality varies by genre/translation and aliases may over-split — hence the experimental label.",
 				Fields: []SettingsField{{
 					Key: "booknlp_enabled", Label: "Enable BookNLP cast extraction", Type: "bool", Default: "false",
 				}},

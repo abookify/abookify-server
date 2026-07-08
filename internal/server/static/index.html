@@ -3633,30 +3633,80 @@
       if (toolbar) toolbar.style.display = '';
     }
 
-    // Load + render a work's cast (experimental). Shows the panel only when
-    // there's a cast OR the feature is enabled (so the extract button is
-    // reachable); otherwise stays hidden so disabled installs see nothing.
+    // Cast engine (BookNLP) lifecycle in the UI — never shows a docker command.
+    // The panel offers an "Enable" that asks the server to START the engine,
+    // polls until it's ready, then extracts. The server idle-stops it later.
+    const castPollTimers = {};
+
+    function castEmptyFlow(workId, s) {
+      s = s || { state: 'disabled', download_gb: 6.5, ram_gb: 7 };
+      switch (s.state) {
+        case 'ready':
+        case 'stopped':
+          return `<span class="cast-empty">No cast extracted yet.</span>
+            <button class="cast-extract-btn" onclick="extractCast(${workId})">Extract cast</button>`;
+        case 'starting':
+          return `<span class="cast-empty">⏳ Starting the cast engine… the first run downloads it (~${s.download_gb} GB), so this can take a few minutes.</span>`;
+        case 'unavailable':
+          return `<span class="cast-empty">${escapeHtml(s.message || 'Cast extraction isn\'t available on this server.')}</span>`;
+        case 'error':
+          return `<span class="cast-empty">${escapeHtml(s.message || 'The cast engine failed to start.')}</span>
+            <button class="cast-extract-btn" onclick="enableCast(${workId})">Try again</button>`;
+        default: // disabled
+          return `<span class="cast-empty">Detect the named characters in this book.</span>
+            <button class="cast-extract-btn" onclick="enableCast(${workId})">Enable cast extraction — downloads ~${s.download_gb} GB, uses ~${s.ram_gb} GB RAM</button>`;
+      }
+    }
+
+    // Turn the engine on + start it (server-side), then poll to ready and
+    // extract. One click from "Enable" to a rendered cast.
+    async function enableCast(workId) {
+      const list = document.getElementById('cast-list-' + workId);
+      if (list) list.innerHTML = `<span class="cast-empty">⏳ Starting the cast engine… the first run downloads it (~6.5 GB).</span>`;
+      try {
+        const s = await fetch('/api/booknlp/enable', { method: 'POST' }).then(r => r.json());
+        if (s.state === 'ready') { extractCast(workId); return; }
+        if (s.state === 'unavailable' || s.state === 'error') { if (list) list.innerHTML = castEmptyFlow(workId, s); return; }
+        scheduleCastPoll(workId);
+      } catch (e) {
+        if (list) list.innerHTML = `<span class="cast-empty">Couldn't enable cast extraction: ${escapeHtml(e.message)}</span>`;
+      }
+    }
+
+    // Poll the engine status while it starts; when ready, extract; on failure,
+    // fall back to the enable flow.
+    function scheduleCastPoll(workId) {
+      clearTimeout(castPollTimers[workId]);
+      castPollTimers[workId] = setTimeout(async () => {
+        try {
+          const s = await fetch('/api/booknlp/status').then(r => r.json());
+          const list = document.getElementById('cast-list-' + workId);
+          if (s.state === 'ready') { extractCast(workId); return; }
+          if (s.state === 'error' || s.state === 'unavailable') { if (list) list.innerHTML = castEmptyFlow(workId, s); return; }
+          scheduleCastPoll(workId); // still starting
+        } catch { scheduleCastPoll(workId); }
+      }, 4000);
+    }
+
+    // Load + render a work's cast (experimental, EPUB works only). Always shows
+    // the panel now so the enable flow is discoverable; the enable/extract UI
+    // is driven by the engine lifecycle state.
     async function loadCast(workId) {
       const panel = document.getElementById('cast-panel-' + workId);
       const list = document.getElementById('cast-list-' + workId);
       if (!panel || !list) return;
       try {
-        const data = await fetch(`/api/works/${workId}/cast`).then(r => r.json());
+        const [data, status] = await Promise.all([
+          fetch(`/api/works/${workId}/cast`).then(r => r.json()),
+          fetch('/api/booknlp/status').then(r => r.json()).catch(() => ({ state: 'disabled', download_gb: 6.5, ram_gb: 7 })),
+        ]);
         const chars = data.characters || [];
-        if (chars.length === 0 && !data.enabled) {
-          panel.style.display = 'none';   // feature off, nothing to show
-          return;
-        }
         panel.style.display = '';
         if (chars.length === 0) {
-          // Feature on but nothing extracted yet. Offer the trigger only when
-          // the service is actually reachable (data.enabled folds in the
-          // booknlp_enabled flag AND a configured service URL).
-          list.innerHTML =
-            `<span class="cast-empty">No cast extracted yet.</span>` +
-            (data.enabled
-              ? `<button class="cast-extract-btn" onclick="extractCast(${workId})">Extract cast</button>`
-              : `<span class="cast-empty">Enable BookNLP in Settings and start its service to extract.</span>`);
+          // No cast yet — the lifecycle-aware enable/extract flow (never a
+          // docker command).
+          list.innerHTML = castEmptyFlow(workId, status);
+          if (status.state === 'starting') scheduleCastPoll(workId);
           return;
         }
         // Name plus mention count and any aliases (over and above the canonical
@@ -3682,7 +3732,7 @@
           </div>`;
         }).join('');
         const note = `<p class="cast-note">Auto-detected from the ebook text — ${chars.length} character${chars.length === 1 ? '' : 's'}. Names and aliases may be imperfect (aliases can over-split).</p>`;
-        const reextract = data.enabled
+        const reextract = status.enabled
           ? `<div style="margin-top:8px;"><button class="cast-extract-btn" onclick="extractCast(${workId})">Re-extract</button></div>` : '';
         list.innerHTML = note + rows + reextract;
       } catch {
@@ -3698,10 +3748,14 @@
         if (!res.ok) {
           const j = await res.json().catch(() => ({}));
           const msg = j.error || ('HTTP ' + res.status);
-          // 503 = the (opt-in, experimental) BookNLP service isn't running.
-          // Render the actionable message softly, not as a hard failure.
-          const prefix = res.status === 503 ? '' : 'Extraction failed: ';
-          if (list) list.innerHTML = `<span class="cast-empty">${prefix}${escapeHtml(msg)}</span>
+          if (res.status === 503) {
+            // Engine is (re)starting — the server kicked off a start; show the
+            // friendly message and poll until it's ready, then extract.
+            if (list) list.innerHTML = `<span class="cast-empty">${escapeHtml(msg)}</span>`;
+            scheduleCastPoll(workId);
+            return;
+          }
+          if (list) list.innerHTML = `<span class="cast-empty">Extraction failed: ${escapeHtml(msg)}</span>
             <button class="cast-extract-btn" onclick="extractCast(${workId})">Retry</button>`;
           return;
         }

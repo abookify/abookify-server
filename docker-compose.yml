@@ -9,6 +9,11 @@ services:
       - go-build-cache:/root/.cache/go-build
       - ./testdata/library:/library
       - generated-audio:/generated
+      # Lets the server start/stop the optional BookNLP cast engine on demand
+      # (in-UI enable + idle auto-stop) via the compose profile. The server runs
+      # as root in-container so it can use the socket; keep /api auth on when the
+      # server is exposed — socket access is host-root equivalent.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - ABOOKIFY_LIBRARY_PATH=/library
       - ABOOKIFY_DB_PATH=/app/data/abookify.db

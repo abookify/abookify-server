@@ -44,6 +44,9 @@ type Server struct {
 	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
 	// Empty when the booknlp compose profile isn't running.
 	BookNLPURL string
+	// bn manages the BookNLP engine lifecycle (in-UI enable → server starts the
+	// service; idle auto-stop). See booknlp_lifecycle.go.
+	bn *bnManager
 
 	// Version is the build version (stamped via -ldflags), surfaced on
 	// /api/info + /api/ready so the desktop shell can show + update-check.
@@ -311,6 +314,7 @@ func New(store *db.Store, port string) *Server {
 		embedInFlight: make(map[int64]bool),
 		alignInFlight: make(map[int64]bool),
 	}
+	s.bn = newBNManager(s)
 
 	// Drop any login tokens that expired while the server was down (#197).
 	// Per-request validation also purges lazily; this keeps the table tidy.
@@ -347,6 +351,9 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/works/{id}/word-sync/{bookId}/{chapterIdx}", s.handleEbookWordSync)
 	mux.HandleFunc("GET /api/works/{id}/cast", s.handleGetCast)
 	mux.HandleFunc("POST /api/works/{id}/extract-cast", s.handleExtractCast)
+	mux.HandleFunc("GET /api/booknlp/status", s.handleBookNLPStatus)
+	mux.HandleFunc("POST /api/booknlp/enable", s.handleBookNLPEnable)
+	mux.HandleFunc("POST /api/booknlp/disable", s.handleBookNLPDisable)
 	mux.HandleFunc("GET /api/works/{id}/cover", s.handleWorkCover)
 	mux.HandleFunc("POST /api/works/{id}/fetch-cover", s.handleFetchCover)
 	mux.HandleFunc("POST /api/covers/fetch-missing", s.handleFetchMissingCovers)
@@ -899,23 +906,24 @@ func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, _ := s.store.GetAllSettings()
 	if settings["booknlp_enabled"] != "true" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cast extraction is disabled (enable the experimental BookNLP feature in Settings)"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Cast extraction is off. Turn it on with the Enable button in the cast panel."})
 		return
 	}
 	if s.BookNLPURL == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "booknlp service not configured — start the booknlp compose profile"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "The cast engine isn't available on this server."})
 		return
 	}
 	n, err := library.ExtractCast(s.store, s.BookNLPURL, id)
 	if err != nil {
-		// The BookNLP service is opt-in and usually not running. A
-		// connection-level failure must fail SOFT (the feature is
-		// experimental) — a clear, actionable 503, never a bare 500.
+		// The engine is opt-in and may be stopped (idle auto-stop). Fail SOFT:
+		// kick off a start in the background and tell the user to retry — never
+		// surface a docker command.
 		if errors.Is(err, library.ErrBookNLPUnreachable) {
-			applog.Log(applog.LevelWarn, "booknlp", "", id, "cast extraction unavailable — service not running",
+			applog.Log(applog.LevelWarn, "booknlp", "", id, "cast extraction — engine not running, starting it",
 				map[string]any{"error": err.Error()})
+			go s.bn.enable() // idempotent: (re)start the stopped engine
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "Cast extraction (experimental) needs the BookNLP service — start it: docker compose --profile booknlp up -d booknlp",
+				"error": "The cast engine is starting up (the first run downloads it). Give it a moment and try again.",
 			})
 			return
 		}
@@ -930,10 +938,28 @@ func (s *Server) handleExtractCast(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	s.bn.touch() // successful extraction — keep the engine warm + re-arm idle-stop
 	if s.Events != nil {
 		s.Events.Broadcast(Event{Type: "library_updated"})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"characters": n})
+}
+
+// handleBookNLPStatus reports the cast-engine lifecycle state for the in-UI
+// enable flow (replaces surfacing a docker command).
+func (s *Server) handleBookNLPStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.bn.status())
+}
+
+// handleBookNLPEnable turns the experimental cast engine on and starts it
+// (async; the server drives the compose profile). Auth-gated like all /api.
+func (s *Server) handleBookNLPEnable(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.bn.enable())
+}
+
+// handleBookNLPDisable stops the cast engine and clears the feature flag.
+func (s *Server) handleBookNLPDisable(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.bn.disable())
 }
 
 // stampWork records that a work's exportable data just changed, bumping its

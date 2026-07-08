@@ -42,8 +42,13 @@ func TestHandleExtractCastServiceDown(t *testing.T) {
 	}
 	var out map[string]string
 	json.Unmarshal(rec.Body.Bytes(), &out)
-	if !strings.Contains(out["error"], "BookNLP") || !strings.Contains(out["error"], "--profile booknlp") {
+	// New contract: the engine (re)starts on demand, so the message is friendly
+	// + actionable ("starting… try again") and NEVER surfaces a docker command.
+	if !strings.Contains(strings.ToLower(out["error"]), "starting") {
 		t.Errorf("error message not actionable: %q", out["error"])
+	}
+	if strings.Contains(strings.ToLower(out["error"]), "docker") {
+		t.Errorf("error leaked a docker command to the user: %q", out["error"])
 	}
 	if strings.Contains(out["error"], "internal server error") {
 		t.Errorf("leaked a bare 500 message: %q", out["error"])
