@@ -106,72 +106,121 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		}
 	}
 
-	// Walk spine in reading order
-	var chapters []db.Chapter
-	chapterIdx := 0
-
+	// Concatenate content spine items in reading order, then split on chapter
+	// headings. Some Project Gutenberg EPUBs split files MID-chapter and pack
+	// several chapters per file, so a chapter can span file boundaries — one
+	// chapter per spine file (the old behavior) buried and mislabeled them.
+	// Concatenating first reconstructs whole chapters regardless of where the
+	// publisher cut the files.
+	var book strings.Builder
+	firstHref := ""
 	for _, itemref := range pkg.Spine.Itemrefs {
 		if itemref.Linear == "no" {
 			continue
 		}
-
 		item, ok := manifest[itemref.IDRef]
 		if !ok {
 			continue
 		}
-
 		// Only process XHTML/HTML content
 		if !strings.Contains(item.MediaType, "html") && !strings.Contains(item.MediaType, "xml") {
 			continue
 		}
-
-		filePath := resolvePath(opfDir, item.Href)
-		content, err := readZipFile(&r.Reader, filePath)
+		content, err := readZipFile(&r.Reader, resolvePath(opfDir, item.Href))
 		if err != nil {
 			continue
 		}
+		if firstHref == "" {
+			firstHref = item.Href
+		}
+		book.WriteString(string(content))
+		book.WriteString("\n")
+	}
 
-		rawHTML := string(content)
+	var chapters []db.Chapter
+	chapterIdx := 0
 
-		// Extract text from HTML (for search, alignment, word count)
-		text := htmlToText(rawHTML)
-		text = strings.TrimSpace(text)
+	// Split on chapter headings. nil => no chapter headings detected, so fall
+	// back to the original one-chapter-per-spine-file extraction (correct for
+	// EPUBs that put one chapter per file or use non-standard chapter titles).
+	segments := splitHTMLByHeadings(book.String())
+	if segments == nil {
+		return extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID)
+	}
 
+	for _, seg := range segments {
+		text := strings.TrimSpace(htmlToText(seg.html))
 		if len(text) < 20 {
-			// Skip near-empty pages (title pages, etc.)
+			// Skip near-empty front matter / stray heading fragments
 			continue
 		}
 
-		// Sanitized HTML for rich-text rendering in the reader
-		richHTML := sanitizeHTML(rawHTML)
-
-		// Find title from NCX or extract from content
-		title := ""
-		baseSrc := stripFragment(item.Href)
-		if t, ok := tocTitles[baseSrc]; ok {
-			title = t
+		title := seg.title
+		if title == "" {
+			title = tocTitles[stripFragment(firstHref)]
 		}
+		if title == "" {
+			title = fmt.Sprintf("Chapter %d", chapterIdx+1)
+		}
+
+		chapters = append(chapters, db.Chapter{
+			BookID:      bookID,
+			Index:       chapterIdx,
+			Title:       title,
+			Src:         firstHref,
+			Content:     text,
+			ContentHTML: sanitizeHTML(seg.html),
+			WordCount:   len(strings.Fields(text)),
+		})
+		chapterIdx++
+	}
+
+	return chapters, nil
+}
+
+// extractPerSpineFile is the original one-chapter-per-spine-file extraction,
+// used as a fallback for EPUBs where no chapter headings are detected.
+func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]manifestItem, opfDir string, tocTitles map[string]string, bookID int64) ([]db.Chapter, error) {
+	var chapters []db.Chapter
+	chapterIdx := 0
+	for _, itemref := range pkg.Spine.Itemrefs {
+		if itemref.Linear == "no" {
+			continue
+		}
+		item, ok := manifest[itemref.IDRef]
+		if !ok {
+			continue
+		}
+		if !strings.Contains(item.MediaType, "html") && !strings.Contains(item.MediaType, "xml") {
+			continue
+		}
+		content, err := readZipFile(r, resolvePath(opfDir, item.Href))
+		if err != nil {
+			continue
+		}
+		rawHTML := string(content)
+		text := strings.TrimSpace(htmlToText(rawHTML))
+		if len(text) < 20 {
+			continue
+		}
+		title := tocTitles[stripFragment(item.Href)]
 		if title == "" {
 			title = extractFirstHeading(rawHTML)
 		}
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", chapterIdx+1)
 		}
-
-		wordCount := len(strings.Fields(text))
-
 		chapters = append(chapters, db.Chapter{
 			BookID:      bookID,
 			Index:       chapterIdx,
 			Title:       title,
 			Src:         item.Href,
 			Content:     text,
-			ContentHTML: richHTML,
-			WordCount:   wordCount,
+			ContentHTML: sanitizeHTML(rawHTML),
+			WordCount:   len(strings.Fields(text)),
 		})
 		chapterIdx++
 	}
-
 	return chapters, nil
 }
 
@@ -324,7 +373,55 @@ func htmlToText(raw string) string {
 	return strings.Join(result, "\n")
 }
 
-var headingRe = regexp.MustCompile(`(?i)<h[1-3][^>]*>(.*?)</h[1-3]>`)
+var headingRe = regexp.MustCompile(`(?is)<h[1-3][^>]*>(.*?)</h[1-3]>`)
+
+type htmlSegment struct {
+	title string
+	html  string
+}
+
+// A heading whose text names a chapter: a chapter-word prefix, a bare roman
+// numeral, or a bare number. Front-matter/illustration/section headings
+// ("Preface", "Marley's Ghost", "The Project Gutenberg eBook…") don't match,
+// so we only split on real chapter boundaries.
+var chapterHeadingTextRe = regexp.MustCompile(`(?i)^\s*((chapter|stave|part|book|letter|canto|act|scene|prologue|epilogue|volume)\b|[ivxlcdm]{1,7}\.?\s*$|\d{1,3}\.?\s*$)`)
+var anyHeadingRe = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`)
+var tagStripRe = regexp.MustCompile(`(?s)<[^>]+>`)
+
+// splitHTMLByHeadings splits (concatenated) book HTML at each CHAPTER heading.
+// Content before the first chapter heading becomes a leading segment (front
+// matter). Returns nil when fewer than 2 chapter headings are present, so the
+// caller falls back to per-spine-file extraction (unchanged behavior).
+//
+// This handles modern Project Gutenberg EPUBs that pack several chapters per
+// XHTML file and split files mid-chapter (e.g. #75011) — a chapter can span
+// file boundaries, which 1-chapter-per-file extraction buried and mislabeled.
+func splitHTMLByHeadings(rawHTML string) []htmlSegment {
+	var starts []int
+	for _, m := range anyHeadingRe.FindAllStringSubmatchIndex(rawHTML, -1) {
+		inner := strings.TrimSpace(tagStripRe.ReplaceAllString(rawHTML[m[2]:m[3]], ""))
+		if chapterHeadingTextRe.MatchString(inner) {
+			starts = append(starts, m[0])
+		}
+	}
+	if len(starts) < 2 {
+		return nil
+	}
+	var segs []htmlSegment
+	if starts[0] > 0 {
+		lead := rawHTML[:starts[0]]
+		segs = append(segs, htmlSegment{title: extractFirstHeading(lead), html: lead})
+	}
+	for i, s := range starts {
+		end := len(rawHTML)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		h := rawHTML[s:end]
+		segs = append(segs, htmlSegment{title: extractFirstHeading(h), html: h})
+	}
+	return segs
+}
 
 func extractFirstHeading(html string) string {
 	m := headingRe.FindStringSubmatch(html)
