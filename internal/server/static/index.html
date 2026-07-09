@@ -7368,34 +7368,134 @@
       document.addEventListener('dragover', (e) => e.preventDefault());
       document.addEventListener('drop', async (e) => {
         e.preventDefault();
-        overlay.classList.remove('active');
         dragCounter = 0;
-        const files = e.dataTransfer?.files;
-        if (!files || files.length === 0) return;
-
+        const dt = e.dataTransfer;
         const box = overlay.querySelector('.drop-box');
-        box.innerHTML = `<h2>Uploading ${files.length} file${files.length > 1 ? 's' : ''}...</h2><p>Please wait</p>`;
         overlay.classList.add('active');
+        box.innerHTML = `<h2>Reading dropped items…</h2><p>Scanning folders for audio &amp; ebooks</p>`;
 
-        const form = new FormData();
-        for (const f of files) form.append('files', f);
+        let files;
         try {
-          const res = await fetch('/api/upload', { method: 'POST', body: form });
-          const data = await res.json();
-          box.innerHTML = `<h2>Uploaded ${data.uploaded || 0} file${data.uploaded !== 1 ? 's' : ''}</h2><p>Library rescanning...</p>`;
-          // Wait a moment for the rescan goroutine, then refresh.
-          setTimeout(() => { overlay.classList.remove('active'); loadWorks(); }, 2000);
+          files = await gatherDroppedFiles(dt); // walks folders via the entries API
         } catch (err) {
-          box.innerHTML = `<h2>Upload failed</h2><p>${err.message}</p>`;
-          setTimeout(() => overlay.classList.remove('active'), 3000);
+          return dropError(box, 'Could not read the dropped items: ' + (err.message || err));
         }
-        // Reset box content for next drop.
-        setTimeout(() => {
-          box.innerHTML = `<h2>Drop files to import</h2>
-            <p>Audio: MP3, M4B, M4A, FLAC, AAC &middot; Text: EPUB, MOBI, TXT</p>
-            <p style="margin-top:6px; font-size:0.75rem;">PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" style="color:var(--accent);">Calibre</a>.</p>`;
-        }, 5000);
+        const SUPPORTED = /\.(mp3|m4b|m4a|flac|aac|ogg|opus|epub|mobi|azw3|azw|txt|pdf)$/i;
+        const wanted = files.filter(f => SUPPORTED.test(f.name));
+        if (wanted.length === 0) {
+          return dropError(box, files.length
+            ? `Found ${files.length} item(s) but no supported audio/ebook files.`
+            : 'Nothing to upload — the drop had no readable files.');
+        }
+        await uploadDropped(box, wanted);
       });
+
+      // Walk dropped folders into a flat File[] using webkitGetAsEntry(). A
+      // plain dataTransfer.files read returns the FOLDER as one unreadable
+      // entry (the "uploading 1 file" freeze) — this recurses the tree instead.
+      async function gatherDroppedFiles(dt) {
+        if (!dt) return [];
+        const items = dt.items ? Array.from(dt.items) : [];
+        const entries = items
+          .map(it => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null))
+          .filter(Boolean);
+        if (entries.length === 0) {
+          return dt.files ? Array.from(dt.files) : []; // fallback: flat files only
+        }
+        const out = [];
+        for (const entry of entries) await walkEntry(entry, out);
+        return out;
+      }
+      async function walkEntry(entry, out) {
+        if (entry.isFile) {
+          const f = await new Promise((res, rej) => entry.file(res, rej));
+          out.push(f);
+        } else if (entry.isDirectory) {
+          const reader = entry.createReader();
+          let batch;
+          do { // readEntries returns in batches; loop until it's empty
+            batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+            for (const e of batch) await walkEntry(e, out);
+          } while (batch.length > 0);
+        }
+      }
+
+      // Upload each file on its own with a live progress bar + per-file
+      // success/error, then ONE rescan. Never a silent freeze.
+      async function uploadDropped(box, files) {
+        box.innerHTML = `<h2 id="drop-h">Uploading ${files.length} file${files.length > 1 ? 's' : ''}…</h2>
+          <div id="drop-list" style="max-height:46vh; overflow:auto; text-align:left; margin-top:12px; min-width:min(420px,80vw);"></div>`;
+        const list = box.querySelector('#drop-list');
+        const rows = files.map(f => {
+          const row = document.createElement('div');
+          row.style.cssText = 'margin:7px 0; font-size:0.78rem;';
+          row.innerHTML =
+            `<div style="display:flex; justify-content:space-between; gap:10px;">
+               <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">${escapeHtml(f.name)}</span>
+               <span class="pct" style="color:var(--text-muted); flex:0 0 auto;">0%</span>
+             </div>
+             <div style="height:4px; background:var(--surface-hover); border-radius:2px; overflow:hidden; margin-top:3px;">
+               <div class="bar" style="height:100%; width:0; background:var(--accent); transition:width .15s;"></div>
+             </div>`;
+          list.appendChild(row);
+          return row;
+        });
+
+        let ok = 0, failed = 0;
+        for (let i = 0; i < files.length; i++) {
+          const bar = rows[i].querySelector('.bar'), pct = rows[i].querySelector('.pct');
+          try {
+            await uploadOneFile(files[i], frac => {
+              const p = Math.round(frac * 100);
+              bar.style.width = p + '%'; pct.textContent = p + '%';
+            });
+            bar.style.width = '100%'; bar.style.background = '#2a9d5c';
+            pct.textContent = '✓'; pct.style.color = '#2a9d5c';
+            ok++;
+          } catch (err) {
+            bar.style.background = '#c0392b';
+            pct.textContent = '✗ ' + (err.message || 'failed'); pct.style.color = '#c0392b';
+            failed++;
+          }
+        }
+
+        const h = box.querySelector('#drop-h');
+        h.textContent = `Uploaded ${ok}${failed ? ` · ${failed} failed` : ''} — rescanning library…`;
+        try { await fetch('/api/library/rescan', { method: 'POST' }); } catch {}
+        h.textContent = failed
+          ? `Done — ${ok} uploaded, ${failed} failed. Library updated.`
+          : `Done — ${ok} file${ok !== 1 ? 's' : ''} imported. Library updated.`;
+        setTimeout(() => { overlay.classList.remove('active'); loadWorks(); resetDropBox(box); }, failed ? 4500 : 2200);
+      }
+
+      function uploadOneFile(file, onProgress) {
+        return new Promise((resolve, reject) => {
+          const form = new FormData();
+          form.append('files', file, file.name);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/upload?rescan=0'); // batch: rescan once at the end
+          xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) return resolve();
+            let msg = 'HTTP ' + xhr.status;
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch {}
+            reject(new Error(msg));
+          };
+          xhr.onerror = () => reject(new Error('network error'));
+          xhr.ontimeout = () => reject(new Error('timeout'));
+          xhr.send(form);
+        });
+      }
+
+      function dropError(box, msg) {
+        box.innerHTML = `<h2>Couldn't import</h2><p>${escapeHtml(msg)}</p>`;
+        setTimeout(() => { overlay.classList.remove('active'); resetDropBox(box); }, 4000);
+      }
+      function resetDropBox(box) {
+        box.innerHTML = `<h2>Drop files to import</h2>
+          <p>Audio: MP3, M4B, M4A, FLAC, AAC &middot; Text: EPUB, MOBI, TXT &middot; whole folders OK</p>
+          <p style="margin-top:6px; font-size:0.75rem;">PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" style="color:var(--accent);">Calibre</a>.</p>`;
+      }
     })();
   </script>
 </body>

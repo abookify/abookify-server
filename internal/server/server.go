@@ -1755,7 +1755,10 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
 		return
 	}
-	if err := r.ParseMultipartForm(512 << 20); err != nil { // 512MB cap
+	// 32MB in memory; anything larger spills to temp files so a big multi-file
+	// (e.g. a 380MB audiobook folder) streams to disk instead of buffering in
+	// RAM. No total-size cap here — large audiobook uploads are expected.
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse form: " + err.Error()})
 		return
 	}
@@ -1787,20 +1790,24 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		saved = append(saved, fh.Filename)
 		log.Printf("upload: saved %s (%d bytes)", fh.Filename, fh.Size)
 	}
-	// Trigger a library rescan in the background — same path the
-	// Settings "Rescan now" button uses, so MOBI conversion + sidecar
-	// import + chapter extraction all run on uploaded files for free.
-	go func() {
-		result, err := Rescan(s.store, s.LibraryDir)
-		if err != nil {
-			log.Printf("upload: rescan failed: %v", err)
-			return
-		}
-		log.Printf("upload: rescan complete — %d new/changed, %d new works", result.Scanned, result.NewWorks)
-		if s.Events != nil {
-			s.Events.Broadcast(Event{Type: "library_updated"})
-		}
-	}()
+	// Trigger a library rescan in the background — same path the Settings
+	// "Rescan now" button uses, so MOBI conversion + sidecar import + chapter
+	// extraction all run on uploaded files for free. The web drop uploads each
+	// file with ?rescan=0 and calls POST /api/library/rescan ONCE at the end, so
+	// a multi-file audiobook groups into a single work in one pass.
+	if r.URL.Query().Get("rescan") != "0" {
+		go func() {
+			result, err := Rescan(s.store, s.LibraryDir)
+			if err != nil {
+				log.Printf("upload: rescan failed: %v", err)
+				return
+			}
+			log.Printf("upload: rescan complete — %d new/changed, %d new works", result.Scanned, result.NewWorks)
+			if s.Events != nil {
+				s.Events.Broadcast(Event{Type: "library_updated"})
+			}
+		}()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"uploaded": len(saved), "files": saved})
 }
 
