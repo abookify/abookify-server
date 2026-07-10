@@ -80,6 +80,11 @@ func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 	if err := library.MatchAndCreateWorks(store); err != nil {
 		applog.Warnf("system", "rescan: matching failed: %v", err)
 	}
+	// Re-title any bogus "01"/empty/"imports" works (incl. already-assigned
+	// legacy ones the matcher skips) from their audio directory name.
+	if err := library.HealWorkTitles(store); err != nil {
+		applog.Warnf("system", "rescan: title heal failed: %v", err)
+	}
 	worksAfter, _ := store.ListWorks()
 	for _, wk := range worksAfter {
 		if !beforeIDs[wk.ID] {

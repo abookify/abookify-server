@@ -2,12 +2,61 @@ package library
 
 import (
 	"log"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"github.com/pj/abookify/internal/db"
 )
+
+// HealWorkTitles re-titles works whose title is bogus — empty, "Unknown Title",
+// "imports", or a bare track number ("01") — using the parent DIRECTORY name of
+// their first audio file (or, failing that, the file's base name). Runs on every
+// rescan so an already-assigned bad-title work (which MatchAndCreateWorks skips,
+// since it only touches UNassigned books) still gets fixed. Never overwrites a
+// good, user-meaningful title. This is the fix for the mystery "01" works
+// (untagged single/multi-file audiobooks named 01.mp3, 02.mp3, …).
+func HealWorkTitles(store *db.Store) error {
+	works, err := store.ListWorks()
+	if err != nil {
+		return err
+	}
+	for i := range works {
+		w := &works[i]
+		if !badWorkTitle(w.Title) {
+			continue
+		}
+		title := ""
+		for _, b := range w.AudioFiles {
+			if b.Path == "" {
+				continue
+			}
+			dir := filepath.Base(filepath.Dir(b.Path))
+			if dir != "" && dir != "imports" && dir != "incoming" && dir != "audiobooks" && !looksLikeTrackNumber(dir) {
+				title = dir
+				break
+			}
+		}
+		if title == "" && len(w.AudioFiles) > 0 && w.AudioFiles[0].Filename != "" {
+			base := strings.TrimSuffix(w.AudioFiles[0].Filename, filepath.Ext(w.AudioFiles[0].Filename))
+			if !looksLikeTrackNumber(base) {
+				title = base
+			}
+		}
+		if title != "" && !looksLikeTrackNumber(title) && title != w.Title {
+			if err := store.UpdateWork(w.ID, title, w.Author); err == nil {
+				log.Printf("heal: work %d title %q → %q", w.ID, w.Title, title)
+			}
+		}
+	}
+	return nil
+}
+
+func badWorkTitle(t string) bool {
+	t = strings.TrimSpace(t)
+	return t == "" || t == "Unknown Title" || t == "imports" || looksLikeTrackNumber(t)
+}
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 
