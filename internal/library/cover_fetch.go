@@ -142,6 +142,110 @@ func SweepCorruptCovers(coversDir string) (checked, deleted int) {
 	return checked, deleted
 }
 
+// CoverCandidate is one image option for the metadata editor's cover picker.
+type CoverCandidate struct {
+	ThumbURL string `json:"thumb_url"` // medium, for the grid
+	FullURL  string `json:"full_url"`  // large, saved when picked
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+}
+
+// SearchOpenLibraryCovers returns several candidate covers for a title/author,
+// for the Jellyfin-style picker. Uses OpenLibrary's cover IDs.
+func SearchOpenLibraryCovers(title, author string, limit int) ([]CoverCandidate, error) {
+	if strings.TrimSpace(title) == "" {
+		return nil, fmt.Errorf("title required")
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 12
+	}
+	q := url.Values{}
+	q.Set("title", strings.TrimSpace(title))
+	if strings.TrimSpace(author) != "" {
+		q.Set("author", strings.TrimSpace(author))
+	}
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	q.Set("fields", "title,author_name,cover_i")
+
+	resp, err := olClient.Get("https://openlibrary.org/search.json?" + q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("openlibrary search: HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Docs []struct {
+			Title      string   `json:"title"`
+			AuthorName []string `json:"author_name"`
+			CoverI     int      `json:"cover_i"`
+		} `json:"docs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	out := []CoverCandidate{}
+	seen := map[int]bool{}
+	for _, d := range result.Docs {
+		if d.CoverI <= 0 || seen[d.CoverI] {
+			continue
+		}
+		seen[d.CoverI] = true
+		auth := ""
+		if len(d.AuthorName) > 0 {
+			auth = d.AuthorName[0]
+		}
+		out = append(out, CoverCandidate{
+			ThumbURL: fmt.Sprintf("https://covers.openlibrary.org/b/id/%d-M.jpg", d.CoverI),
+			FullURL:  fmt.Sprintf("https://covers.openlibrary.org/b/id/%d-L.jpg", d.CoverI),
+			Title:    d.Title, Author: auth,
+		})
+	}
+	return out, nil
+}
+
+// FetchCoverToPath downloads coverURL (must be an OpenLibrary covers URL — an
+// SSRF guard, since the server fetches it), validates it's a real image, and
+// writes it atomically to destPath. Used when the user PICKS a candidate.
+func FetchCoverToPath(coverURL, destPath string) error {
+	u, err := url.Parse(coverURL)
+	if err != nil || u.Scheme != "https" || u.Host != "covers.openlibrary.org" {
+		return fmt.Errorf("only covers.openlibrary.org URLs are allowed")
+	}
+	resp, err := olClient.Get(coverURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("fetch cover: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil || len(data) < 1000 {
+		return fmt.Errorf("cover image too small or unreadable")
+	}
+	if !decodeOK(data) {
+		return fmt.Errorf("downloaded cover is not a valid image")
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+	return writeFileAtomic(destPath, data)
+}
+
+// SaveCoverBytes validates raw image bytes (e.g. an uploaded file) and writes
+// them atomically to destPath. Used for "upload your own" in the editor.
+func SaveCoverBytes(data []byte, destPath string) error {
+	if len(data) < 100 || !decodeOK(data) {
+		return fmt.Errorf("not a valid image file")
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+	return writeFileAtomic(destPath, data)
+}
+
 // searchOpenLibrary returns the OLID (OpenLibrary ID) of the best matching
 // edition, or "" if nothing good was found.
 func searchOpenLibrary(title, author string) string {

@@ -28,6 +28,8 @@ type Work struct {
 	// Empty series string = standalone work.
 	Series      string  `json:"series,omitempty"`
 	SeriesIndex float64 `json:"series_index,omitempty"` // supports fractional (e.g. 2.5 for novellas)
+	// Description is a user-editable blurb (metadata editor). Empty by default.
+	Description string `json:"description,omitempty"`
 	// DisplayTextBookID is the user's per-work override of the display
 	// resolver. 0 = no override (resolver picks by OriginAuthority).
 	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
@@ -537,6 +539,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE chapters ADD COLUMN content_html TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN series       TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN series_index REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE works ADD COLUMN description  TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE books ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
@@ -894,6 +897,17 @@ func (s *Store) UpdateWork(id int64, title, author string) error {
 	return nil
 }
 
+// UpdateWorkMeta sets all user-editable metadata fields at once (the metadata
+// editor). Unlike UpdateWork, empty strings ARE written — this is a full save
+// of the form, so a cleared field clears the value.
+func (s *Store) UpdateWorkMeta(id int64, title, author, series string, seriesIndex float64, description string) error {
+	_, err := s.db.Exec(`
+		UPDATE works SET title = ?, author = ?, series = ?, series_index = ?, description = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, title, author, series, seriesIndex, description, id)
+	return err
+}
+
 func (s *Store) AssignBooksToWork(workID int64, bookIDs []int64) error {
 	for _, id := range bookIDs {
 		if _, err := s.db.Exec(`UPDATE books SET work_id = ? WHERE id = ?`, workID, id); err != nil {
@@ -990,7 +1004,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	// ASCII-case-insensitive, and the patterns are mutually exclusive
 	// ("A %" can't match "An "), so order of the WHENs doesn't matter.
 	rows, err := s.db.Query(`
-		SELECT id, title, author, series, series_index, display_text_book_id, schema_version, content_version, created_at, updated_at
+		SELECT id, title, author, series, series_index, description, display_text_book_id, schema_version, content_version, created_at, updated_at
 		FROM works
 		ORDER BY series, series_index,
 			CASE
@@ -1008,7 +1022,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -1045,8 +1059,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, series, series_index, display_text_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, description, display_text_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
