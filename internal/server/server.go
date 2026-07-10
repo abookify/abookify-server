@@ -362,6 +362,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/covers/search", s.handleSearchCovers)
 	mux.HandleFunc("POST /api/works/{id}/cover", s.handleUploadCover)
 	mux.HandleFunc("POST /api/works/{id}/cover/from-url", s.handlePickCover)
+	mux.HandleFunc("DELETE /api/works/{id}/sources/{bookId}", s.handleDeleteSource)
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)

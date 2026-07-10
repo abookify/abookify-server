@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/pj/abookify/internal/applog"
+	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 )
 
@@ -120,6 +121,57 @@ func (s *Server) handlePickCover(w http.ResponseWriter, r *http.Request) {
 	}
 	s.coverUpdated(workID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleDeleteSource removes ONE edition (audio or text book) from a work —
+// used to dedupe a redundant edition or drop an unwanted one. Refuses to remove
+// the work's last source. If the removed text book was the display default, the
+// override is cleared so the resolver re-picks.
+func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	bookID, err := strconv.ParseInt(r.PathValue("bookId"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid book id"})
+		return
+	}
+	work, err := s.store.GetWork(workID)
+	if err != nil || work == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+	// The book must belong to this work, and it can't be the only source left.
+	owned := false
+	total := len(work.AudioFiles) + len(work.TextFiles)
+	for _, b := range append(append([]db.Book{}, work.AudioFiles...), work.TextFiles...) {
+		if b.ID == bookID {
+			owned = true
+		}
+	}
+	if !owned {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that source doesn't belong to this work"})
+		return
+	}
+	if total <= 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "can't remove the work's only source — delete the work instead"})
+		return
+	}
+	if err := s.store.DeleteBook(bookID); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if work.DisplayTextBookID == bookID {
+		s.store.SetDisplayTextBook(workID, 0) // clear the now-dangling override
+	}
+	s.stampWork(workID)
+	applog.Info("server", fmt.Sprintf("removed source %d from work %d", bookID, workID))
+	if s.Events != nil {
+		s.Events.Broadcast(Event{Type: "library_updated"})
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 // coverUpdated notifies clients + logs after a cover changes.

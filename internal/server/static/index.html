@@ -1785,6 +1785,11 @@
         <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Pick a cover (from OpenLibrary):</div>
         <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:8px; max-height:200px; overflow:auto;"></div>
       </div>
+      <!-- Editions: list all audio + text sources in this work, remove extras -->
+      <div id="meta-editions" style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Editions in this work</div>
+        <div id="meta-editions-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+      </div>
       <div id="meta-status" style="font-size:0.75rem; color:var(--text-muted); margin-top:8px; min-height:1em;"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
         <button data-modal-close onclick="closeMetaEditor()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Close</button>
@@ -2490,10 +2495,47 @@
       document.getElementById('meta-cover').src = `/api/works/${workId}/cover?t=${Date.now()}`;
       document.getElementById('meta-cover-grid').style.display = 'none';
       document.getElementById('meta-status').textContent = '';
+      renderEditions(work);
       document.getElementById('meta-dialog').style.display = 'flex';
       setTimeout(() => document.getElementById('meta-title').focus(), 50);
     }
     function closeMetaEditor() { document.getElementById('meta-dialog').style.display = 'none'; }
+
+    // List the work's audio + text editions with a remove action (dedupe /
+    // curate). The last remaining source can't be removed.
+    function renderEditions(work) {
+      const list = document.getElementById('meta-editions-list');
+      const audio = (work.audio_files || []);
+      const text = (work.text_files || []);
+      const rows = [];
+      const fmtRow = (b, kind) => {
+        const label = b.filename || b.title || ('book ' + b.id);
+        const sub = kind === 'audio' ? (b.origin || 'audio') : (b.format || 'text') + ' · ' + (b.origin || '');
+        const total = audio.length + text.length;
+        const rm = total > 1
+          ? `<button class="q-act danger" onclick="removeSource(${work.id}, ${b.id})">Remove</button>`
+          : `<span style="font-size:0.7rem; color:var(--text-muted);">only source</span>`;
+        return `<div style="display:flex; align-items:center; gap:8px; font-size:0.78rem; padding:5px 8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="flex:0 0 auto;">${kind === 'audio' ? '🔊' : '📄'}</span>
+          <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(label)}<span style="color:var(--text-muted);"> — ${escapeHtml(sub)}</span></span>
+          ${rm}</div>`;
+      };
+      for (const b of text) rows.push(fmtRow(b, 'text'));
+      for (const b of audio) rows.push(fmtRow(b, 'audio'));
+      list.innerHTML = rows.join('') || '<span style="font-size:0.75rem; color:var(--text-muted);">No editions.</span>';
+    }
+
+    async function removeSource(workId, bookId) {
+      if (!confirm('Remove this edition from the work? This deletes that source and its chapters (the work + other editions stay).')) return;
+      metaStatus('Removing edition…');
+      const res = await fetch(`/api/works/${workId}/sources/${bookId}`, { method: 'DELETE' });
+      if (!res.ok) { metaStatus('Remove failed: ' + (await metaErr(res)), true); return; }
+      // Refresh works, then re-render the editions list from the updated work.
+      await loadWorks();
+      const work = (allWorks || []).find(w => w.id === workId);
+      if (work) renderEditions(work); else closeMetaEditor();
+      metaStatus('Edition removed.');
+    }
 
     async function saveMeta() {
       const workId = document.getElementById('meta-work-id').value;
@@ -6612,6 +6654,7 @@
     enforceAuthGate();
     loadWorks();
     loadQueue();
+    loadJobs(); // populate the Processing-queue section on load
     applyWaveformVisibility();
 
     // Custom tooltip — delegated event listeners on the document for any
@@ -6883,6 +6926,7 @@
     function handleJobUpdate(job) {
       activeJobs[job.id] = job;
       renderJobsBar(Object.values(activeJobs));
+      renderQueueSection(Object.values(activeJobs)); // live-update the queue section
       // Update generate buttons
       const prefix = job.type === 'tts' ? 'gen-audio-' : 'gen-text-';
       const btn = document.getElementById(prefix + job.work_id);

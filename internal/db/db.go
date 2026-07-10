@@ -2178,6 +2178,40 @@ func (s *Store) MergeWorks(targetID, sourceID int64) error {
 	return tx.Commit()
 }
 
+// DeleteBook removes ONE source (audio or text edition) from a work and
+// cascades all its dependent rows — chapters, chunks, paragraphs, summaries,
+// and any alignments/sync/chapter-links that reference it. Used by the metadata
+// editor's edition management (remove a redundant/unwanted edition) and dedupe.
+func (s *Store) DeleteBook(bookID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		`DELETE FROM chapters   WHERE book_id = ?`,
+		`DELETE FROM chunks     WHERE book_id = ?`,
+		`DELETE FROM paragraphs WHERE book_id = ?`,
+		`DELETE FROM summaries  WHERE book_id = ?`,
+		`DELETE FROM alignments WHERE from_book_id = ? OR to_book_id = ?`,
+		`DELETE FROM sync_data  WHERE audio_book_id = ?`,
+		`DELETE FROM chapter_links WHERE audio_book_id = ? OR text_book_id = ?`,
+		`DELETE FROM books      WHERE id = ?`,
+	}
+	for _, q := range stmts {
+		// pass bookID for every ? placeholder in the statement
+		n := strings.Count(q, "?")
+		args := make([]any, n)
+		for i := range args {
+			args[i] = bookID
+		}
+		if _, err := tx.Exec(q, args...); err != nil {
+			return fmt.Errorf("delete book: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // DeleteWork removes a work and all its associated data.
 func (s *Store) DeleteWork(id int64) error {
 	tx, err := s.db.Begin()
