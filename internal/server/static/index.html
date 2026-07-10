@@ -1602,6 +1602,27 @@
     .job-item.completed { border-color: var(--epub); }
     .job-item.completed .job-spinner { display: none; }
     .job-item.failed { border-color: var(--mp3); }
+
+    /* Processing queue section (elevated from the floating jobs bar) */
+    .queue-section { margin: 0 0 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+    .queue-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 0.85rem; font-weight: 600; color: var(--text); }
+    .queue-head .q-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+    .queue-head .q-dot.idle { background: var(--text-muted); }
+    .queue-body { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .queue-group-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin: 4px 2px 0; }
+    .qjob { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.8rem; }
+    .qjob.running { border-color: var(--accent); }
+    .qjob.failed, .qjob.interrupted, .qjob.cancelled { border-color: var(--mp3); }
+    .qjob.completed { border-color: var(--epub); }
+    .qjob .q-info { flex: 1; min-width: 0; }
+    .qjob .q-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .qjob .q-step { color: var(--text-muted); margin-top: 2px; font-size: 0.74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .qjob .q-bar { width: 120px; height: 5px; background: var(--surface-hover); border-radius: 3px; overflow: hidden; flex: 0 0 auto; }
+    .qjob .q-bar-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
+    .qjob .q-pct { font-size: 0.72rem; color: var(--text-muted); flex: 0 0 auto; min-width: 34px; text-align: right; }
+    .qjob .q-act { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 3px 9px; font-size: 0.72rem; cursor: pointer; flex: 0 0 auto; }
+    .qjob .q-act:hover { border-color: var(--accent); color: var(--accent); }
+    .qjob .q-act.danger:hover { border-color: var(--mp3); color: var(--mp3); }
     .job-item.failed .job-spinner { display: none; }
 
     .empty { text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
@@ -1797,6 +1818,12 @@
     <h2>Library</h2>
     <p class="library-sub">Your books, on your own hardware — read, listen, and follow along.</p>
   </div>
+
+  <!-- Processing queue: the single-worker job pipeline made visible (transcribe/
+       narrate/align run one at a time — this shows what's running, what's next,
+       and what just finished). Hidden when idle. -->
+  <div class="queue-section" id="queue-section" style="display:none;"></div>
+
   <div class="works-list" id="works-list"></div>
 
   <!-- Work-detail view (#213): a separate full-width view that replaces the
@@ -6688,7 +6715,60 @@
         activeJobs = {};
         for (const j of jobs) activeJobs[j.id] = j;
         renderJobsBar(jobs);
+        renderQueueSection(jobs);
       } catch {}
+    }
+
+    // Dedicated processing-queue view — the single-worker pipeline made visible:
+    // running (progress + step/segment + ETA), queued (in order), recent
+    // completed/failed. Cancel a running/queued job, retry a failed one.
+    function renderQueueSection(jobs) {
+      const sec = document.getElementById('queue-section');
+      if (!sec) return;
+      const running = jobs.filter(j => j.status === 'running');
+      const queued = jobs.filter(j => j.status === 'queued');
+      const recent = jobs.filter(j => ['completed', 'failed', 'interrupted', 'cancelled'].includes(j.status))
+        .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 5);
+      if (!running.length && !queued.length && !recent.length) { sec.style.display = 'none'; return; }
+      sec.style.display = 'block';
+      const active = running.length + queued.length;
+
+      const row = (j) => {
+        const work = allWorks.find(w => w.id == j.work_id);
+        const title = (work && work.title) || ('Work ' + j.work_id);
+        const typeLabel = j.type === 'tts' ? '🔊 Narrate (TTS)' : j.type === 'stt' ? '📝 Transcribe' :
+          j.type === 'align' ? '🔗 Align' : (j.type || 'Job');
+        const pct = Math.round((j.progress || 0) * 100);
+        const eta = (j.status === 'running' && j.eta && j.eta !== 'estimating...') ? ' · ' + j.eta : '';
+        const step =
+          j.status === 'queued' ? 'Waiting — the worker runs one job at a time' :
+          j.status === 'failed' ? 'Failed: ' + (j.error || '') :
+          j.status === 'interrupted' ? 'Interrupted: ' + (j.error || 'server restarted') :
+          j.status === 'cancelled' ? (j.current_step || 'Cancelled') :
+          j.status === 'completed' ? 'Done' : (j.current_step || 'Starting…');
+        let actions = '';
+        if (j.status === 'running' || j.status === 'queued') actions = `<button class="q-act danger" onclick="cancelJob('${j.id}')">Cancel</button>`;
+        else if (j.status === 'failed' || j.status === 'interrupted') actions = `<button class="q-act" onclick="retryJob('${j.id}','${j.type}',${j.work_id})">Retry</button><button class="q-act" onclick="dismissJob('${j.id}')" title="Dismiss">&times;</button>`;
+        else actions = `<button class="q-act" onclick="dismissJob('${j.id}')" title="Dismiss">&times;</button>`;
+        const bar = (j.status === 'running')
+          ? `<div class="q-bar"><div class="q-bar-fill" style="width:${pct}%"></div></div><span class="q-pct">${pct}%</span>` : '';
+        return `<div class="qjob ${j.status}">
+          <div class="q-info"><div class="q-title">${typeLabel}: ${escapeHtml(title)}</div>
+          <div class="q-step">${escapeHtml(step)}${eta}</div></div>${bar}${actions}</div>`;
+      };
+
+      let html = `<div class="queue-head"><span class="q-dot ${active ? '' : 'idle'}"></span>Processing queue ${
+        active ? `— ${running.length} running, ${queued.length} queued` : '— idle'}</div><div class="queue-body">`;
+      if (running.length) html += running.map(row).join('');
+      if (queued.length) html += `<div class="queue-group-label">Up next (${queued.length})</div>` + queued.map(row).join('');
+      if (recent.length) html += `<div class="queue-group-label">Recent</div>` + recent.map(row).join('');
+      html += `</div>`;
+      sec.innerHTML = html;
+    }
+
+    async function cancelJob(id) {
+      try { await fetch('/api/jobs/' + id + '/cancel', { method: 'POST' }); } catch {}
+      loadJobs();
     }
 
     function renderJobsBar(jobs) {
@@ -7533,12 +7613,10 @@
         await uploadDropped(box, wanted);
       });
 
-      // Walk dropped folders via webkitGetAsEntry() and EAGERLY read each file's
-      // bytes into an in-memory Blob. The FileSystemEntry/File objects expire
-      // shortly after the drop event, so a lazy read during upload (seconds/
-      // minutes later) returns 0 bytes — the truncated-upload bug. Capturing the
-      // bytes now (fast, disk-bound) makes the upload content-stable. Also keeps
-      // each file's folder-relative path so uploads land in per-work subdirs.
+      // Walk dropped folders via webkitGetAsEntry() and read each file's bytes
+      // into an in-memory Blob (the File objects expire after the drop event, so
+      // we capture content now). Keeps each file's folder-relative path so
+      // uploads land in per-work subdirs.
       async function gatherDroppedFiles(dt, onProgress) {
         const out = [];
         let hadFolder = false, bytes = 0;
@@ -7572,8 +7650,9 @@
         return { items: out, hadFolder };
       }
 
-      // Upload each captured file on its own with a live progress bar + per-file
-      // success/error, then ONE rescan. A failed file shows ✗ LOUDLY.
+      // Upload each captured file with a live progress bar + per-file ✓/✗, then
+      // ONE rescan. A genuinely empty SOURCE file (0 bytes on disk) is labeled
+      // clearly and never posted; other failures show the server's reason.
       async function uploadDropped(box, files) {
         box.innerHTML = `<h2 id="drop-h">Uploading ${files.length} file${files.length > 1 ? 's' : ''}…</h2>
           <div id="drop-list" style="max-height:46vh; overflow:auto; text-align:left; margin-top:12px; min-width:min(420px,80vw);"></div>`;
@@ -7595,18 +7674,19 @@
 
         let ok = 0, failed = 0;
         for (let i = 0; i < files.length; i++) {
-          const bar = rows[i].querySelector('.bar'), pct = rows[i].querySelector('.pct');
+          const item = files[i], bar = rows[i].querySelector('.bar'), pct = rows[i].querySelector('.pct');
+          // Cheap pre-check: a 0-byte source file on disk can't be imported — say
+          // so plainly instead of a generic "upload failed".
+          if (!item.blob || item.blob.size === 0) {
+            bar.style.background = '#c0392b'; pct.textContent = '✗ source file is empty (0 bytes)'; pct.style.color = '#c0392b';
+            failed++; continue;
+          }
           try {
-            await uploadOneFile(files[i], frac => {
-              const p = Math.round(frac * 100);
-              bar.style.width = p + '%'; pct.textContent = p + '%';
-            });
-            bar.style.width = '100%'; bar.style.background = '#2a9d5c';
-            pct.textContent = '✓'; pct.style.color = '#2a9d5c';
+            await uploadOneFile(item, frac => { const p = Math.round(frac * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; });
+            bar.style.width = '100%'; bar.style.background = '#2a9d5c'; pct.textContent = '✓'; pct.style.color = '#2a9d5c';
             ok++;
           } catch (err) {
-            bar.style.background = '#c0392b';
-            pct.textContent = '✗ ' + (err.message || 'failed'); pct.style.color = '#c0392b';
+            bar.style.background = '#c0392b'; pct.textContent = '✗ ' + ((err && err.message) || 'failed'); pct.style.color = '#c0392b';
             failed++;
           }
         }
@@ -7622,6 +7702,7 @@
 
       function uploadOneFile(item, onProgress) {
         return new Promise((resolve, reject) => {
+          if (!item.blob || item.blob.size === 0) return reject(new Error('empty file (read failed)'));
           const form = new FormData();
           form.append('files', item.blob, item.name);
           form.append('relpath', item.path || item.name); // folder-preserving destination

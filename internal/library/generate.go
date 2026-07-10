@@ -53,8 +53,32 @@ type Generator struct {
 	// only emits a structured log on an actual transition (not every
 	// progress tick). Guarded by mu.
 	lastStatus map[string]string
+	// cancelled is the set of job ids the user asked to cancel. The worker
+	// skips a cancelled QUEUED job at dequeue; runSTT/runTTS check it between
+	// chapters to stop a RUNNING job early. Guarded by mu.
+	cancelled map[string]bool
 
 	queue chan queuedJob
+}
+
+// CancelJob marks a job for cancellation. A queued job is skipped when the
+// worker reaches it; a running job stops at its next chapter boundary.
+func (g *Generator) CancelJob(id string) {
+	g.mu.Lock()
+	g.cancelled[id] = true
+	g.mu.Unlock()
+}
+
+func (g *Generator) isCancelled(id string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cancelled[id]
+}
+
+func (g *Generator) clearCancelled(id string) {
+	g.mu.Lock()
+	delete(g.cancelled, id)
+	g.mu.Unlock()
 }
 
 // SetLibraryRoot lets the server inject the library root after the
@@ -89,6 +113,7 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 		onUpdate:     onUpdate,
 		running:      make(map[string]bool),
 		lastStatus:   make(map[string]string),
+		cancelled:    make(map[string]bool),
 		queue:        make(chan queuedJob, 50),
 	}
 
@@ -117,6 +142,14 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 
 func (g *Generator) worker() {
 	for qj := range g.queue {
+		// Skip a job the user cancelled while it was still queued.
+		if g.isCancelled(qj.job.ID) {
+			g.clearCancelled(qj.job.ID)
+			qj.job.Status = "cancelled"
+			qj.job.CurrentStep = "Cancelled before it started"
+			g.updateJob(qj.job)
+			continue
+		}
 		g.setRunning(qj.job.ID, true)
 		qj.job.Status = "running"
 		qj.job.CurrentStep = "Starting..."
@@ -125,6 +158,7 @@ func (g *Generator) worker() {
 		qj.run()
 
 		g.setRunning(qj.job.ID, false)
+		g.clearCancelled(qj.job.ID)
 	}
 }
 
@@ -273,6 +307,12 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice string) {
 	}
 
 	for i, chMeta := range chapters {
+		if g.isCancelled(job.ID) {
+			job.Status = "cancelled"
+			job.CurrentStep = fmt.Sprintf("Cancelled after %d/%d chapters", i, len(chapters))
+			g.updateJob(job)
+			return
+		}
 		job.Progress = float64(i) / float64(len(chapters))
 		job.CurrentStep = fmt.Sprintf("Generating chapter %d/%d: %s", i+1, len(chapters), chMeta.Title)
 		if i > 0 {
@@ -467,6 +507,12 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 	var failedFiles []string
 
 	for i, af := range audioFiles {
+		if g.isCancelled(job.ID) {
+			job.Status = "cancelled"
+			job.CurrentStep = fmt.Sprintf("Cancelled after %d/%d files", i, len(audioFiles))
+			g.updateJob(job)
+			return
+		}
 		if doneIdx[i] {
 			continue // already transcribed in a prior run (#132 resume)
 		}

@@ -399,6 +399,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("GET /api/logs", s.handleListLogs)
 	mux.HandleFunc("GET /api/queue/status", s.handleQueueStatus)
 	mux.HandleFunc("DELETE /api/queue/failed/{name}", s.handleQueueRemoveFailed)
@@ -2110,6 +2111,28 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.DeleteJob(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleCancelJob requests cancellation of a queued or running job. A queued
+// job is marked cancelled immediately (the worker skips it); a running job
+// stops at its next chapter boundary.
+func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.Generator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "generation engine not available"})
+		return
+	}
+	s.Generator.CancelJob(id)
+	// Reflect the intent immediately for a queued job (it hasn't started).
+	if j, _ := s.store.GetJob(id); j != nil && j.Status == "queued" {
+		j.Status = "cancelled"
+		j.CurrentStep = "Cancelled"
+		s.store.UpsertJob(*j)
+		if s.Events != nil {
+			s.Events.Broadcast(Event{Type: "queue_updated"})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
 }
 
 func (s *Server) handleGetPosition(w http.ResponseWriter, r *http.Request) {
