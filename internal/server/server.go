@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -1771,28 +1772,38 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no files provided"})
 		return
 	}
-	importDir := s.LibraryDir + "/imports"
+	importDir := filepath.Join(s.LibraryDir, "imports")
 	if err := os.MkdirAll(importDir, 0755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create imports dir: " + err.Error()})
 		return
 	}
-	var saved []string
-	for _, fh := range files {
-		src, err := fh.Open()
-		if err != nil {
+	// The client sends a folder-preserving relative path per file so each upload
+	// lands in its OWN subdir (→ its own work) instead of a shared flat dir.
+	relpaths := r.MultipartForm.Value["relpath"]
+	var saved, failed []string
+	for i, fh := range files {
+		rel := ""
+		if i < len(relpaths) {
+			rel = relpaths[i]
+		}
+		destPath := safeImportPath(importDir, rel, fh.Filename)
+		if err := saveUploadedFile(fh, destPath); err != nil {
+			// LOUD failure — a truncated/empty write is never reported as success.
+			failed = append(failed, fh.Filename)
+			applog.Log(applog.LevelError, "server", "", 0, "upload: file write failed",
+				map[string]any{"file": fh.Filename, "error": err.Error()})
 			continue
 		}
-		destPath := importDir + "/" + fh.Filename
-		dst, err := os.Create(destPath)
-		if err != nil {
-			src.Close()
-			continue
-		}
-		io.Copy(dst, src)
-		dst.Close()
-		src.Close()
 		saved = append(saved, fh.Filename)
-		log.Printf("upload: saved %s (%d bytes)", fh.Filename, fh.Size)
+		log.Printf("upload: saved %s → %s (%d bytes)", fh.Filename, destPath, fh.Size)
+	}
+	// Per-file requests (the web drop) send one file each — if it failed, return
+	// non-200 so the UI marks that file ✗ rather than silently "uploaded".
+	if len(saved) == 0 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "upload failed — no files were fully written", "failed": failed,
+		})
+		return
 	}
 	// Trigger a library rescan in the background — same path the Settings
 	// "Rescan now" button uses, so MOBI conversion + sidecar import + chapter
@@ -1812,7 +1823,87 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"uploaded": len(saved), "files": saved})
+	writeJSON(w, http.StatusOK, map[string]any{"uploaded": len(saved), "failed": failed, "files": saved})
+}
+
+// safeImportPath resolves a client-supplied relative path to a destination
+// under importDir, PRESERVING folder structure (so each upload becomes its own
+// work) while guarding against path traversal.
+func safeImportPath(importDir, rel, filename string) string {
+	// All-but-last relpath segments are the directory; the file is `filename`.
+	segs := strings.Split(filepath.ToSlash(rel), "/")
+	var dirs []string
+	for _, seg := range segs[:len(segs)-1] {
+		if s := sanitizePathSegment(seg); s != "" && s != "." {
+			dirs = append(dirs, s)
+		}
+	}
+	name := sanitizePathSegment(filename)
+	if name == "" {
+		name = sanitizePathSegment(segs[len(segs)-1])
+	}
+	if name == "" {
+		name = "file"
+	}
+	dest := filepath.Join(append(append([]string{importDir}, dirs...), name)...)
+	absImp, _ := filepath.Abs(importDir)
+	absDest, _ := filepath.Abs(dest)
+	if !strings.HasPrefix(absDest, absImp+string(os.PathSeparator)) {
+		return filepath.Join(importDir, name) // traversal → flatten under imports
+	}
+	return dest
+}
+
+func sanitizePathSegment(s string) string {
+	if s = strings.TrimSpace(s); s == ".." {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r < 0x20, r == '/', r == '\\', r == ':', r == '*', r == '?', r == '"', r == '<', r == '>', r == '|':
+			// drop unsafe chars
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), " .")
+}
+
+// saveUploadedFile writes a multipart file to dest and verifies the FULL content
+// landed (copy error + byte count). An empty or short write removes the partial
+// file and returns an error — a truncated upload must NEVER look like success.
+func saveUploadedFile(fh *multipart.FileHeader, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return err
+	}
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	n, copyErr := io.Copy(dst, src)
+	dst.Sync()
+	closeErr := dst.Close()
+	switch {
+	case copyErr != nil:
+		os.Remove(dest)
+		return fmt.Errorf("copy: %w", copyErr)
+	case closeErr != nil:
+		os.Remove(dest)
+		return closeErr
+	case n == 0:
+		os.Remove(dest)
+		return fmt.Errorf("empty upload (0 bytes)")
+	case fh.Size > 0 && n != fh.Size:
+		os.Remove(dest)
+		return fmt.Errorf("short write: %d of %d bytes", n, fh.Size)
+	}
+	return nil
 }
 
 func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {

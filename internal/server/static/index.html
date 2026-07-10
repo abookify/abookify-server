@@ -7374,54 +7374,71 @@
         overlay.classList.add('active');
         box.innerHTML = `<h2>Reading dropped items…</h2><p>Scanning folders for audio &amp; ebooks</p>`;
 
-        let files;
+        const SUPPORTED = /\.(mp3|m4b|m4a|flac|aac|ogg|opus|epub|mobi|azw3|azw|txt|pdf)$/i;
+        let gathered;
         try {
-          files = await gatherDroppedFiles(dt); // walks folders via the entries API
+          gathered = await gatherDroppedFiles(dt, (n, mb) => {
+            box.innerHTML = `<h2>Reading dropped items…</h2><p>Captured ${n} file${n !== 1 ? 's' : ''} (${mb} MB)</p>`;
+          });
         } catch (err) {
           return dropError(box, 'Could not read the dropped items: ' + (err.message || err));
         }
-        const SUPPORTED = /\.(mp3|m4b|m4a|flac|aac|ogg|opus|epub|mobi|azw3|azw|txt|pdf)$/i;
-        const wanted = files.filter(f => SUPPORTED.test(f.name));
+        let wanted = gathered.items.filter(f => SUPPORTED.test(f.name));
         if (wanted.length === 0) {
-          return dropError(box, files.length
-            ? `Found ${files.length} item(s) but no supported audio/ebook files.`
+          return dropError(box, gathered.items.length
+            ? `Found ${gathered.items.length} item(s) but no supported audio/ebook files.`
             : 'Nothing to upload — the drop had no readable files.');
+        }
+        // Loose files (no folder dropped) → group into one timestamped subdir so
+        // this drop becomes its OWN work and never collides with other uploads.
+        if (!gathered.hadFolder) {
+          const batch = 'upload-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          for (const f of wanted) f.path = batch + '/' + f.name;
         }
         await uploadDropped(box, wanted);
       });
 
-      // Walk dropped folders into a flat File[] using webkitGetAsEntry(). A
-      // plain dataTransfer.files read returns the FOLDER as one unreadable
-      // entry (the "uploading 1 file" freeze) — this recurses the tree instead.
-      async function gatherDroppedFiles(dt) {
-        if (!dt) return [];
-        const items = dt.items ? Array.from(dt.items) : [];
-        const entries = items
-          .map(it => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null))
-          .filter(Boolean);
-        if (entries.length === 0) {
-          return dt.files ? Array.from(dt.files) : []; // fallback: flat files only
-        }
+      // Walk dropped folders via webkitGetAsEntry() and EAGERLY read each file's
+      // bytes into an in-memory Blob. The FileSystemEntry/File objects expire
+      // shortly after the drop event, so a lazy read during upload (seconds/
+      // minutes later) returns 0 bytes — the truncated-upload bug. Capturing the
+      // bytes now (fast, disk-bound) makes the upload content-stable. Also keeps
+      // each file's folder-relative path so uploads land in per-work subdirs.
+      async function gatherDroppedFiles(dt, onProgress) {
         const out = [];
-        for (const entry of entries) await walkEntry(entry, out);
-        return out;
-      }
-      async function walkEntry(entry, out) {
-        if (entry.isFile) {
-          const f = await new Promise((res, rej) => entry.file(res, rej));
-          out.push(f);
-        } else if (entry.isDirectory) {
-          const reader = entry.createReader();
-          let batch;
-          do { // readEntries returns in batches; loop until it's empty
-            batch = await new Promise((res, rej) => reader.readEntries(res, rej));
-            for (const e of batch) await walkEntry(e, out);
-          } while (batch.length > 0);
+        let hadFolder = false, bytes = 0;
+        const capture = async (file, path) => {
+          const buf = await file.arrayBuffer();
+          out.push({ name: file.name, path: path.replace(/^\/+/, ''), blob: new Blob([buf], { type: file.type || 'application/octet-stream' }) });
+          bytes += buf.byteLength;
+          if (onProgress) onProgress(out.length, Math.round(bytes / 1e6));
+        };
+        const walk = async (entry) => {
+          if (entry.isFile) {
+            const f = await new Promise((res, rej) => entry.file(res, rej));
+            await capture(f, entry.fullPath || ('/' + f.name));
+          } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            let batch;
+            do {
+              batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+              for (const e of batch) await walk(e);
+            } while (batch.length > 0);
+          }
+        };
+        if (!dt) return { items: out, hadFolder };
+        const entries = (dt.items ? Array.from(dt.items) : [])
+          .map(it => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null)).filter(Boolean);
+        if (entries.length === 0) {
+          for (const f of (dt.files ? Array.from(dt.files) : [])) await capture(f, f.name);
+          return { items: out, hadFolder: false };
         }
+        for (const entry of entries) { if (entry.isDirectory) hadFolder = true; await walk(entry); }
+        return { items: out, hadFolder };
       }
 
-      // Upload each file on its own with a live progress bar + per-file
-      // success/error, then ONE rescan. Never a silent freeze.
+      // Upload each captured file on its own with a live progress bar + per-file
+      // success/error, then ONE rescan. A failed file shows ✗ LOUDLY.
       async function uploadDropped(box, files) {
         box.innerHTML = `<h2 id="drop-h">Uploading ${files.length} file${files.length > 1 ? 's' : ''}…</h2>
           <div id="drop-list" style="max-height:46vh; overflow:auto; text-align:left; margin-top:12px; min-width:min(420px,80vw);"></div>`;
@@ -7431,7 +7448,7 @@
           row.style.cssText = 'margin:7px 0; font-size:0.78rem;';
           row.innerHTML =
             `<div style="display:flex; justify-content:space-between; gap:10px;">
-               <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">${escapeHtml(f.name)}</span>
+               <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">${escapeHtml(f.path || f.name)}</span>
                <span class="pct" style="color:var(--text-muted); flex:0 0 auto;">0%</span>
              </div>
              <div style="height:4px; background:var(--surface-hover); border-radius:2px; overflow:hidden; margin-top:3px;">
@@ -7463,15 +7480,16 @@
         h.textContent = `Uploaded ${ok}${failed ? ` · ${failed} failed` : ''} — rescanning library…`;
         try { await fetch('/api/library/rescan', { method: 'POST' }); } catch {}
         h.textContent = failed
-          ? `Done — ${ok} uploaded, ${failed} failed. Library updated.`
+          ? `Done — ${ok} uploaded, ${failed} FAILED (see ✗). Library updated.`
           : `Done — ${ok} file${ok !== 1 ? 's' : ''} imported. Library updated.`;
-        setTimeout(() => { overlay.classList.remove('active'); loadWorks(); resetDropBox(box); }, failed ? 4500 : 2200);
+        setTimeout(() => { overlay.classList.remove('active'); loadWorks(); resetDropBox(box); }, failed ? 6000 : 2200);
       }
 
-      function uploadOneFile(file, onProgress) {
+      function uploadOneFile(item, onProgress) {
         return new Promise((resolve, reject) => {
           const form = new FormData();
-          form.append('files', file, file.name);
+          form.append('files', item.blob, item.name);
+          form.append('relpath', item.path || item.name); // folder-preserving destination
           const xhr = new XMLHttpRequest();
           xhr.open('POST', '/api/upload?rescan=0'); // batch: rescan once at the end
           xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
