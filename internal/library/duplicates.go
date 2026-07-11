@@ -33,33 +33,76 @@ func FindDuplicateWorks(store *db.Store) ([]DuplicateGroup, error) {
 		return nil, err
 	}
 
-	groups := map[string][]db.Work{}
+	// Group by normalized TITLE first, then cluster within a title by author — so
+	// a work whose author metadata is missing (e.g. an orphaned re-upload) still
+	// matches its twin. Keying on title+author alone missed these.
+	byTitle := map[string][]db.Work{}
 	for _, w := range works {
-		key := normalizeWorkKey(w.Title, w.Author)
-		if key == "" {
+		t := normalizeTitle(w.Title)
+		if t == "" {
 			continue
 		}
-		groups[key] = append(groups[key], w)
+		byTitle[t] = append(byTitle[t], w)
+	}
+
+	emit := func(t string, cl []db.Work) []DuplicateGroup {
+		if len(cl) < 2 {
+			return nil
+		}
+		// Most "complete" first (has both audio+text > audio-only > text-only;
+		// more files wins) — the merge target.
+		sort.SliceStable(cl, func(i, j int) bool {
+			return completeness(cl[i]) > completeness(cl[j])
+		})
+		return []DuplicateGroup{{NormalizedKey: t, Works: cl}}
 	}
 
 	var result []DuplicateGroup
-	for key, ws := range groups {
+	for t, ws := range byTitle {
 		if len(ws) < 2 {
 			continue
 		}
-		// Sort within group: most "complete" first (has both audio + text
-		// beats audio-only beats text-only; more files beats fewer).
-		sort.SliceStable(ws, func(i, j int) bool {
-			return completeness(ws[i]) > completeness(ws[j])
-		})
-		result = append(result, DuplicateGroup{NormalizedKey: key, Works: ws})
+		// Partition the title group by real (non-blank) author. Blank-author works
+		// are ambiguous: attach them to the sole real-author cluster when there's
+		// exactly one (the #108/#115 case), otherwise keep them together as their
+		// own cluster so two twin orphan re-uploads still surface — but never let a
+		// blank bridge two genuinely different authors.
+		byAuthor := map[string][]db.Work{}
+		var blanks []db.Work
+		for _, w := range ws {
+			if na := normalizeAuthor(w.Author); na == "" {
+				blanks = append(blanks, w)
+			} else {
+				byAuthor[na] = append(byAuthor[na], w)
+			}
+		}
+		if len(byAuthor) == 1 {
+			for k := range byAuthor {
+				byAuthor[k] = append(byAuthor[k], blanks...)
+				blanks = nil
+			}
+		}
+		for _, cl := range byAuthor {
+			result = append(result, emit(t, cl)...)
+		}
+		result = append(result, emit(t, blanks)...)
 	}
 
-	// Sort groups by key for stable output.
+	// Stable output: by title key, then by the target work's id.
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].NormalizedKey < result[j].NormalizedKey
+		if result[i].NormalizedKey != result[j].NormalizedKey {
+			return result[i].NormalizedKey < result[j].NormalizedKey
+		}
+		return result[i].Works[0].ID < result[j].Works[0].ID
 	})
 	return result, nil
+}
+
+// authorsCompatible reports whether two works' authors are close enough to be
+// the same book: equal once normalized, or at least one side is missing/blank.
+func authorsCompatible(a, b string) bool {
+	na, nb := normalizeAuthor(a), normalizeAuthor(b)
+	return na == "" || nb == "" || na == nb
 }
 
 // completeness is a rough "how useful is this work" score for picking the
