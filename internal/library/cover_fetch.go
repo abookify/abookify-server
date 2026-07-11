@@ -156,13 +156,29 @@ func SearchOpenLibraryCovers(title, author string, limit int) ([]CoverCandidate,
 	if strings.TrimSpace(title) == "" {
 		return nil, fmt.Errorf("title required")
 	}
-	if limit <= 0 || limit > 20 {
-		limit = 12
-	}
 	q := url.Values{}
 	q.Set("title", strings.TrimSpace(title))
 	if strings.TrimSpace(author) != "" {
 		q.Set("author", strings.TrimSpace(author))
+	}
+	return runOLCoverSearch(q, limit)
+}
+
+// SearchOpenLibraryCoversFreeText runs a general free-text OpenLibrary search
+// (the metadata editor's editable cover box) — more forgiving than the strict
+// title/author fields when a work's metadata is wrong (e.g. author="Chapter 7").
+func SearchOpenLibraryCoversFreeText(query string, limit int) ([]CoverCandidate, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("query required")
+	}
+	q := url.Values{}
+	q.Set("q", strings.TrimSpace(query))
+	return runOLCoverSearch(q, limit)
+}
+
+func runOLCoverSearch(q url.Values, limit int) ([]CoverCandidate, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 12
 	}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("fields", "title,author_name,cover_i")
