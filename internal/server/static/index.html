@@ -271,6 +271,9 @@
       overflow: hidden; text-overflow: ellipsis;
     }
     .work-processed { color: var(--text-muted); opacity: 0.8; }
+    .author-link { cursor: pointer; }
+    .author-link:hover { color: var(--accent); text-decoration: underline; }
+    .work-year { color: var(--text-muted); }
 
     /* Thin progress bar (replaces the row's "◷ Xh of Yh" text in the grid). */
     .work-progressbar { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 1px; }
@@ -1623,6 +1626,10 @@
     .qjob .q-act { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 3px 9px; font-size: 0.72rem; cursor: pointer; flex: 0 0 auto; }
     .qjob .q-act:hover { border-color: var(--accent); color: var(--accent); }
     .qjob .q-act.danger:hover { border-color: var(--mp3); color: var(--mp3); }
+    /* Edition-row action buttons (metadata editor) — design-system styled. */
+    .ed-act { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; cursor: pointer; flex: 0 0 auto; }
+    .ed-act:hover { border-color: var(--accent); color: var(--accent); }
+    .ed-act.danger:hover { border-color: var(--mp3); color: var(--mp3); }
     .job-item.failed .job-spinner { display: none; }
 
     .empty { text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
@@ -1720,7 +1727,7 @@
   </header>
 
   <div class="toolbar">
-    <input type="search" id="search" placeholder="Search library... (Ctrl+K)" aria-label="Search library">
+    <input type="search" id="search" placeholder="Search library… try author: title: year: (Ctrl+K)" aria-label="Search library">
     <button class="filter-btn active" data-filter="all">All</button>
     <button class="filter-btn" data-filter="paired">Paired</button>
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
@@ -1774,15 +1781,21 @@
           <div style="display:flex; gap:8px;">
             <div style="flex:1;"><label style="font-size:0.75rem; color:var(--text-muted);">Series</label>
               <input id="meta-series" type="text" style="width:100%; padding:8px; margin:3px 0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></div>
-            <div style="flex:0 0 80px;"><label style="font-size:0.75rem; color:var(--text-muted);">Book #</label>
+            <div style="flex:0 0 70px;"><label style="font-size:0.75rem; color:var(--text-muted);">Book #</label>
               <input id="meta-series-index" type="number" step="0.5" min="0" style="width:100%; padding:8px; margin:3px 0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></div>
+            <div style="flex:0 0 76px;"><label style="font-size:0.75rem; color:var(--text-muted);">Year</label>
+              <input id="meta-year" type="number" step="1" min="0" max="2200" placeholder="—" style="width:100%; padding:8px; margin:3px 0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></div>
           </div>
           <label style="font-size:0.75rem; color:var(--text-muted);">Description</label>
           <textarea id="meta-description" rows="4" style="width:100%; padding:8px; margin:3px 0 6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; resize:vertical;"></textarea>
         </div>
       </div>
       <div id="meta-cover-grid" style="display:none; margin-top:12px; border-top:1px solid var(--border); padding-top:10px;">
-        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Pick a cover (from OpenLibrary):</div>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Search OpenLibrary for a cover (edit if the title/author is wrong):</div>
+        <div style="display:flex; gap:6px; margin-bottom:8px;">
+          <input id="meta-cover-query" type="text" placeholder="e.g. Chocolat Joanne Harris" onkeydown="if(event.key==='Enter'){event.preventDefault();runCoverSearch();}" style="flex:1; padding:7px 9px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:0.82rem;">
+          <button type="button" onclick="runCoverSearch()" style="flex:0 0 auto; font-size:0.78rem; padding:7px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Search</button>
+        </div>
         <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:8px; max-height:200px; overflow:auto;"></div>
       </div>
       <!-- Editions: list all audio + text sources in this work, remove extras -->
@@ -2288,6 +2301,13 @@
       d.textContent = str;
       return d.innerHTML;
     }
+    // Attribute-safe encoder for inline handlers (escapeHtml leaves quotes
+    // intact, which would break a quoted onclick="...">). Use in double-quoted
+    // attributes: onclick="fn(${attrEsc(JSON.stringify(v))})".
+    function attrEsc(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;');
+    }
 
     // Build the menu items shown when clicking the ⋯ button on a work
     // card. Two distinct re-runs that the UI used to conflate:
@@ -2490,9 +2510,11 @@
       document.getElementById('meta-author').value = work.author || '';
       document.getElementById('meta-series').value = work.series || '';
       document.getElementById('meta-series-index').value = work.series_index || '';
+      document.getElementById('meta-year').value = work.year || '';
       document.getElementById('meta-description').value = work.description || '';
       // cache-bust the cover so a just-changed image shows immediately
       document.getElementById('meta-cover').src = `/api/works/${workId}/cover?t=${Date.now()}`;
+      document.getElementById('meta-cover-query').value = '';
       document.getElementById('meta-cover-grid').style.display = 'none';
       document.getElementById('meta-status').textContent = '';
       renderEditions(work);
@@ -2501,40 +2523,101 @@
     }
     function closeMetaEditor() { document.getElementById('meta-dialog').style.display = 'none'; }
 
-    // List the work's audio + text editions with a remove action (dedupe /
-    // curate). The last remaining source can't be removed.
+    // Friendly label for a source's origin code.
+    const ORIGIN_LABELS = {
+      publisher_epub: 'EPUB', publisher_mobi: 'MOBI', publisher_pdf: 'PDF',
+      author_recording: 'Author recording', narrator_recording: 'Narrator recording',
+      librivox: 'LibriVox', tts_kokoro: 'TTS (Kokoro)', tts_preprocessed: 'TTS source',
+      whisper_transcript: 'Transcript', user_upload: 'Upload',
+    };
+    function prettyOrigin(o) { return ORIGIN_LABELS[o] || (o ? o.replace(/_/g, ' ') : ''); }
+
+    // The edition a book belongs to: an explicit edition label wins, then its
+    // album, then the parent directory (so the N files of one narrator recording
+    // group together), then origin. Multi-file audiobooks collapse to one row.
+    function editionKeyOf(b) {
+      if (b.edition) return 'ed:' + b.edition;
+      if (b.album) return 'al:' + b.album;
+      const p = b.path || '';
+      const slash = p.lastIndexOf('/');
+      if (slash > 0) return 'dir:' + p.slice(0, slash);
+      return 'origin:' + (b.origin || ('book' + b.id));
+    }
+    function groupEditions(books) {
+      const order = [], byKey = {};
+      for (const b of books) {
+        const k = editionKeyOf(b);
+        if (!byKey[k]) { byKey[k] = []; order.push(k); }
+        byKey[k].push(b);
+      }
+      return order.map(k => byKey[k]);
+    }
+
+    // List the work's audio + text sources GROUPED by edition, each with a
+    // rename + remove action (dedupe / curate). The last remaining edition can't
+    // be removed.
     function renderEditions(work) {
       const list = document.getElementById('meta-editions-list');
       const audio = (work.audio_files || []);
       const text = (work.text_files || []);
-      const rows = [];
-      const fmtRow = (b, kind) => {
-        const label = b.filename || b.title || ('book ' + b.id);
-        const sub = kind === 'audio' ? (b.origin || 'audio') : (b.format || 'text') + ' · ' + (b.origin || '');
-        const total = audio.length + text.length;
-        const rm = total > 1
-          ? `<button class="q-act danger" onclick="removeSource(${work.id}, ${b.id})">Remove</button>`
-          : `<span style="font-size:0.7rem; color:var(--text-muted);">only source</span>`;
-        return `<div style="display:flex; align-items:center; gap:8px; font-size:0.78rem; padding:5px 8px; border:1px solid var(--border); border-radius:6px;">
-          <span style="flex:0 0 auto;">${kind === 'audio' ? '🔊' : '📄'}</span>
-          <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(label)}<span style="color:var(--text-muted);"> — ${escapeHtml(sub)}</span></span>
+      const groups = [];
+      for (const g of groupEditions(text)) groups.push({ kind: 'text', books: g });
+      for (const g of groupEditions(audio)) groups.push({ kind: 'audio', books: g });
+      const totalBooks = audio.length + text.length;
+
+      const rows = groups.map(g => {
+        const b = g.books[0];
+        const ids = g.books.map(x => x.id);
+        const name = b.edition || b.album || prettyOrigin(b.origin) || b.title || b.filename || ('book ' + b.id);
+        const parts = [];
+        if (!b.edition && b.origin) parts.push(prettyOrigin(b.origin));
+        if (b.format) parts.push(b.format.toUpperCase());
+        parts.push(g.books.length === 1 ? '1 file' : g.books.length + ' files');
+        const sub = parts.filter(Boolean).join(' · ');
+        // Removing this edition must leave at least one source behind.
+        const canRemove = totalBooks - g.books.length >= 1;
+        const rm = canRemove
+          ? `<button class="ed-act danger" onclick="removeEdition(${work.id}, ${attrEsc(JSON.stringify(ids))}, ${attrEsc(JSON.stringify(name))})">Remove</button>`
+          : `<span style="font-size:0.7rem; color:var(--text-muted);">only edition</span>`;
+        return `<div style="display:flex; align-items:center; gap:8px; font-size:0.78rem; padding:6px 9px; border:1px solid var(--border); border-radius:6px;">
+          <span style="flex:0 0 auto;">${g.kind === 'audio' ? '🔊' : '📄'}</span>
+          <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}<span style="color:var(--text-muted);"> — ${escapeHtml(sub)}</span></span>
+          <button class="ed-act" onclick="relabelEdition(${work.id}, ${attrEsc(JSON.stringify(ids))}, ${attrEsc(JSON.stringify(b.edition || ''))})">Rename</button>
           ${rm}</div>`;
-      };
-      for (const b of text) rows.push(fmtRow(b, 'text'));
-      for (const b of audio) rows.push(fmtRow(b, 'audio'));
+      });
       list.innerHTML = rows.join('') || '<span style="font-size:0.75rem; color:var(--text-muted);">No editions.</span>';
     }
 
-    async function removeSource(workId, bookId) {
-      if (!confirm('Remove this edition from the work? This deletes that source and its chapters (the work + other editions stay).')) return;
-      metaStatus('Removing edition…');
-      const res = await fetch(`/api/works/${workId}/sources/${bookId}`, { method: 'DELETE' });
-      if (!res.ok) { metaStatus('Remove failed: ' + (await metaErr(res)), true); return; }
-      // Refresh works, then re-render the editions list from the updated work.
+    async function refreshEditions(workId) {
       await loadWorks();
       const work = (allWorks || []).find(w => w.id === workId);
       if (work) renderEditions(work); else closeMetaEditor();
+    }
+
+    async function removeEdition(workId, bookIds, name) {
+      const n = bookIds.length;
+      const what = n > 1 ? `this edition (${n} files)` : 'this edition';
+      if (!confirm(`Remove ${what}${name ? ' — "' + name + '"' : ''}? This deletes ${n > 1 ? 'those sources' : 'that source'} and their chapters (the work + other editions stay).`)) return;
+      metaStatus('Removing edition…');
+      for (const id of bookIds) {
+        const res = await fetch(`/api/works/${workId}/sources/${id}`, { method: 'DELETE' });
+        if (!res.ok) { metaStatus('Remove failed: ' + (await metaErr(res)), true); await refreshEditions(workId); return; }
+      }
+      await refreshEditions(workId);
       metaStatus('Edition removed.');
+    }
+
+    async function relabelEdition(workId, bookIds, current) {
+      const label = prompt('Edition name (blank = default):', current || '');
+      if (label === null) return; // cancelled
+      metaStatus('Renaming edition…');
+      const res = await fetch(`/api/works/${workId}/editions`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ book_ids: bookIds, edition: label.trim() }),
+      });
+      if (!res.ok) { metaStatus('Rename failed: ' + (await metaErr(res)), true); return; }
+      await refreshEditions(workId);
+      metaStatus('Edition renamed.');
     }
 
     async function saveMeta() {
@@ -2547,6 +2630,7 @@
         series: document.getElementById('meta-series').value.trim(),
         series_index: parseFloat(document.getElementById('meta-series-index').value) || 0,
         description: document.getElementById('meta-description').value.trim(),
+        year: parseInt(document.getElementById('meta-year').value, 10) || 0,
       };
       metaStatus('Saving…');
       const res = await fetch(`/api/works/${workId}/metadata`, {
@@ -2569,17 +2653,30 @@
       metaStatus('Cover updated.');
     }
 
-    async function searchCovers() {
-      const workId = document.getElementById('meta-work-id').value;
+    // The cover-column "Search" button: reveal the grid, prefill the editable
+    // query from the current title+author (which the user can then correct — e.g.
+    // when the extracted author is garbage like "Chapter 7"), and run it.
+    function searchCovers() {
       const title = document.getElementById('meta-title').value.trim();
       const author = document.getElementById('meta-author').value.trim();
-      if (!title) { metaStatus('Enter a title to search covers.', true); return; }
+      const box = document.getElementById('meta-cover-query');
+      box.value = [title, author].filter(Boolean).join(' ');
+      document.getElementById('meta-cover-grid').style.display = 'block';
+      box.focus();
+      runCoverSearch();
+    }
+
+    // Free-text cover search driven by the editable query box.
+    async function runCoverSearch() {
+      const workId = document.getElementById('meta-work-id').value;
+      const query = document.getElementById('meta-cover-query').value.trim();
+      if (!query) { metaStatus('Type something to search covers.', true); return; }
       const grid = document.getElementById('meta-cover-grid');
       const box = document.getElementById('meta-cover-candidates');
       grid.style.display = 'block';
       box.innerHTML = '<span style="font-size:0.75rem; color:var(--text-muted);">Searching…</span>';
       try {
-        const res = await fetch(`/api/covers/search?title=${encodeURIComponent(title)}&author=${encodeURIComponent(author)}`);
+        const res = await fetch(`/api/covers/search?q=${encodeURIComponent(query)}`);
         const data = await res.json();
         const cands = data.candidates || [];
         if (!cands.length) { box.innerHTML = '<span style="font-size:0.75rem; color:var(--text-muted);">No covers found.</span>'; return; }
@@ -2620,8 +2717,29 @@
       loadWorks();
     }
 
+    // Parse the library search box into field-scoped tags + free text. Supports
+    // author:, title:, year: (quoted values allowed: author:"George Orwell").
+    // Anything else is free text matched against title OR author.
+    function parseSearchQuery(raw) {
+      const q = { author: '', title: '', year: '', free: '' };
+      const free = [];
+      const re = /(author|title|year):("([^"]*)"|\S+)|(\S+)/gi;
+      let m;
+      while ((m = re.exec(raw)) !== null) {
+        if (m[1]) {
+          const field = m[1].toLowerCase();
+          const val = (m[3] !== undefined ? m[3] : m[2]).toLowerCase();
+          q[field] = (q[field] ? q[field] + ' ' : '') + val;
+        } else if (m[4]) {
+          free.push(m[4].toLowerCase());
+        }
+      }
+      q.free = free.join(' ');
+      return q;
+    }
+
     function render() {
-      const query = document.getElementById('search').value.toLowerCase();
+      const q = parseSearchQuery(document.getElementById('search').value);
       let filtered = allWorks;
 
       if (activeFilter === 'paired') filtered = filtered.filter(w => w.has_audio && w.has_text);
@@ -2629,10 +2747,11 @@
       else if (activeFilter === 'text-only') filtered = filtered.filter(w => !w.has_audio && w.has_text);
       else if (activeFilter === 'misaligned') filtered = filtered.filter(w => typeof w.coverage === 'number' && w.coverage < 0.6);
 
-      if (query) {
-        filtered = filtered.filter(w =>
-          w.title.toLowerCase().includes(query) || w.author.toLowerCase().includes(query));
-      }
+      if (q.title)  filtered = filtered.filter(w => (w.title  || '').toLowerCase().includes(q.title));
+      if (q.author) filtered = filtered.filter(w => (w.author || '').toLowerCase().includes(q.author));
+      if (q.year)   filtered = filtered.filter(w => w.year && String(w.year).includes(q.year));
+      if (q.free)   filtered = filtered.filter(w =>
+        (w.title || '').toLowerCase().includes(q.free) || (w.author || '').toLowerCase().includes(q.free));
 
       document.getElementById('stats').textContent = `${filtered.length} works`;
       const el = document.getElementById('works-list');
@@ -2643,6 +2762,14 @@
       }
 
       el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
+    }
+
+    // Clicking an author name filters the library to that author (item 5).
+    function filterByAuthor(author) {
+      const box = document.getElementById('search');
+      box.value = `author:"${author}"`;
+      render();
+      box.scrollIntoView({ block: 'nearest' });
     }
 
     // A single poster card for the library grid (#213). The whole card is the
@@ -2676,7 +2803,9 @@
           </div>
           <div class="work-meta">
             <div class="work-title">${escapeHtml(work.title)}</div>
-            <div class="work-author">${work.author ? escapeHtml(work.author) : 'Unknown author'}</div>
+            <div class="work-author">${work.author
+              ? `<span class="author-link" role="button" tabindex="0" title="Show all by ${escapeHtml(work.author)}" data-author="${attrEsc(work.author)}" onclick="event.stopPropagation(); filterByAuthor(this.dataset.author)">${escapeHtml(work.author)}</span>`
+              : 'Unknown author'}${work.year ? `<span class="work-year"> · ${work.year}</span>` : ''}</div>
             <div class="work-progressbar" id="work-progressbar-${work.id}" style="display:none;"><i style="width:0%"></i></div>
             <div class="work-badges">
               ${work.has_audio
