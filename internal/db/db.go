@@ -307,7 +307,10 @@ func migrate(db *sql.DB) error {
 			text_index      INTEGER NOT NULL,
 			confidence       REAL NOT NULL DEFAULT 0,
 			FOREIGN KEY (work_id) REFERENCES works(id),
-			UNIQUE(work_id, audio_index)
+			-- audio_book_id in the key so a work can hold MULTIPLE audio editions
+			-- (LibriVox + TTS), each with its own chapter links, and so merging
+			-- two single-edition works doesn't collide on (work_id, audio_index).
+			UNIQUE(work_id, audio_book_id, audio_index)
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_chapter_links_work ON chapter_links(work_id);
@@ -581,6 +584,37 @@ func migrate(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
+		}
+	}
+
+	// One-time recreate: widen chapter_links' UNIQUE key from (work_id,
+	// audio_index) to (work_id, audio_book_id, audio_index) so a work can hold
+	// multiple audio editions and MergeWorks doesn't collide. Idempotent — the
+	// check is skipped once the constraint no longer contains the old form.
+	var clSQL string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='chapter_links'`).Scan(&clSQL)
+	if strings.Contains(clSQL, "UNIQUE(work_id, audio_index)") {
+		steps := []string{
+			`CREATE TABLE chapter_links_new (
+				id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				work_id       INTEGER NOT NULL,
+				audio_book_id INTEGER NOT NULL,
+				audio_index   INTEGER NOT NULL,
+				text_book_id  INTEGER NOT NULL,
+				text_index    INTEGER NOT NULL,
+				confidence    REAL NOT NULL DEFAULT 0,
+				UNIQUE(work_id, audio_book_id, audio_index)
+			)`,
+			`INSERT INTO chapter_links_new (id, work_id, audio_book_id, audio_index, text_book_id, text_index, confidence)
+			 SELECT id, work_id, audio_book_id, audio_index, text_book_id, text_index, confidence FROM chapter_links`,
+			`DROP TABLE chapter_links`,
+			`ALTER TABLE chapter_links_new RENAME TO chapter_links`,
+			`CREATE INDEX IF NOT EXISTS idx_chapter_links_work ON chapter_links(work_id)`,
+		}
+		for _, s := range steps {
+			if _, err := db.Exec(s); err != nil {
+				return fmt.Errorf("chapter_links widen migration: %w", err)
+			}
 		}
 	}
 
@@ -2161,10 +2195,23 @@ func (s *Store) MergeWorks(targetID, sourceID int64) error {
 
 	moves := []string{
 		`UPDATE books SET work_id = ? WHERE work_id = ?`,
+		// chapter_links is now UNIQUE(work_id, audio_book_id, audio_index) — the
+		// two works have distinct audio books, so moving work_id no longer
+		// collides. (This is the fix for the "chapter_links.work_id, audio_index"
+		// merge crash when combining two single-edition works.)
 		`UPDATE chapter_links SET work_id = ? WHERE work_id = ?`,
 		`UPDATE OR IGNORE sync_data SET work_id = ? WHERE work_id = ?`,
 		`UPDATE bookmarks SET work_id = ? WHERE work_id = ?`,
 		`UPDATE OR IGNORE playback_positions SET work_id = ? WHERE work_id = ?`,
+		`UPDATE playback_events SET work_id = ? WHERE work_id = ?`,
+		// Alignments/characters/qa carry a work_id too — move them or the source
+		// work's alignment (the AI edition's!) + cast + chats are orphaned and
+		// swept away on the next boot. Their unique keys are book/session-based,
+		// so a plain work_id move is safe (OR IGNORE on characters just in case
+		// the target already has an identically-keyed row).
+		`UPDATE alignments SET work_id = ? WHERE work_id = ?`,
+		`UPDATE OR IGNORE characters SET work_id = ? WHERE work_id = ?`,
+		`UPDATE qa_sessions SET work_id = ? WHERE work_id = ?`,
 		`UPDATE jobs SET work_id = ? WHERE work_id = ?`,
 	}
 	for _, q := range moves {
