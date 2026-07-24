@@ -66,7 +66,9 @@ func words2set(s string) map[string]struct{} {
 }
 
 // ExtractCastHeuristic returns character candidates ranked by mid-sentence
-// title-case frequency. minMentions is the recurrence floor (3 is a good default).
+// title-case frequency, with tightly-bound multi-word names merged (e.g.
+// "Van Helsing", "Sherlock Holmes", "De Lacey"). minMentions is the recurrence
+// floor (3 is a good default).
 func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 	if minMentions < 1 {
 		minMentions = 3
@@ -84,42 +86,82 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 	}
 	text := sb.String()
 
-	midcap := map[string]int{}
+	midcap := map[string]int{}   // Title-case mid-sentence (strong name signal)
+	titlecap := map[string]int{} // Title-case anywhere (mid + sentence-initial)
 	total := map[string]int{}
 	allcaps := map[string]int{}
-	display := map[string]string{} // canonical surface form for display
+	display := map[string]string{}
+	bigram := map[string]int{}       // "a b" (adjacent Title-case tokens)
+	bigramDisp := map[string]string{}
 
+	var prevLow, prevSurf string
+	var prevTitle bool
 	prevEnd := true
 	for _, tok := range castTokenRe.FindAllString(text, -1) {
 		if c := tok[0]; c == '.' || c == '!' || c == '?' {
-			prevEnd = true
+			prevEnd, prevTitle = true, false
 			continue
 		}
-		low := strings.ToLower(strings.TrimSuffix(strings.ToLower(tok), "'s"))
+		low := strings.TrimSuffix(strings.ToLower(tok), "'s")
 		total[low]++
+		isTitle := false
 		switch {
 		case isAllCapsWord(tok):
 			allcaps[low]++
 		case tok[0] >= 'A' && tok[0] <= 'Z':
+			isTitle = true
+			titlecap[low]++
 			if !prevEnd {
 				midcap[low]++
-				if display[low] == "" {
-					display[low] = tok
-				}
+			}
+			if display[low] == "" {
+				display[low] = tok
 			}
 		}
-		prevEnd = false
+		if isTitle && prevTitle && !isCastNoise(prevLow) && !isCastNoise(low) {
+			key := prevLow + " " + low
+			bigram[key]++
+			if bigramDisp[key] == "" {
+				bigramDisp[key] = prevSurf + " " + tok
+			}
+		}
+		prevLow, prevSurf, prevTitle, prevEnd = low, tok, isTitle, false
 	}
 
+	// Merge a bigram "A B" into one entity ONLY when both components appear
+	// MOSTLY together (each ≥50% inside the bigram) — that's a real multi-word
+	// name (Van Helsing), vs a loose co-occurrence (Mina Harker) which stays split.
+	consumed := map[string]bool{}
 	var out []CastMember
+	for key, bc := range bigram {
+		if bc < minMentions {
+			continue
+		}
+		parts := strings.SplitN(key, " ", 2)
+		a, b := parts[0], parts[1]
+		if titlecap[a] == 0 || titlecap[b] == 0 {
+			continue
+		}
+		if float64(bc) >= 0.5*float64(titlecap[a]) && float64(bc) >= 0.5*float64(titlecap[b]) {
+			consumed[a], consumed[b] = true, true
+			mentions := bc
+			if midcap[a] > mentions {
+				mentions = midcap[a]
+			}
+			if midcap[b] > mentions {
+				mentions = midcap[b]
+			}
+			_, placeA := castPlaces[a]
+			_, placeB := castPlaces[b]
+			out = append(out, CastMember{
+				Name: bigramDisp[key], Mentions: mentions, Total: total[a] + total[b],
+				InDict: false, IsPlace: placeA || placeB,
+			})
+		}
+	}
+
 	for w, mc := range midcap {
-		if len(w) < 2 || mc < minMentions {
-			continue
-		}
-		if _, ok := castStop[w]; ok {
-			continue
-		}
-		if _, ok := castBoiler[w]; ok {
+		if consumed[w] || len(w) < 2 || mc < minMentions || isCastNoise(w) {
 			continue
 		}
 		if allcaps[w]*2 > total[w] {
@@ -141,6 +183,14 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+func isCastNoise(w string) bool {
+	if _, ok := castStop[w]; ok {
+		return true
+	}
+	_, ok := castBoiler[w]
+	return ok
 }
 
 func castScore(c CastMember) float64 {
