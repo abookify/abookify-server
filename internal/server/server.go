@@ -566,12 +566,29 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if version == "" {
 		version = "dev"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"name":    "abookify",
 		"version": version,
 		"port":    s.http.Addr,
 		"ready":   s.ready.Load(),
-	})
+	}
+	// compute_mode is the user's preference; stt_device/gpu_available report what
+	// transcription is ACTUALLY running on (probed from the STT engine). Mobile +
+	// web both read this to show "Transcribing on GPU/CPU".
+	mode, _ := s.store.GetSetting("stt_compute_mode")
+	if mode == "" {
+		mode = "auto"
+	}
+	out["compute_mode"] = mode
+	if c := s.Generator.STTClient(); c != nil {
+		if info, err := c.Info(); err == nil {
+			out["stt_device"] = info.Device
+			out["stt_compute"] = info.ComputeType
+			out["stt_model"] = info.Model
+			out["gpu_available"] = info.GPUAvailable
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {

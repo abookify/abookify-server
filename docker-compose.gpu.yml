@@ -12,8 +12,10 @@ services:
       dockerfile: Dockerfile.gpu
     environment:
       - WHISPER_MODEL=large-v3
-      - WHISPER_DEVICE=cuda
-      - WHISPER_COMPUTE_TYPE=float16
+      # auto: use the GPU when the CUDA runtime is actually usable, else fall
+      # back to CPU int8 at load time (a mismatched/absent driver degrades to
+      # CPU instead of crash-looping the container).
+      - WHISPER_DEVICE=auto
     ports:
       - "5200:5200"
     deploy:

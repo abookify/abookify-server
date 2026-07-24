@@ -440,7 +440,12 @@
             ? f.option_groups.map(og => `<optgroup label="${schemaEscAttr(og.label)}">${og.options.map(o => schemaOpt(o, f.default)).join('')}</optgroup>`).join('')
             : (f.options || []).map(o => schemaOpt(o, f.default)).join('');
           const onchange = f.key === 'llm_provider' ? ' onchange="onProviderChange()"' : '';
-          return `<div class="field">${label}<select id="${id}"${onchange}>${opts}</select>${previewAddon}${help}</div>`;
+          // Live readout of the device transcription is ACTUALLY running on
+          // (probed from the engine via /api/info), distinct from the saved
+          // preference above it.
+          const deviceReadout = f.key === 'stt_compute_mode'
+            ? `<div class="hint" id="stt-device-readout" style="margin-top:6px;">Checking current device…</div>` : '';
+          return `<div class="field">${label}<select id="${id}"${onchange}>${opts}</select>${previewAddon}${help}${deviceReadout}</div>`;
         }
         case 'select_or_custom': // llm_model: curated select + custom free-text
           return `<div class="field">${label}
@@ -1153,9 +1158,25 @@
       }
     }
 
+    // Fill the "current device" readout under the STT compute-mode selector
+    // from /api/info (the actual engine device, not the saved preference).
+    async function updateSTTDeviceReadout() {
+      const el = document.getElementById('stt-device-readout');
+      if (!el) return;
+      try {
+        const info = await fetch('/api/info').then(r => r.json());
+        const dev = info.stt_device;
+        if (!dev) { el.textContent = 'Current device: transcription engine offline.'; return; }
+        const nice = dev === 'cuda' ? 'GPU' : dev.toUpperCase();
+        const comp = info.stt_compute ? ` · ${info.stt_compute}` : '';
+        el.innerHTML = `Currently transcribing on: <strong>${nice}</strong>${schemaEscHtml(comp)}` +
+          (dev !== 'cuda' && info.compute_mode === 'gpu' ? ' — no usable GPU detected, using CPU.' : '');
+      } catch { el.textContent = ''; }
+    }
+
     // Render the schema-driven config sections first, THEN populate values —
     // loadSettings targets elements the schema render creates (#202).
-    renderSchemaForm().then(loadSettings);
+    renderSchemaForm().then(loadSettings).then(updateSTTDeviceReadout);
     checkServices();
     loadAuthState();
   </script>

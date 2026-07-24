@@ -9,12 +9,48 @@ from faster_whisper import WhisperModel
 app = Flask(__name__)
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
-DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
-COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+# WHISPER_DEVICE may be "cpu", "cuda", or "auto" (default). "auto" probes for a
+# usable CUDA device and otherwise runs on CPU — so a GPU-configured deploy whose
+# driver is missing/mismatched degrades to CPU instead of hard-failing at startup.
+REQUESTED_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
+REQUESTED_COMPUTE = os.environ.get("WHISPER_COMPUTE_TYPE", "")
 
-print(f"Loading Whisper model: {MODEL_SIZE} (device={DEVICE}, compute={COMPUTE_TYPE})")
-model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-print("Model loaded.")
+
+def _cuda_available():
+    """True if faster-whisper's CTranslate2 backend can see a CUDA device."""
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception as e:
+        print(f"CUDA probe failed ({e}); assuming no GPU")
+        return False
+
+
+def _default_compute(device):
+    return "float16" if device == "cuda" else "int8"
+
+
+def _load_model():
+    """Resolve the device (honoring WHISPER_DEVICE / auto-detect), load the
+    model, and fall back to CPU int8 if a CUDA load fails. Returns
+    (model, device, compute_type)."""
+    dev = REQUESTED_DEVICE.strip().lower() or "auto"
+    if dev == "auto":
+        dev = "cuda" if _cuda_available() else "cpu"
+    comp = REQUESTED_COMPUTE.strip() or _default_compute(dev)
+    print(f"Loading Whisper model: {MODEL_SIZE} (device={dev}, compute={comp})")
+    try:
+        return WhisperModel(MODEL_SIZE, device=dev, compute_type=comp), dev, comp
+    except Exception as e:
+        if dev == "cuda":
+            print(f"CUDA model load failed ({e}); falling back to CPU int8")
+            comp = REQUESTED_COMPUTE.strip() or "int8"
+            return WhisperModel(MODEL_SIZE, device="cpu", compute_type=comp), "cpu", comp
+        raise
+
+
+model, DEVICE, COMPUTE_TYPE = _load_model()
+print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
 
 
 @app.route("/health")
@@ -23,6 +59,8 @@ def health():
         "status": "ok",
         "model": MODEL_SIZE,
         "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
+        "gpu_available": DEVICE == "cuda",
     })
 
 

@@ -2,6 +2,7 @@ package stt
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,45 @@ func (c *Client) Health() error {
 		return fmt.Errorf("stt service unhealthy: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// Info reports the STT service's active model + compute device, read from its
+// /health endpoint. This is the ground truth of what transcription is actually
+// running on (cpu vs cuda) — used to surface "GPU available / running on X" via
+// the server API. compute_type + gpu_available are absent on older services.
+type Info struct {
+	Model        string `json:"model"`
+	Device       string `json:"device"`
+	ComputeType  string `json:"compute_type"`
+	GPUAvailable bool   `json:"gpu_available"`
+}
+
+func (c *Client) Info() (*Info, error) {
+	// Short deadline — this backs a cheap info endpoint, not a transcription,
+	// so it must never inherit the client's 90-minute timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stt service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("stt service unhealthy: status %d", resp.StatusCode)
+	}
+	var info Info
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decode stt info: %w", err)
+	}
+	// Older services don't send gpu_available; derive it from the device.
+	if info.Device == "cuda" {
+		info.GPUAvailable = true
+	}
+	return &info, nil
 }
 
 // TranscribeFile sends an audio file for transcription and returns the result.
