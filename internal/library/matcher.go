@@ -383,12 +383,13 @@ func bestTextMeta(texts []db.Book) *db.Book {
 	return withAuthor
 }
 
-// HealChapterLabelAuthors fixes works whose author is actually a chapter/track
-// heading (a mis-tagged audio ARTIST that leaked in before the extractor guard).
-// It re-derives title+author from an authoritative text edition (EPUB preferred)
-// when one is present, otherwise just clears the bogus author. Idempotent —
-// once an author is clean it no longer matches. Returns the number changed.
-func HealChapterLabelAuthors(store *db.Store) (int, error) {
+// HealWorkAuthors fixes works whose author is unusable — a chapter/track label
+// ("Chapter 7") that leaked from a mis-tagged audio ARTIST, or simply blank — by
+// adopting the author (and, for a chapter label, the cleaner title) from the
+// work's authoritative text edition (EPUB preferred). A chapter label with no
+// clean source is cleared; a blank author with no source is left blank.
+// Idempotent; runs at startup + on rescan. Returns the number changed.
+func HealWorkAuthors(store *db.Store) (int, error) {
 	works, err := store.ListWorks()
 	if err != nil {
 		return 0, err
@@ -396,28 +397,86 @@ func HealChapterLabelAuthors(store *db.Store) (int, error) {
 	fixed := 0
 	for i := range works {
 		w := &works[i]
-		if !isChapterLabel(w.Author) {
+		label := isChapterLabel(w.Author)
+		blank := strings.TrimSpace(w.Author) == ""
+		if !label && !blank {
 			continue
 		}
-		newAuthor := "" // clearing the label is the floor; a clean source improves on it
-		newTitle := w.Title
-		if b := bestTextMeta(w.TextFiles); b != nil {
-			if a := strings.TrimSpace(b.Author); a != "" && !isChapterLabel(a) {
-				newAuthor = a
+		srcAuthor := ""
+		src := bestTextMeta(w.TextFiles)
+		if src != nil {
+			if a := strings.TrimSpace(src.Author); a != "" && !isChapterLabel(a) {
+				srcAuthor = a
 			}
-			if t := strings.TrimSpace(b.Title); t != "" {
-				newTitle = t
+		}
+		newAuthor, newTitle := w.Author, w.Title
+		if label {
+			// Replace the label with the source author, else clear it; adopt the
+			// authoritative EPUB title too when we have one.
+			newAuthor = srcAuthor
+			if src != nil {
+				if t := strings.TrimSpace(src.Title); t != "" {
+					newTitle = t
+				}
 			}
+		} else { // blank author — backfill from a text edition, leave the title
+			if srcAuthor == "" {
+				continue
+			}
+			newAuthor = srcAuthor
 		}
 		if newAuthor == w.Author && newTitle == w.Title {
 			continue
 		}
-		// UpdateWorkMeta (not UpdateWork) so a blank author is actually written —
+		// UpdateWorkMeta (not UpdateWork) so a cleared author is actually written —
 		// UpdateWork treats "" as "no change". Preserve the other fields.
 		if err := store.UpdateWorkMeta(w.ID, newTitle, newAuthor, w.Series, w.SeriesIndex, w.Description, w.Year); err != nil {
 			return fixed, err
 		}
 		log.Printf("heal: work %d author %q→%q, title %q→%q", w.ID, w.Author, newAuthor, w.Title, newTitle)
+		fixed++
+	}
+	return fixed, nil
+}
+
+var asinRe = regexp.MustCompile(`\bB0[0-9A-Z]{8}\b`)
+var titleNoiseRe = regexp.MustCompile(`(?i)\b(kbps?|stereo|mono|44100|22050|48000)\b`)
+var bracketGroupRe = regexp.MustCompile(`[\(\[][^)\]]*[\)\]]`)
+
+// cleanNoisyTitle strips ripper junk from a work title: bracketed/parenthesised
+// groups that contain an ASIN or codec/bitrate noise, plus any stray ASIN token.
+// Meaningful parentheticals ("(Unabridged)", "(Penguin Classics, 1971)") are kept.
+func cleanNoisyTitle(t string) string {
+	out := bracketGroupRe.ReplaceAllStringFunc(t, func(g string) string {
+		if asinRe.MatchString(g) || titleNoiseRe.MatchString(g) {
+			return " "
+		}
+		return g
+	})
+	out = asinRe.ReplaceAllString(out, " ")
+	out = strings.Join(strings.Fields(out), " ")
+	return strings.Trim(out, " -–—_")
+}
+
+// HealNoisyTitles strips ASIN/codec junk from work titles ("438 Days
+// (B0BNC37LPW LC 128 44100 Stereo)" → "438 Days"). Idempotent; never blanks a
+// title or reduces it to a bare track number. Returns the number changed.
+func HealNoisyTitles(store *db.Store) (int, error) {
+	works, err := store.ListWorks()
+	if err != nil {
+		return 0, err
+	}
+	fixed := 0
+	for i := range works {
+		w := &works[i]
+		cleaned := cleanNoisyTitle(w.Title)
+		if cleaned == "" || cleaned == w.Title || looksLikeTrackNumber(cleaned) {
+			continue
+		}
+		if err := store.UpdateWork(w.ID, cleaned, ""); err != nil { // title only
+			return fixed, err
+		}
+		log.Printf("heal: work %d title %q→%q (noise)", w.ID, w.Title, cleaned)
 		fixed++
 	}
 	return fixed, nil

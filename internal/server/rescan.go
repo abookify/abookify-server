@@ -85,11 +85,17 @@ func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 	if err := library.HealWorkTitles(store); err != nil {
 		applog.Warnf("system", "rescan: title heal failed: %v", err)
 	}
-	// Fix any chapter-label authors ("Chapter 7") from a text edition or blank.
-	if n, err := library.HealChapterLabelAuthors(store); err != nil {
+	// Strip ASIN/codec junk from titles.
+	if n, err := library.HealNoisyTitles(store); err != nil {
+		applog.Warnf("system", "rescan: title-noise heal failed: %v", err)
+	} else if n > 0 {
+		applog.Infof("system", "rescan: healed %d noisy title(s)", n)
+	}
+	// Fix chapter-label ("Chapter 7") or blank authors from a text edition.
+	if n, err := library.HealWorkAuthors(store); err != nil {
 		applog.Warnf("system", "rescan: author heal failed: %v", err)
 	} else if n > 0 {
-		applog.Infof("system", "rescan: healed %d chapter-label author(s)", n)
+		applog.Infof("system", "rescan: healed %d work author(s)", n)
 	}
 	worksAfter, _ := store.ListWorks()
 	for _, wk := range worksAfter {
