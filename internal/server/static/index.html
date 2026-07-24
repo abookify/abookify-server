@@ -199,6 +199,11 @@
     }
     .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
     .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(59,130,246,0.1); }
+    .sort-select {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.5rem 0.6rem; color: var(--text-muted); font-size: 0.85rem; cursor: pointer;
+    }
+    .sort-select:hover { border-color: var(--text-muted); color: var(--text); }
 
     .stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); }
 
@@ -1733,6 +1738,13 @@
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
     <button class="filter-btn" data-filter="text-only">Text only</button>
     <button class="filter-btn" data-filter="misaligned" title="Paired works with weak alignment — likely a wrong-edition ebook">Misaligned</button>
+    <select id="sort-select" class="sort-select" aria-label="Sort library" title="Sort library" onchange="onSortChange()">
+      <option value="default">Sort: Default</option>
+      <option value="title">Title (A–Z)</option>
+      <option value="author">Author (A–Z)</option>
+      <option value="year-desc">Year (newest)</option>
+      <option value="year-asc">Year (oldest)</option>
+    </select>
     <div class="stats" id="stats"></div>
     <label class="filter-btn" style="cursor:pointer;" title="Import .abook file">
       Import .abook
@@ -2753,6 +2765,8 @@
       if (q.free)   filtered = filtered.filter(w =>
         (w.title || '').toLowerCase().includes(q.free) || (w.author || '').toLowerCase().includes(q.free));
 
+      filtered = sortWorks(filtered);
+
       document.getElementById('stats').textContent = `${filtered.length} works`;
       const el = document.getElementById('works-list');
 
@@ -2762,6 +2776,30 @@
       }
 
       el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
+    }
+
+    // Library sort (client-side over the filtered set). "default" keeps the
+    // server order (series, then title). Persisted in localStorage.
+    let activeSort = localStorage.getItem('abookify_sort') || 'default';
+    function sortWorks(list) {
+      if (activeSort === 'default') return list;
+      const arr = list.slice();
+      const t = w => (w.title || '').toLowerCase();
+      const a = w => (w.author || '').toLowerCase();
+      const y = w => w.year || 0;
+      if (activeSort === 'title') arr.sort((x, z) => t(x).localeCompare(t(z)));
+      else if (activeSort === 'author') arr.sort((x, z) =>
+        (a(x) ? 0 : 1) - (a(z) ? 0 : 1) || a(x).localeCompare(a(z)) || t(x).localeCompare(t(z)));
+      else if (activeSort === 'year-desc') arr.sort((x, z) =>
+        (y(x) ? 0 : 1) - (y(z) ? 0 : 1) || y(z) - y(x) || t(x).localeCompare(t(z)));
+      else if (activeSort === 'year-asc') arr.sort((x, z) =>
+        (y(x) ? 0 : 1) - (y(z) ? 0 : 1) || y(x) - y(z) || t(x).localeCompare(t(z)));
+      return arr;
+    }
+    function onSortChange() {
+      activeSort = document.getElementById('sort-select').value;
+      localStorage.setItem('abookify_sort', activeSort);
+      render();
     }
 
     // Clicking an author name filters the library to that author (item 5).
@@ -6781,6 +6819,7 @@
     // aren't authenticated, show the login overlay. The rest of the SPA
     // still boots underneath but is covered until login succeeds.
     enforceAuthGate();
+    { const ss = document.getElementById('sort-select'); if (ss) ss.value = activeSort; } // restore saved sort
     loadWorks();
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
