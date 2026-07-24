@@ -112,6 +112,15 @@ func main() {
 		log.Printf("warning: matching failed: %v", err)
 	}
 
+	// One-time cleanup: fix works whose author is a chapter/track label
+	// ("Chapter 7") that leaked in from mis-tagged audio before the extractor
+	// guard. Idempotent — a no-op once authors are clean.
+	if n, err := library.HealChapterLabelAuthors(store); err != nil {
+		log.Printf("warning: author heal failed: %v", err)
+	} else if n > 0 {
+		log.Printf("healed %d work(s) with chapter-label authors", n)
+	}
+
 	// Import .stt.json sidecars produced by stt-cli (if any exist next to
 	// audio files). Idempotent — skips works that already have sync_data.
 	library.ImportSidecars(store, *libraryPath)

@@ -140,10 +140,12 @@ func MatchAndCreateWorks(store *db.Store) error {
 				if c.title == "" || len(b.Album) > len(c.title) {
 					c.title = b.Album
 				}
-			} else if b.Title != "" && c.title == "" && !looksLikeTrackNumber(b.Title) {
+			} else if b.Title != "" && c.title == "" && !looksLikeTrackNumber(b.Title) && !isChapterLabel(b.Title) {
 				c.title = b.Title
 			}
-			if b.Author != "" {
+			// A mis-tagged ARTIST ("Chapter 7", "Track 1") must never become the
+			// author — skip it and let a text edition or the fallback win.
+			if b.Author != "" && !isChapterLabel(b.Author) {
 				c.author = b.Author
 			}
 		} else {
@@ -339,6 +341,86 @@ func looksLikeTrackNumber(s string) bool {
 		}
 	}
 	return true
+}
+
+// chapterLabelRe matches a lone chapter/track heading — "Chapter 7", "chapter1",
+// "Track 1", "Part III", "Disc 2", or the bare word. Some rippers write the
+// chapter heading into an MP3's ARTIST/TITLE tag; those must never be treated as
+// an author or work title. The optional suffix accepts only digits or roman
+// numerals, so real names ("Partridge", "Sectional") don't match.
+var chapterLabelRe = regexp.MustCompile(`(?i)^(chapter|track|part|section|disc|disk|cd|side)\s*([0-9]+|[ivxlcdm]+)?$`)
+
+// isChapterLabel reports whether s reads as a chapter/track heading rather than a
+// real author/title (a bare track number counts too).
+func isChapterLabel(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	return looksLikeTrackNumber(s) || chapterLabelRe.MatchString(s)
+}
+
+// bestTextMeta picks the most authoritative text edition to borrow title/author
+// from: a publisher EPUB first, then any EPUB, then any text book that at least
+// has an author. Returns nil if none qualify.
+func bestTextMeta(texts []db.Book) *db.Book {
+	var epub, withAuthor *db.Book
+	for i := range texts {
+		b := &texts[i]
+		if b.Origin == "publisher_epub" && strings.TrimSpace(b.Author) != "" {
+			return b
+		}
+		if b.Format == "epub" && epub == nil {
+			epub = b
+		}
+		if strings.TrimSpace(b.Author) != "" && withAuthor == nil {
+			withAuthor = b
+		}
+	}
+	if epub != nil {
+		return epub
+	}
+	return withAuthor
+}
+
+// HealChapterLabelAuthors fixes works whose author is actually a chapter/track
+// heading (a mis-tagged audio ARTIST that leaked in before the extractor guard).
+// It re-derives title+author from an authoritative text edition (EPUB preferred)
+// when one is present, otherwise just clears the bogus author. Idempotent —
+// once an author is clean it no longer matches. Returns the number changed.
+func HealChapterLabelAuthors(store *db.Store) (int, error) {
+	works, err := store.ListWorks()
+	if err != nil {
+		return 0, err
+	}
+	fixed := 0
+	for i := range works {
+		w := &works[i]
+		if !isChapterLabel(w.Author) {
+			continue
+		}
+		newAuthor := "" // clearing the label is the floor; a clean source improves on it
+		newTitle := w.Title
+		if b := bestTextMeta(w.TextFiles); b != nil {
+			if a := strings.TrimSpace(b.Author); a != "" && !isChapterLabel(a) {
+				newAuthor = a
+			}
+			if t := strings.TrimSpace(b.Title); t != "" {
+				newTitle = t
+			}
+		}
+		if newAuthor == w.Author && newTitle == w.Title {
+			continue
+		}
+		// UpdateWorkMeta (not UpdateWork) so a blank author is actually written —
+		// UpdateWork treats "" as "no change". Preserve the other fields.
+		if err := store.UpdateWorkMeta(w.ID, newTitle, newAuthor, w.Series, w.SeriesIndex, w.Description, w.Year); err != nil {
+			return fixed, err
+		}
+		log.Printf("heal: work %d author %q→%q, title %q→%q", w.ID, w.Author, newAuthor, w.Title, newTitle)
+		fixed++
+	}
+	return fixed, nil
 }
 
 // titleFromDirName derives a readable title from a filesystem directory name.

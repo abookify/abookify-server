@@ -56,9 +56,21 @@ func ExtractMP3Metadata(path string) (Metadata, error) {
 		return Metadata{}, fmt.Errorf("read tags: %w", err)
 	}
 
+	// Some rippers write the chapter heading into the ARTIST (and TITLE) tag
+	// ("Chapter 7", "Track 1"). Never let that leak into author/title — drop it
+	// so the matcher falls back to the album tag, a text edition, or the folder
+	// name instead of stamping a chapter label onto the work.
+	author := m.Artist()
+	if isChapterLabel(author) {
+		author = ""
+	}
+	title := m.Title()
+	if isChapterLabel(title) {
+		title = ""
+	}
 	return Metadata{
-		Title:    m.Title(),
-		Author:   m.Artist(),
+		Title:    title,
+		Author:   author,
 		Album:    m.Album(),
 		Duration: probeDuration(path),
 	}, nil
