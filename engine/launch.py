@@ -40,6 +40,29 @@ def nvidia_lib_dirs() -> list[str]:
     return dirs
 
 
+def apply_device_hint() -> None:
+    """Honor the server's transcription device preference.
+
+    The server writes `<data-dir>/engine-device` (cuda|cpu) from its
+    stt_compute_mode setting; auto = no file. We resolve the data dir the same
+    way the server does (ABOOKIFY_DATA_DIR, else ~/.abookify) and, unless the
+    device is already pinned explicitly in the environment, export ABOOKIFY_DEVICE
+    so stt_server.py picks it up. Explicit env always wins; a missing/empty/auto
+    hint leaves the engine to auto-detect.
+    """
+    if os.environ.get("ABOOKIFY_DEVICE") or os.environ.get("WHISPER_DEVICE"):
+        return
+    base = os.environ.get("ABOOKIFY_DATA_DIR") or str(Path.home() / ".abookify")
+    hint = Path(base) / "engine-device"
+    try:
+        device = hint.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return
+    if device and device != "auto":
+        os.environ["ABOOKIFY_DEVICE"] = device
+        print(f"[engine] device hint: {device} (from {hint})")
+
+
 def child_env() -> dict:
     env = dict(os.environ)
     libdirs = nvidia_lib_dirs()
@@ -62,6 +85,7 @@ def main():
     if args.host:
         os.environ["ABOOKIFY_ENGINE_HOST"] = args.host
 
+    apply_device_hint()
     env = child_env()
     py = sys.executable
 

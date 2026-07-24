@@ -2921,6 +2921,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		delete(body, k)
 	}
 	llmTouched := false
+	computeTouched := false
 	for k, v := range body {
 		// If a secret field came back with the mask placeholder, the
 		// user didn't touch it on this save — keep the existing value
@@ -2935,6 +2936,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(k, "llm_") {
 			llmTouched = true
 		}
+		if k == "stt_compute_mode" {
+			computeTouched = true
+		}
 	}
 	// Rebuild the LLM client when any llm_* key changed so the next
 	// /api/works/{id}/ask call uses the freshly-saved key/model without
@@ -2942,7 +2946,54 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if llmTouched {
 		s.ReloadLLM()
 	}
+	// Re-write the engine device hint so the bundled hermetic engine picks up
+	// the new compute device on its next (re)start.
+	if computeTouched {
+		s.SyncEngineDeviceHint()
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// engineDeviceHintPath is the file the hermetic engine's launch.py reads to pick
+// its transcription device — a decoupling contract so the setting reaches the
+// engine without the server having to own/restart the engine process (in the
+// desktop bundle the engine is a sibling child of the Tauri shell). It lives at
+// the data-dir root, which the engine resolves the same way (ABOOKIFY_DATA_DIR
+// or ~/.abookify).
+func (s *Server) engineDeviceHintPath() string {
+	if s.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(s.DataDir, "engine-device")
+}
+
+// SyncEngineDeviceHint writes (or clears) the engine device hint from the
+// stt_compute_mode setting: gpu→"cuda", cpu→"cpu", auto→(no file, engine
+// auto-detects). Best-effort — a hint-file failure must never block a save.
+func (s *Server) SyncEngineDeviceHint() {
+	path := s.engineDeviceHintPath()
+	if path == "" {
+		return
+	}
+	mode, _ := s.store.GetSetting("stt_compute_mode")
+	var device string
+	switch mode {
+	case "gpu":
+		device = "cuda"
+	case "cpu":
+		device = "cpu"
+	default: // "auto" or unset — let the engine auto-detect
+		device = ""
+	}
+	if device == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			applog.Warn("server", fmt.Sprintf("clear engine device hint: %v", err))
+		}
+		return
+	}
+	if err := os.WriteFile(path, []byte(device+"\n"), 0o644); err != nil {
+		applog.Warn("server", fmt.Sprintf("write engine device hint: %v", err))
+	}
 }
 
 func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, error) {

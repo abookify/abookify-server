@@ -305,6 +305,10 @@ func main() {
 	// takes effect without a restart.
 	srv.ReloadLLM()
 
+	// Publish the engine device hint from the saved compute-mode setting so the
+	// hermetic engine picks the right device on its next (re)start (bundle path).
+	srv.SyncEngineDeviceHint()
+
 	// Start file watcher for live library updates
 	watcher, err := library.NewWatcher(store, *libraryPath, func() {
 		srv.Events.Broadcast(server.Event{Type: "library_updated"})
