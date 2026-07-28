@@ -64,6 +64,84 @@ def health():
     })
 
 
+def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter):
+    """One transcribe pass, fully materialized.
+
+    faster-whisper returns a LAZY generator, so decode errors surface while
+    iterating, not at the call — the list() is what makes a failure catchable.
+    """
+    segments, info = model.transcribe(
+        path,
+        language=language if language else None,
+        word_timestamps=word_timestamps,
+        vad_filter=vad_filter,
+        initial_prompt=initial_prompt,
+    )
+
+    result_segments = []
+    full_text_parts = []
+    for segment in segments:
+        seg_data = {
+            "start": round(segment.start, 3),
+            "end": round(segment.end, 3),
+            "text": segment.text.strip(),
+        }
+        if word_timestamps and segment.words:
+            seg_data["words"] = [
+                {
+                    "word": w.word,
+                    "start": round(w.start, 3),
+                    "end": round(w.end, 3),
+                    "probability": round(w.probability, 3),
+                }
+                for w in segment.words
+            ]
+        result_segments.append(seg_data)
+        full_text_parts.append(segment.text.strip())
+
+    return info, result_segments, full_text_parts
+
+
+def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
+    """Transcribe, stepping down one capability at a time on a model crash.
+
+    faster-whisper can hard-fail on a specific chunk — most often
+    "boolean index did not match indexed array ..." raised from the
+    word-alignment pass when VAD leaves it an empty speech array. That failure
+    is DETERMINISTIC, so the client's retry/backoff loop can never clear it: the
+    caller burns its attempts and drops the chunk, silently losing that stretch
+    of a book.
+
+    So degrade instead of failing, keeping the most valuable capability longest
+    (word timings drive karaoke, so VAD is dropped before they are). Returns
+    (info, segments, text_parts, degraded) where degraded names the fallback
+    that worked, or None when the normal path did.
+    """
+    ladder = [
+        (None, True, word_timestamps),
+        ("no_vad", False, word_timestamps),
+    ]
+    if word_timestamps:
+        # Last resort: segment-level times only. Costs word-level karaoke for
+        # this chunk, but keeps its text and coarse timings.
+        ladder.append(("no_vad_no_word_timestamps", False, False))
+
+    last_err = None
+    for degraded, vad, words in ladder:
+        try:
+            info, segs, parts = _run_transcribe(
+                path, language, words, initial_prompt, vad)
+            if degraded:
+                print(f"transcribe: recovered via {degraded} "
+                      f"(after: {last_err})", flush=True)
+            return info, segs, parts, degraded
+        except Exception as e:
+            last_err = e
+            print(f"transcribe: pass "
+                  f"(vad={vad}, word_timestamps={words}) failed: {e}", flush=True)
+    raise last_err
+
+
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
     """Transcribe an audio file.
@@ -90,45 +168,19 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        segments, info = model.transcribe(
-            tmp_path,
-            language=language if language else None,
-            word_timestamps=word_timestamps,
-            vad_filter=True,
-            initial_prompt=initial_prompt,
-        )
+        info, result_segments, full_text_parts, degraded = _transcribe_degrading(
+            tmp_path, language, word_timestamps, initial_prompt)
 
-        result_segments = []
-        full_text_parts = []
-
-        for segment in segments:
-            seg_data = {
-                "start": round(segment.start, 3),
-                "end": round(segment.end, 3),
-                "text": segment.text.strip(),
-            }
-
-            if word_timestamps and segment.words:
-                seg_data["words"] = [
-                    {
-                        "word": w.word,
-                        "start": round(w.start, 3),
-                        "end": round(w.end, 3),
-                        "probability": round(w.probability, 3),
-                    }
-                    for w in segment.words
-                ]
-
-            result_segments.append(seg_data)
-            full_text_parts.append(segment.text.strip())
-
-        return jsonify({
+        body = {
             "language": info.language,
             "language_probability": round(info.language_probability, 3),
             "duration": round(info.duration, 3),
             "text": " ".join(full_text_parts),
             "segments": result_segments,
-        })
+        }
+        if degraded:
+            body["degraded"] = degraded
+        return jsonify(body)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
