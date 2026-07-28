@@ -16,6 +16,10 @@ services:
       # back to CPU int8 at load time (a mismatched/absent driver degrades to
       # CPU instead of crash-looping the container).
       - WHISPER_DEVICE=auto
+      # Blank so server.py picks the compute type for the resolved device
+      # (float16 on cuda, int8 on cpu). Without this the base compose's
+      # WHISPER_COMPUTE_TYPE=int8 leaks through and pins the GPU to int8.
+      - WHISPER_COMPUTE_TYPE=
     ports:
       - "5200:5200"
     deploy:
