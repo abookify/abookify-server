@@ -227,6 +227,20 @@
       grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
       align-items: start;
     }
+    /* Grouped view (e.g. by author): the list becomes stacked sections, each
+       with a heading + its own poster grid. */
+    .works-list.grouped { display: block; }
+    .lib-group { margin-bottom: 30px; }
+    .lib-group .group-head {
+      font-family: var(--font-display, inherit); font-size: 1.1rem; color: var(--text);
+      margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+    }
+    .lib-group .group-head .count { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
+    .lib-group .group-grid {
+      display: grid; gap: 22px;
+      grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+      align-items: start;
+    }
 
     /* Poster card (#213). A book cover with a meta block below; the whole
        card is the click target into the work-detail view. Border-first with
@@ -1757,6 +1771,10 @@
       <option value="year-desc">Year (newest)</option>
       <option value="year-asc">Year (oldest)</option>
     </select>
+    <select id="group-select" class="sort-select" aria-label="Group library" title="Group library into sections" onchange="onGroupChange()">
+      <option value="none">Group: None</option>
+      <option value="author">By author</option>
+    </select>
     <div class="stats" id="stats"></div>
     <label class="filter-btn" style="cursor:pointer;" title="Import .abook file">
       Import .abook
@@ -2942,11 +2960,50 @@
       const el = document.getElementById('works-list');
 
       if (filtered.length === 0) {
+        el.classList.remove('grouped');
         el.innerHTML = `<div class="empty"><h2>No works found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
         return;
       }
 
-      el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
+      if (activeGroup === 'author') {
+        el.classList.add('grouped');
+        el.innerHTML = renderGroupedByAuthor(filtered);
+      } else {
+        el.classList.remove('grouped');
+        el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
+      }
+    }
+
+    // Group the (already filtered + sorted) works into author sections. Authors
+    // are ordered A–Z with "Unknown author" last; within a section the incoming
+    // sort order is preserved. Clicking a section heading filters to that author.
+    function renderGroupedByAuthor(works) {
+      const groups = new Map(); // display author -> works[]
+      for (const w of works) {
+        const author = (w.author || '').trim() || 'Unknown author';
+        if (!groups.has(author)) groups.set(author, []);
+        groups.get(author).push(w);
+      }
+      const names = [...groups.keys()].sort((a, b) => {
+        if (a === 'Unknown author') return 1;
+        if (b === 'Unknown author') return -1;
+        return a.toLowerCase().localeCompare(b.toLowerCase());
+      });
+      return names.map(name => {
+        const items = groups.get(name);
+        const head = name === 'Unknown author'
+          ? escapeHtml(name)
+          : `<span class="author-link" role="button" tabindex="0" title="Filter to ${escapeHtml(name)}" data-author="${attrEsc(name)}" onclick="filterByAuthor(this.dataset.author)">${escapeHtml(name)}</span>`;
+        return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} work${items.length === 1 ? '' : 's'}</span></h3>
+          <div class="group-grid">${items.map(posterCardHtml).join('')}</div></div>`;
+      }).join('');
+    }
+
+    let activeGroup = localStorage.getItem('abookify_group') || 'none';
+    function onGroupChange() {
+      activeGroup = document.getElementById('group-select').value;
+      localStorage.setItem('abookify_group', activeGroup);
+      render();
     }
 
     // Library sort (client-side over the filtered set). "default" keeps the
@@ -6991,6 +7048,7 @@
     // still boots underneath but is covered until login succeeds.
     enforceAuthGate();
     { const ss = document.getElementById('sort-select'); if (ss) ss.value = activeSort; } // restore saved sort
+    { const gs = document.getElementById('group-select'); if (gs) gs.value = activeGroup; } // restore saved grouping
     loadWorks();
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
