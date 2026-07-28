@@ -355,41 +355,42 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 
 		mp3Path := filepath.Join(outDir, fmt.Sprintf("chapter-%03d.mp3", chMeta.Index))
 
-		// Skip if already generated
-		if _, err := os.Stat(mp3Path); err == nil {
-			continue
-		}
+		// Synthesize only if the file isn't already there (resume / interrupted
+		// run). We STILL register + link + align it below even when reusing it —
+		// the book row may have been removed (edition deleted) while the mp3
+		// remained, so a regenerate-after-remove must re-attach the edition.
+		if _, err := os.Stat(mp3Path); err != nil {
+			// Preprocess text for natural speech
+			processedText := PreprocessForTTS(chMeta.Title, ch.Content)
 
-		// Preprocess text for natural speech
-		processedText := PreprocessForTTS(chMeta.Title, ch.Content)
+			// Split long text into chunks for TTS (~500 words each)
+			textChunks := SplitTextForTTS(processedText, 500)
+			var allAudio []byte
 
-		// Split long text into chunks for TTS (~500 words each)
-		textChunks := SplitTextForTTS(processedText, 500)
-		var allAudio []byte
+			for ci, chunk := range textChunks {
+				if len(textChunks) > 1 {
+					job.CurrentStep = fmt.Sprintf("Generating chapter %d/%d: %s (part %d/%d)",
+						i+1, len(chapters), chMeta.Title, ci+1, len(textChunks))
+					g.updateJob(job)
+				}
 
-		for ci, chunk := range textChunks {
-			if len(textChunks) > 1 {
-				job.CurrentStep = fmt.Sprintf("Generating chapter %d/%d: %s (part %d/%d)",
-					i+1, len(chapters), chMeta.Title, ci+1, len(textChunks))
-				g.updateJob(job)
+				audioData, err := g.ttsClient.Synthesize(chunk, voice)
+				if err != nil {
+					log.Printf("tts: synthesis failed for chapter %d chunk %d: %v", chMeta.Index, ci, err)
+					job.Status = "failed"
+					job.Error = fmt.Sprintf("chapter %d: %v", chMeta.Index, err)
+					g.updateJob(job)
+					return
+				}
+				allAudio = append(allAudio, audioData...)
 			}
 
-			audioData, err := g.ttsClient.Synthesize(chunk, voice)
-			if err != nil {
-				log.Printf("tts: synthesis failed for chapter %d chunk %d: %v", chMeta.Index, ci, err)
+			if err := os.WriteFile(mp3Path, allAudio, 0644); err != nil {
 				job.Status = "failed"
-				job.Error = fmt.Sprintf("chapter %d: %v", chMeta.Index, err)
+				job.Error = err.Error()
 				g.updateJob(job)
 				return
 			}
-			allAudio = append(allAudio, audioData...)
-		}
-
-		if err := os.WriteFile(mp3Path, allAudio, 0644); err != nil {
-			job.Status = "failed"
-			job.Error = err.Error()
-			g.updateJob(job)
-			return
 		}
 
 		// Register immediately with the source chapter title
