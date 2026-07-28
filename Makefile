@@ -1,5 +1,19 @@
 .PHONY: up down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
 
+# Compose invocation. IMPORTANT: on a GPU host the CUDA overlay MUST be passed on
+# EVERY `up` — even for a single service — or compose reconciles the project from
+# the base file alone and silently strips whisper's GPU config, dropping STT to
+# CPU (bit us after a reboot; the relay start.sh had the same bug). We auto-add
+# the overlay when an NVIDIA GPU is present (same probe the engine build.sh uses),
+# so `make up`, `make relay`, etc. stay GPU-correct. Force with GPU=1 / CPU with
+# GPU=0. To rebuild ONE service without stripping the GPU: `$(COMPOSE) up -d --build server`.
+GPU ?= $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q GPU && echo 1 || echo 0)
+COMPOSE_FILES := -f docker-compose.yml
+ifeq ($(GPU),1)
+COMPOSE_FILES += -f docker-compose.gpu.yml
+endif
+COMPOSE := docker compose $(COMPOSE_FILES)
+
 # Desktop-bundle server binaries (distribution / #56 Tauri shell). Produces a
 # STANDALONE, STATIC Go binary per target platform — CGO_ENABLED=0 (pure-Go
 # modernc.org/sqlite, no libc dependency), web UI + fonts embedded via
@@ -79,16 +93,16 @@ fonts:
 		echo "fonts: bundled $$(du -h internal/server/static/fonts/InterVariable.woff2 | cut -f1) InterVariable.woff2 + $$(du -h internal/server/static/fonts/Fraunces-standard.woff2 | cut -f1) Fraunces-standard.woff2"'
 
 up:
-	docker compose up -d --build
+	$(COMPOSE) up -d --build
 
 down:
-	docker compose down
+	$(COMPOSE) down
 
 restart:
-	docker compose restart
+	$(COMPOSE) restart
 
 logs:
-	docker compose logs -f --tail=100
+	$(COMPOSE) logs -f --tail=100
 
 build:
 	docker run --rm -v "$$(pwd)":/app -w /app golang:1.24-bookworm go build -buildvcs=false ./cmd/abookify
@@ -106,11 +120,11 @@ smoke:
 
 # Start everything + nullbore tunnel (reads engineering/relay/.env)
 relay:
-	docker compose up -d --build
+	$(COMPOSE) up -d --build
 	../relay/start.sh
 
 relay-down:
-	docker compose --profile relay down
+	$(COMPOSE) --profile relay down
 
 # Build CLI tools as static binaries (copy to GPU box via scp)
 build-cli:
