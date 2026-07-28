@@ -1774,6 +1774,7 @@
     <select id="group-select" class="sort-select" aria-label="Group library" title="Group library into sections" onchange="onGroupChange()">
       <option value="none">Group: None</option>
       <option value="author">By author</option>
+      <option value="genre">By genre</option>
     </select>
     <div class="stats" id="stats"></div>
     <label class="filter-btn" style="cursor:pointer;" title="Import .abook file">
@@ -1828,6 +1829,8 @@
             <div style="flex:0 0 76px;"><label style="font-size:0.75rem; color:var(--text-muted);">Year</label>
               <input id="meta-year" type="number" step="1" min="0" max="2200" placeholder="—" style="width:100%; padding:8px; margin:3px 0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></div>
           </div>
+          <label style="font-size:0.75rem; color:var(--text-muted);">Genre</label>
+          <input id="meta-genre" type="text" placeholder="e.g. Fiction / Fantasy" style="width:100%; padding:8px; margin:3px 0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
           <label style="font-size:0.75rem; color:var(--text-muted);">Description</label>
           <textarea id="meta-description" rows="4" style="width:100%; padding:8px; margin:3px 0 6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; resize:vertical;"></textarea>
         </div>
@@ -2597,6 +2600,7 @@
       document.getElementById('meta-series').value = work.series || '';
       document.getElementById('meta-series-index').value = work.series_index || '';
       document.getElementById('meta-year').value = work.year || '';
+      document.getElementById('meta-genre').value = work.genre || '';
       document.getElementById('meta-description').value = work.description || '';
       // cache-bust the cover so a just-changed image shows immediately
       document.getElementById('meta-cover').src = `/api/works/${workId}/cover?t=${Date.now()}`;
@@ -2832,6 +2836,7 @@
         series_index: parseFloat(document.getElementById('meta-series-index').value) || 0,
         description: document.getElementById('meta-description').value.trim(),
         year: parseInt(document.getElementById('meta-year').value, 10) || 0,
+        genre: document.getElementById('meta-genre').value.trim(),
       };
       metaStatus('Saving…');
       const res = await fetch(`/api/works/${workId}/metadata`, {
@@ -2965,35 +2970,37 @@
         return;
       }
 
-      if (activeGroup === 'author') {
+      if (activeGroup === 'author' || activeGroup === 'genre') {
         el.classList.add('grouped');
-        el.innerHTML = renderGroupedByAuthor(filtered);
+        el.innerHTML = renderGrouped(filtered, activeGroup);
       } else {
         el.classList.remove('grouped');
         el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
       }
     }
 
-    // Group the (already filtered + sorted) works into author sections. Authors
-    // are ordered A–Z with "Unknown author" last; within a section the incoming
-    // sort order is preserved. Clicking a section heading filters to that author.
-    function renderGroupedByAuthor(works) {
-      const groups = new Map(); // display author -> works[]
+    // Group the (already filtered + sorted) works into sections by `field`
+    // ('author' or 'genre'). Sections are A–Z with the "Unknown …" bucket last;
+    // within a section the incoming sort order is preserved. An author heading is
+    // clickable to filter to that author.
+    function renderGrouped(works, field) {
+      const unknown = field === 'genre' ? 'Unknown genre' : 'Unknown author';
+      const groups = new Map();
       for (const w of works) {
-        const author = (w.author || '').trim() || 'Unknown author';
-        if (!groups.has(author)) groups.set(author, []);
-        groups.get(author).push(w);
+        const key = ((field === 'genre' ? w.genre : w.author) || '').trim() || unknown;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(w);
       }
       const names = [...groups.keys()].sort((a, b) => {
-        if (a === 'Unknown author') return 1;
-        if (b === 'Unknown author') return -1;
+        if (a === unknown) return 1;
+        if (b === unknown) return -1;
         return a.toLowerCase().localeCompare(b.toLowerCase());
       });
       return names.map(name => {
         const items = groups.get(name);
-        const head = name === 'Unknown author'
-          ? escapeHtml(name)
-          : `<span class="author-link" role="button" tabindex="0" title="Filter to ${escapeHtml(name)}" data-author="${attrEsc(name)}" onclick="filterByAuthor(this.dataset.author)">${escapeHtml(name)}</span>`;
+        const head = (field === 'author' && name !== unknown)
+          ? `<span class="author-link" role="button" tabindex="0" title="Filter to ${escapeHtml(name)}" data-author="${attrEsc(name)}" onclick="filterByAuthor(this.dataset.author)">${escapeHtml(name)}</span>`
+          : escapeHtml(name);
         return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} work${items.length === 1 ? '' : 's'}</span></h3>
           <div class="group-grid">${items.map(posterCardHtml).join('')}</div></div>`;
       }).join('');
