@@ -363,6 +363,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/cover", s.handleUploadCover)
 	mux.HandleFunc("POST /api/works/{id}/cover/from-url", s.handlePickCover)
 	mux.HandleFunc("DELETE /api/works/{id}/sources/{bookId}", s.handleDeleteSource)
+	mux.HandleFunc("GET /api/works/{id}/editions", s.handleListEditions)
 	mux.HandleFunc("PATCH /api/works/{id}/editions", s.handleRelabelEdition)
 	mux.HandleFunc("GET /api/books/{id}/chapters", s.handleListChapters)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{index}", s.handleGetChapter)
@@ -1153,20 +1154,40 @@ func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional voice from request body
+	// Optional: which text edition to narrate (default the highest-authority /
+	// first), the voice, and an edition label for the coexisting audio edition.
 	var req struct {
-		Voice string `json:"voice"`
+		Voice      string `json:"voice"`
+		TextBookID int64  `json:"text_book_id"`
+		Edition    string `json:"edition"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
 	textBookID := work.TextFiles[0].ID
-	jobID, started := s.Generator.GenerateAudioFromText(workID, textBookID, req.Voice)
+	if req.TextBookID != 0 {
+		ok := false
+		for _, tf := range work.TextFiles {
+			if tf.ID == req.TextBookID && tf.Visibility != "internal" {
+				textBookID, ok = req.TextBookID, true
+				break
+			}
+		}
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text_book_id is not a visible text source on this work"})
+			return
+		}
+	}
+	edition := strings.TrimSpace(req.Edition)
+	if edition == "" {
+		edition = "Kokoro · " + voiceLabel(req.Voice)
+	}
+	jobID, started := s.Generator.GenerateAudioFromText(workID, textBookID, req.Voice, edition)
 	if !started {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
+	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID, "edition": edition})
 }
 
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
@@ -1553,9 +1574,10 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 	// display_text_book_id:0 to clear the override (a plain int64
 	// couldn't distinguish "clear" from "field absent").
 	var req struct {
-		Title             string `json:"title"`
-		Author            string `json:"author"`
-		DisplayTextBookID *int64 `json:"display_text_book_id,omitempty"`
+		Title              string `json:"title"`
+		Author             string `json:"author"`
+		DisplayTextBookID  *int64 `json:"display_text_book_id,omitempty"`
+		DisplayAudioBookID *int64 `json:"display_audio_book_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -1590,6 +1612,31 @@ func (s *Server) handleUpdateWork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.store.SetDisplayTextBook(workID, bookID); err != nil {
+			writeServerError(w, r, err)
+			return
+		}
+	}
+	if req.DisplayAudioBookID != nil {
+		bookID := *req.DisplayAudioBookID
+		if bookID != 0 {
+			work, err := s.store.GetWork(workID)
+			if err != nil || work == nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+				return
+			}
+			ok := false
+			for _, af := range work.AudioFiles {
+				if af.ID == bookID && af.Visibility != "internal" {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "book is not a visible audio source on this work"})
+				return
+			}
+		}
+		if err := s.store.SetDisplayAudioBook(workID, bookID); err != nil {
 			writeServerError(w, r, err)
 			return
 		}

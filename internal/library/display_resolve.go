@@ -35,9 +35,19 @@ func ResolveDisplayText(work *db.Work) *db.Book {
 	return resolveByAuthority(work.TextFiles)
 }
 
-// ResolveDisplayAudio returns the highest-authority visible audio source for a
-// work. Prefers author recordings > narrator > librivox > TTS-generated.
+// ResolveDisplayAudio returns the audio source the player should default to:
+// the user's pinned edition (Work.DisplayAudioBookID, if still visible on the
+// work) else the highest-authority visible audio. Prefers author recordings >
+// narrator > librivox > TTS-generated. Stale overrides fall through.
 func ResolveDisplayAudio(work *db.Work) *db.Book {
+	if work.DisplayAudioBookID != 0 {
+		for i := range work.AudioFiles {
+			b := &work.AudioFiles[i]
+			if b.ID == work.DisplayAudioBookID && b.Visibility != "internal" {
+				return b
+			}
+		}
+	}
 	return resolveByAuthority(work.AudioFiles)
 }
 

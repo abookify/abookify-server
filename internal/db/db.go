@@ -35,6 +35,9 @@ type Work struct {
 	// DisplayTextBookID is the user's per-work override of the display
 	// resolver. 0 = no override (resolver picks by OriginAuthority).
 	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
+	// DisplayAudioBookID is the analogous per-work override for which audio
+	// edition plays. 0 = no override (resolver picks by OriginAuthority).
+	DisplayAudioBookID int64 `json:"display_audio_book_id,omitempty"`
 	AudioFiles   []Book         `json:"audio_files,omitempty"`
 	TextFiles    []Book         `json:"text_files,omitempty"`
 	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
@@ -566,6 +569,7 @@ func migrate(db *sql.DB) error {
 		// wants the transcript even though a publisher EPUB is present
 		// (e.g. comparing narration line-by-line to the printed text).
 		`ALTER TABLE works ADD COLUMN display_text_book_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE works ADD COLUMN display_audio_book_id INTEGER NOT NULL DEFAULT 0`,
 		// Local-first sync version stamps (design/local-first-sync.md).
 		// schema_version = shape of the exported book.db (a code constant,
 		// abook.BookDBSchemaVersion); content_version = RFC3339 UTC timestamp
@@ -874,6 +878,14 @@ func (s *Store) SetDisplayTextBook(workID, bookID int64) error {
 	return err
 }
 
+// SetDisplayAudioBook records the user's per-work choice of which audio edition
+// the player should default to. Pass 0 to clear the override. Same
+// caller-verifies-ownership contract as SetDisplayTextBook.
+func (s *Store) SetDisplayAudioBook(workID, bookID int64) error {
+	_, err := s.db.Exec(`UPDATE works SET display_audio_book_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, bookID, workID)
+	return err
+}
+
 // StampVersions records that a work was just (re)processed: it sets
 // schema_version to the given current book.db shape and content_version to
 // the current UTC time (RFC3339). Call this at the end of any operation that
@@ -1041,7 +1053,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	// ASCII-case-insensitive, and the patterns are mutually exclusive
 	// ("A %" can't match "An "), so order of the WHENs doesn't matter.
 	rows, err := s.db.Query(`
-		SELECT id, title, author, series, series_index, description, year, display_text_book_id, schema_version, content_version, created_at, updated_at
+		SELECT id, title, author, series, series_index, description, year, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at
 		FROM works
 		ORDER BY series, series_index,
 			CASE
@@ -1059,7 +1071,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -1096,8 +1108,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, series, series_index, description, year, display_text_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, description, year, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

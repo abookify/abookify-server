@@ -1,5 +1,7 @@
 package server
 
+import "strings"
+
 // Backend-driven settings schema (#202). Web AND mobile had their settings
 // UIs hardcoded against the flat /api/settings KV and drifted; this is the
 // single source of truth they both render from. The schema describes the
@@ -90,6 +92,23 @@ var kokoroVoiceGroups = []SettingsOptionGroup{
 	{Label: "Male · British English", Options: []SettingsOption{
 		{"bm_george", "George"}, {"bm_daniel", "Daniel"}, {"bm_lewis", "Lewis"},
 	}},
+}
+
+// voiceLabel returns the friendly display name for a Kokoro voice id (just the
+// first word of the catalog label, e.g. "af_heart" → "Heart"), defaulting to
+// Heart when the id is empty/unknown. Used to name a generated TTS edition.
+func voiceLabel(voice string) string {
+	if voice == "" || strings.HasPrefix(voice, "en_US") {
+		voice = "af_heart"
+	}
+	for _, g := range kokoroVoiceGroups {
+		for _, o := range g.Options {
+			if o.Value == voice {
+				return strings.Fields(o.Label)[0] // "Heart (default, natural)" → "Heart"
+			}
+		}
+	}
+	return voice
 }
 
 // SettingsSchema returns the canonical settings schema (#202). Static — the
