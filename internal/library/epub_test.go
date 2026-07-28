@@ -68,3 +68,57 @@ func TestHtmlToText_EntitiesAndFootnoteArtifacts(t *testing.T) {
 		})
 	}
 }
+
+func TestTrimGutenbergBoilerplate(t *testing.T) {
+	// Shape taken from a real PG epub (#75011): sentinels sit in a <span>
+	// inside pg-boilerplate divs, licence text runs to the end of the file.
+	const doc = `<div id="pg-header"><p>Title: All Quiet</p><p>Release date: 2025</p>
+<div id="pg-start-separator">
+<span>*** START OF THE PROJECT GUTENBERG EBOOK ALL QUIET ON THE WESTERN FRONT ***</span>
+</div></div>
+<h2>CHAPTER I</h2><p>We are at rest five miles behind the front.</p>
+<h2>CHAPTER XII</h2><p>It is autumn.</p>
+<div class="pg-boilerplate pgheader footer" id="pg-footer">
+<div id="pg-end-separator">
+<span>*** END OF THE PROJECT GUTENBERG EBOOK ALL QUIET ON THE WESTERN FRONT ***</span>
+</div>
+<p>Updated editions will replace the previous one.</p>
+<p>Project Gutenberg is a registered trademark, and may not be used if you charge for an eBook.</p></div>`
+
+	got := trimGutenbergBoilerplate(doc)
+
+	for _, leaked := range []string{"Release date", "registered trademark", "Updated editions"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("boilerplate %q survived the trim:\n%s", leaked, got)
+		}
+	}
+	for _, kept := range []string{"CHAPTER I", "five miles behind the front", "CHAPTER XII", "It is autumn"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("book text %q was trimmed away:\n%s", kept, got)
+		}
+	}
+}
+
+func TestTrimGutenbergBoilerplate_NonGutenbergUntouched(t *testing.T) {
+	// A publisher epub has no sentinels and must come back byte-identical —
+	// the trim must never guess at where a non-PG book starts or ends.
+	const doc = `<h1>Chapter One</h1><p>It was a bright cold day in April.</p>`
+	if got := trimGutenbergBoilerplate(doc); got != doc {
+		t.Errorf("non-PG document was modified:\ngot  %q\nwant %q", got, doc)
+	}
+}
+
+func TestTrimGutenbergBoilerplate_ThisVariantAndOnlyFooter(t *testing.T) {
+	// Older PG files say "THIS PROJECT GUTENBERG EBOOK"; and a spine file may
+	// contain only the footer sentinel (extractPerSpineFile trims per file).
+	const doc = `<p>The last line of the book.</p>
+<span>*** END OF THIS PROJECT GUTENBERG EBOOK ALICE ***</span>
+<p>Section 1. General Terms of Use.</p>`
+	got := trimGutenbergBoilerplate(doc)
+	if strings.Contains(got, "General Terms of Use") {
+		t.Errorf("footer licence survived:\n%s", got)
+	}
+	if !strings.Contains(got, "The last line of the book.") {
+		t.Errorf("book text was trimmed away:\n%s", got)
+	}
+}

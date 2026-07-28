@@ -137,13 +137,15 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		book.WriteString("\n")
 	}
 
+	bookHTML := trimGutenbergBoilerplate(book.String())
+
 	var chapters []db.Chapter
 	chapterIdx := 0
 
 	// Split on chapter headings. nil => no chapter headings detected, so fall
 	// back to the original one-chapter-per-spine-file extraction (correct for
 	// EPUBs that put one chapter per file or use non-standard chapter titles).
-	segments := splitHTMLByHeadings(book.String())
+	segments := splitHTMLByHeadings(bookHTML)
 	if segments == nil {
 		return extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID)
 	}
@@ -180,6 +182,37 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 
 // extractPerSpineFile is the original one-chapter-per-spine-file extraction,
 // used as a fallback for EPUBs where no chapter headings are detected.
+// Project Gutenberg wraps every ebook in a licence header and footer, fenced by
+// these sentinels. The fence text has been stable across PG's epub generations
+// (the surrounding markup has not), so match on it rather than on the
+// `pg-boilerplate` classes that only modern PG files carry.
+var (
+	pgStartRe = regexp.MustCompile(`(?is)\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*`)
+	pgEndRe   = regexp.MustCompile(`(?is)\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*`)
+)
+
+// trimGutenbergBoilerplate drops everything outside the PG sentinels.
+//
+// Left in, the ~2,900-word licence fuses onto the FINAL chapter (there is no
+// heading to split it off) and the header becomes a phantom leading chapter.
+// That is wrong twice over: the reader shows the licence as the end of the
+// book, and alignment counts those words as ebook content the narrator skipped,
+// depressing the ebook→audio coverage of every PG-sourced work.
+//
+// Cutting at the sentinel can leave orphaned closing tags; harmless, since both
+// callers immediately run the result through htmlToText / sanitizeHTML. A file
+// with no sentinels (any non-PG epub) is returned untouched.
+func trimGutenbergBoilerplate(html string) string {
+	if loc := pgStartRe.FindStringIndex(html); loc != nil {
+		html = html[loc[1]:]
+	}
+	// Re-scan AFTER the leading cut — the earlier trim shifts every offset.
+	if loc := pgEndRe.FindStringIndex(html); loc != nil {
+		html = html[:loc[0]]
+	}
+	return html
+}
+
 func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]manifestItem, opfDir string, tocTitles map[string]string, bookID int64) ([]db.Chapter, error) {
 	var chapters []db.Chapter
 	chapterIdx := 0
@@ -198,7 +231,7 @@ func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]mani
 		if err != nil {
 			continue
 		}
-		rawHTML := string(content)
+		rawHTML := trimGutenbergBoilerplate(string(content))
 		text := strings.TrimSpace(htmlToText(rawHTML))
 		if len(text) < 20 {
 			continue
