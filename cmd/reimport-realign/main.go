@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
 )
@@ -42,4 +43,14 @@ func main() {
 		log.Fatalf("realign work %d: %v", *workID, err)
 	}
 	fmt.Printf("anchor coverage after re-align: %.4f\n", cov)
+
+	// Local-first sync contract: content_version must move on ANY data change,
+	// or mobile's update-check never re-fetches the work. The post-STT hook in
+	// the server stamps; this out-of-band path has to stamp for itself, or a
+	// re-transcribed + re-aligned work stays invisible to already-synced
+	// devices.
+	if err := store.StampVersions(*workID, abook.BookDBSchemaVersion); err != nil {
+		log.Fatalf("stamp versions for work %d: %v", *workID, err)
+	}
+	fmt.Printf("stamped content_version (schema v%d)\n", abook.BookDBSchemaVersion)
 }
