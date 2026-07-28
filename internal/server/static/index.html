@@ -1635,6 +1635,18 @@
     .ed-act { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; cursor: pointer; flex: 0 0 auto; }
     .ed-act:hover { border-color: var(--accent); color: var(--accent); }
     .ed-act.danger:hover { border-color: var(--mp3); color: var(--mp3); }
+    /* Editions panel: grouped rows with provenance + a default radio. */
+    .ed-sec { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 8px 0 3px; }
+    .ed-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 5px; }
+    .ed-radio { flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; margin: 0; }
+    .ed-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ed-meta { color: var(--text-muted); }
+    .prov-badge { flex: 0 0 auto; font-size: 0.66rem; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+    .prov-badge.human { border-color: #1e7a46; color: #1e7a46; }
+    .prov-badge.tts { border-color: var(--accent); color: var(--accent); }
+    .prov-badge.transcript { border-color: #8a5a00; color: #8a5a00; }
+    .prov-badge.publisher { border-color: #7c3aed; color: #7c3aed; }
+    .prov-badge.personal { border-color: var(--text-muted); color: var(--text-muted); }
     .job-item.failed .job-spinner { display: none; }
 
     .empty { text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
@@ -1810,15 +1822,59 @@
         </div>
         <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:8px; max-height:200px; overflow:auto;"></div>
       </div>
-      <!-- Editions: list all audio + text sources in this work, remove extras -->
+      <!-- Editions: every audio + text edition, with default / rename / remove -->
       <div id="meta-editions" style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
-        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Editions in this work</div>
-        <div id="meta-editions-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+          <span style="font-size:0.75rem; color:var(--text-muted);">Editions in this work — ◉ marks the default</span>
+          <button type="button" onclick="openTTSWizard()" style="font-size:0.74rem; padding:5px 11px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">➕ Generate narration</button>
+        </div>
+        <div id="meta-editions-list" style="display:flex; flex-direction:column; gap:2px;"></div>
       </div>
       <div id="meta-status" style="font-size:0.75rem; color:var(--text-muted); margin-top:8px; min-height:1em;"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
         <button data-modal-close onclick="closeMetaEditor()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Close</button>
         <button onclick="saveMeta()" style="background:var(--accent); border:none; color:#fff; border-radius:6px; padding:6px 16px; cursor:pointer;">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TTS-trial wizard: pick a text edition + chapter, preview the text, audition
+       a voice, then generate a full narration edition that coexists via the queue. -->
+  <div id="tts-wizard" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:110; align-items:center; justify-content:center;">
+    <div role="dialog" aria-modal="true" aria-label="Generate narration" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; max-width:560px; width:94%; max-height:90vh; overflow:auto;">
+      <h3 style="margin:0 0 4px; color:var(--text);">Generate a narration (TTS)</h3>
+      <p style="font-size:0.8rem; color:var(--text-muted); margin:0 0 14px;">Creates a new Kokoro-narrated audio edition that lives alongside the existing ones. Progress shows in the processing queue.</p>
+      <input type="hidden" id="tts-work-id">
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:180px;">
+          <label style="font-size:0.72rem; color:var(--text-muted);">From text edition</label>
+          <select id="tts-text-book" onchange="ttsLoadChapters()" style="width:100%; padding:7px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
+        </div>
+        <div style="flex:1; min-width:150px;">
+          <label style="font-size:0.72rem; color:var(--text-muted);">Preview chapter</label>
+          <select id="tts-chapter" onchange="ttsLoadChapterText()" style="width:100%; padding:7px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <label style="font-size:0.72rem; color:var(--text-muted);">Text that will be spoken (preview)</label>
+        <div id="tts-text-preview" style="max-height:150px; overflow:auto; font-size:0.85rem; line-height:1.55; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:9px; margin-top:3px; white-space:pre-wrap;">—</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:flex-end; margin-top:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:180px;">
+          <label style="font-size:0.72rem; color:var(--text-muted);">Voice</label>
+          <select id="tts-voice" onchange="ttsOnVoiceChange()" style="width:100%; padding:7px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
+        </div>
+        <button type="button" onclick="ttsAudition()" style="flex:0 0 auto; font-size:0.8rem; padding:8px 14px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">▶ Audition voice</button>
+        <audio id="tts-audition" style="display:none;"></audio>
+      </div>
+      <div style="margin-top:12px;">
+        <label style="font-size:0.72rem; color:var(--text-muted);">Edition name</label>
+        <input id="tts-edition" type="text" placeholder="Kokoro · Heart" oninput="this.dataset.touched='1'" style="width:100%; padding:7px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+      </div>
+      <div id="tts-wizard-status" style="font-size:0.75rem; color:var(--text-muted); margin-top:10px; min-height:1em;"></div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+        <button onclick="closeTTSWizard()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Cancel</button>
+        <button onclick="ttsGenerate()" style="background:var(--accent); border:none; color:#fff; border-radius:6px; padding:6px 16px; cursor:pointer;">Generate edition</button>
       </div>
     </div>
   </div>
@@ -2529,7 +2585,7 @@
       document.getElementById('meta-cover-query').value = '';
       document.getElementById('meta-cover-grid').style.display = 'none';
       document.getElementById('meta-status').textContent = '';
-      renderEditions(work);
+      renderEditions(work.id);
       document.getElementById('meta-dialog').style.display = 'flex';
       setTimeout(() => document.getElementById('meta-title').focus(), 50);
     }
@@ -2568,42 +2624,62 @@
     // List the work's audio + text sources GROUPED by edition, each with a
     // rename + remove action (dedupe / curate). The last remaining edition can't
     // be removed.
-    function renderEditions(work) {
+    // Render the work's editions from the server API (GET /api/works/{id}/editions),
+    // grouped by edition with a provenance badge, a "default" radio (which audio
+    // plays / which text shows), rename, and remove-by-edition. Mobile consumes
+    // the same endpoint for its provenance display.
+    async function renderEditions(workId) {
       const list = document.getElementById('meta-editions-list');
-      const audio = (work.audio_files || []);
-      const text = (work.text_files || []);
-      const groups = [];
-      for (const g of groupEditions(text)) groups.push({ kind: 'text', books: g });
-      for (const g of groupEditions(audio)) groups.push({ kind: 'audio', books: g });
-      const totalBooks = audio.length + text.length;
+      list.innerHTML = '<span style="font-size:0.75rem; color:var(--text-muted);">Loading editions…</span>';
+      let data;
+      try { data = await fetch(`/api/works/${workId}/editions`).then(r => r.json()); }
+      catch { list.innerHTML = '<span style="font-size:0.75rem; color:var(--danger);">Could not load editions.</span>'; return; }
+      const sections = [
+        { media: 'audio', icon: '🔊', title: 'Audio', eds: data.audio || [] },
+        { media: 'text', icon: '📄', title: 'Text', eds: data.text || [] },
+      ];
+      const total = (data.audio || []).length + (data.text || []).length;
+      let html = '';
+      for (const sec of sections) {
+        if (!sec.eds.length) continue;
+        html += `<div class="ed-sec">${sec.icon} ${sec.title}</div>`;
+        for (const e of sec.eds) {
+          const idsAttr = attrEsc(JSON.stringify(e.book_ids));
+          const meta = [e.format ? e.format.toUpperCase() : '',
+            e.file_count === 1 ? '1 file' : e.file_count + ' files',
+            e.chapter_count ? e.chapter_count + ' ch' : ''].filter(Boolean).join(' · ');
+          const canRemove = total > 1;
+          html += `<div class="ed-row">
+            <input type="radio" class="ed-radio" name="def-${sec.media}" ${e.is_default ? 'checked' : ''}
+              title="Set as the default ${sec.media} edition"
+              onclick="setDefaultEdition(${workId}, '${sec.media}', ${e.book_ids[0]})">
+            <span class="prov-badge ${escapeHtml(e.prov_kind || '')}">${escapeHtml(e.provenance || '')}</span>
+            <span class="ed-name">${escapeHtml(e.label || '')}<span class="ed-meta"> · ${escapeHtml(meta)}</span></span>
+            <button class="ed-act" onclick="relabelEdition(${workId}, ${idsAttr}, ${attrEsc(JSON.stringify(e.edition || ''))})">Rename</button>
+            ${canRemove
+              ? `<button class="ed-act danger" onclick="removeEdition(${workId}, ${idsAttr}, ${attrEsc(JSON.stringify(e.label || ''))})">Remove</button>`
+              : `<span style="font-size:0.7rem; color:var(--text-muted);">only edition</span>`}
+          </div>`;
+        }
+      }
+      list.innerHTML = html || '<span style="font-size:0.75rem; color:var(--text-muted);">No editions.</span>';
+    }
 
-      const rows = groups.map(g => {
-        const b = g.books[0];
-        const ids = g.books.map(x => x.id);
-        const name = b.edition || b.album || prettyOrigin(b.origin) || b.title || b.filename || ('book ' + b.id);
-        const parts = [];
-        if (!b.edition && b.origin) parts.push(prettyOrigin(b.origin));
-        if (b.format) parts.push(b.format.toUpperCase());
-        parts.push(g.books.length === 1 ? '1 file' : g.books.length + ' files');
-        const sub = parts.filter(Boolean).join(' · ');
-        // Removing this edition must leave at least one source behind.
-        const canRemove = totalBooks - g.books.length >= 1;
-        const rm = canRemove
-          ? `<button class="ed-act danger" onclick="removeEdition(${work.id}, ${attrEsc(JSON.stringify(ids))}, ${attrEsc(JSON.stringify(name))})">Remove</button>`
-          : `<span style="font-size:0.7rem; color:var(--text-muted);">only edition</span>`;
-        return `<div style="display:flex; align-items:center; gap:8px; font-size:0.78rem; padding:6px 9px; border:1px solid var(--border); border-radius:6px;">
-          <span style="flex:0 0 auto;">${g.kind === 'audio' ? '🔊' : '📄'}</span>
-          <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}<span style="color:var(--text-muted);"> — ${escapeHtml(sub)}</span></span>
-          <button class="ed-act" onclick="relabelEdition(${work.id}, ${attrEsc(JSON.stringify(ids))}, ${attrEsc(JSON.stringify(b.edition || ''))})">Rename</button>
-          ${rm}</div>`;
+    async function setDefaultEdition(workId, media, bookId) {
+      const field = media === 'audio' ? 'display_audio_book_id' : 'display_text_book_id';
+      metaStatus('Setting default edition…');
+      const res = await fetch(`/api/works/${workId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: bookId }),
       });
-      list.innerHTML = rows.join('') || '<span style="font-size:0.75rem; color:var(--text-muted);">No editions.</span>';
+      if (!res.ok) { metaStatus('Set default failed: ' + (await metaErr(res)), true); await renderEditions(workId); return; }
+      metaStatus(`Default ${media} edition updated.`);
+      loadWorks(); // the grid's play target / reader source may change
+      await renderEditions(workId);
     }
 
     async function refreshEditions(workId) {
-      await loadWorks();
-      const work = (allWorks || []).find(w => w.id === workId);
-      if (work) renderEditions(work); else closeMetaEditor();
+      loadWorks(); // refresh the library grid in the background
+      await renderEditions(workId);
     }
 
     async function removeEdition(workId, bookIds, name) {
@@ -2631,6 +2707,101 @@
       await refreshEditions(workId);
       metaStatus('Edition renamed.');
     }
+
+    // ---- TTS-trial wizard: pick text edition + chapter → preview → voice → generate ----
+    let ttsWizardWork = null;
+    let ttsVoiceLabels = {};
+
+    async function openTTSWizard() {
+      const workId = parseInt(document.getElementById('meta-work-id').value, 10);
+      if (!workId) return;
+      ttsWizardWork = workId;
+      document.getElementById('tts-work-id').value = workId;
+      ttsWizStatus('');
+      const edEl = document.getElementById('tts-edition'); edEl.dataset.touched = '';
+      const data = await fetch(`/api/works/${workId}/editions`).then(r => r.json()).catch(() => ({}));
+      const texts = data.text || [];
+      if (!texts.length) { alert('This work has no text edition to narrate — add an EPUB first.'); return; }
+      document.getElementById('tts-text-book').innerHTML = texts.map(e =>
+        `<option value="${e.book_ids[0]}">${escapeHtml(e.label)} (${escapeHtml(e.provenance)})</option>`).join('');
+      await ttsPopulateVoices();
+      ttsOnVoiceChange();
+      document.getElementById('tts-wizard').style.display = 'flex';
+      await ttsLoadChapters();
+    }
+    function closeTTSWizard() {
+      const a = document.getElementById('tts-audition'); if (a) a.pause();
+      document.getElementById('tts-wizard').style.display = 'none';
+    }
+    async function ttsPopulateVoices() {
+      const sel = document.getElementById('tts-voice');
+      if (sel.options.length) return;
+      try {
+        const schema = await fetch('/api/settings/schema').then(r => r.json());
+        let field = null;
+        for (const g of (schema.groups || [])) for (const f of (g.fields || [])) if (f.key === 'tts_voice') field = f;
+        if (field && field.option_groups) {
+          sel.innerHTML = field.option_groups.map(og =>
+            `<optgroup label="${escapeHtml(og.label)}">` + og.options.map(o => {
+              ttsVoiceLabels[o.value] = o.label.split(' ')[0];
+              return `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`;
+            }).join('') + `</optgroup>`).join('');
+        }
+      } catch {}
+      if (!sel.options.length) { sel.innerHTML = '<option value="af_heart">Heart</option>'; ttsVoiceLabels['af_heart'] = 'Heart'; }
+    }
+    function ttsOnVoiceChange() {
+      const v = document.getElementById('tts-voice').value || 'af_heart';
+      const ed = document.getElementById('tts-edition');
+      if (!ed.dataset.touched) ed.value = 'Kokoro · ' + (ttsVoiceLabels[v] || v);
+    }
+    async function ttsAudition() {
+      const v = document.getElementById('tts-voice').value || 'af_heart';
+      const a = document.getElementById('tts-audition');
+      a.src = `/api/tts/voices/${encodeURIComponent(v)}/preview.mp3`;
+      try { await a.play(); } catch {}
+    }
+    async function ttsLoadChapters() {
+      const bookId = document.getElementById('tts-text-book').value;
+      const sel = document.getElementById('tts-chapter');
+      sel.innerHTML = '<option>Loading…</option>';
+      try {
+        const chs = await fetch(`/api/books/${bookId}/chapters`).then(r => r.json());
+        sel.innerHTML = (chs || []).map((c, i) => {
+          const idx = c.index != null ? c.index : i;
+          return `<option value="${idx}">${escapeHtml(c.title || ('Chapter ' + (idx + 1)))}</option>`;
+        }).join('') || '<option value="">(no chapters)</option>';
+      } catch { sel.innerHTML = '<option value="">(couldn’t load chapters)</option>'; }
+      await ttsLoadChapterText();
+    }
+    async function ttsLoadChapterText() {
+      const bookId = document.getElementById('tts-text-book').value;
+      const idx = document.getElementById('tts-chapter').value;
+      const box = document.getElementById('tts-text-preview');
+      if (idx === '' || idx == null) { box.textContent = '—'; return; }
+      box.textContent = 'Loading…';
+      try {
+        const ch = await fetch(`/api/books/${bookId}/chapters/${idx}`).then(r => r.json());
+        const text = ch.content || '';
+        box.textContent = text ? (text.length > 1500 ? text.slice(0, 1500) + '…' : text) : '(no text in this chapter)';
+      } catch { box.textContent = '(couldn’t load chapter text)'; }
+    }
+    async function ttsGenerate() {
+      const workId = ttsWizardWork;
+      const voice = document.getElementById('tts-voice').value || 'af_heart';
+      const edition = document.getElementById('tts-edition').value.trim();
+      const textBookId = parseInt(document.getElementById('tts-text-book').value, 10) || 0;
+      ttsWizStatus('Queuing narration…');
+      const res = await fetch(`/api/works/${workId}/generate-audio`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice, text_book_id: textBookId, edition }),
+      });
+      if (!res.ok) { ttsWizStatus('Failed: ' + (await metaErr(res)), true); return; }
+      closeTTSWizard();
+      loadJobs(); // surface it in the processing queue immediately
+      metaStatus('Narration queued — watch the processing queue; the new edition appears when it finishes.');
+    }
+    function ttsWizStatus(msg, isErr) { const el = document.getElementById('tts-wizard-status'); el.textContent = msg; el.style.color = isErr ? 'var(--danger)' : 'var(--text-muted)'; }
 
     async function saveMeta() {
       const workId = document.getElementById('meta-work-id').value;
