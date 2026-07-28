@@ -430,7 +430,7 @@ func HealWorkAuthors(store *db.Store) (int, error) {
 		}
 		// UpdateWorkMeta (not UpdateWork) so a cleared author is actually written —
 		// UpdateWork treats "" as "no change". Preserve the other fields.
-		if err := store.UpdateWorkMeta(w.ID, newTitle, newAuthor, w.Series, w.SeriesIndex, w.Description, w.Year); err != nil {
+		if err := store.UpdateWorkMeta(w.ID, newTitle, newAuthor, w.Series, w.SeriesIndex, w.Description, w.Year, w.Genre); err != nil {
 			return fixed, err
 		}
 		log.Printf("heal: work %d author %q→%q, title %q→%q", w.ID, w.Author, newAuthor, w.Title, newTitle)

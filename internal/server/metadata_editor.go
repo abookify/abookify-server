@@ -36,6 +36,7 @@ func (s *Server) handleUpdateWorkMetadata(w http.ResponseWriter, r *http.Request
 		SeriesIndex float64 `json:"series_index"`
 		Description string  `json:"description"`
 		Year        int     `json:"year"`
+		Genre       string  `json:"genre"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -52,7 +53,7 @@ func (s *Server) handleUpdateWorkMetadata(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.store.UpdateWorkMeta(workID, req.Title, strings.TrimSpace(req.Author),
-		strings.TrimSpace(req.Series), req.SeriesIndex, strings.TrimSpace(req.Description), req.Year); err != nil {
+		strings.TrimSpace(req.Series), req.SeriesIndex, strings.TrimSpace(req.Description), req.Year, strings.TrimSpace(req.Genre)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}

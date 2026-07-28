@@ -23,6 +23,7 @@ type Metadata struct {
 	Duration    float64 // seconds; 0 if unavailable
 	Series      string  // e.g. "The Lord of the Rings"
 	SeriesIndex float64 // 0 = no series, 2.5 = novella between books 2 and 3
+	Genre       string  // from EPUB <dc:subject> (first, cleaned); "" if none
 }
 
 // probeDuration shells out to ffprobe to get a file's duration in seconds.
@@ -90,6 +91,7 @@ type epubPackage struct {
 	Metadata struct {
 		Title   []string `xml:"title"`
 		Creator []string `xml:"creator"`
+		Subject []string `xml:"subject"`
 		Meta    []struct {
 			Name    string `xml:"name,attr"`
 			Content string `xml:"content,attr"`
@@ -98,6 +100,24 @@ type epubPackage struct {
 }
 
 // ExtractEPUBMetadata reads metadata from an EPUB file.
+// bisacCode matches a BISAC subject code (e.g. "FIC009000") — machine codes we
+// skip in favor of a human-readable subject.
+var bisacCode = regexp.MustCompile(`^[A-Z]{3}\d{6}$`)
+
+// pickGenre returns the first human-readable EPUB <dc:subject> as the genre,
+// skipping BISAC codes and blanks. Multi-part subjects like "Fiction / Fantasy"
+// are kept as-is. Returns "" when nothing usable is present.
+func pickGenre(subjects []string) string {
+	for _, s := range subjects {
+		s = strings.TrimSpace(s)
+		if s == "" || bisacCode.MatchString(s) {
+			continue
+		}
+		return s
+	}
+	return ""
+}
+
 func ExtractEPUBMetadata(path string) (Metadata, error) {
 	r, err := zip.OpenReader(path)
 	if err != nil {
@@ -140,6 +160,7 @@ func ExtractEPUBMetadata(path string) (Metadata, error) {
 	if len(pkg.Metadata.Creator) > 0 {
 		meta.Author = pkg.Metadata.Creator[0]
 	}
+	meta.Genre = pickGenre(pkg.Metadata.Subject)
 	// Calibre-style series metadata.
 	for _, m := range pkg.Metadata.Meta {
 		switch m.Name {

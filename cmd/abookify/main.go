@@ -130,26 +130,35 @@ func main() {
 	// audio files). Idempotent — skips works that already have sync_data.
 	library.ImportSidecars(store, *libraryPath)
 
-	// Propagate series metadata from EPUBs up to their parent works.
-	// Runs once per boot — idempotent (skips works that already have series set).
+	// Propagate series + genre metadata from EPUBs up to their parent works.
+	// Runs once per boot — idempotent (skips works that already have the value).
 	worksList, _ := store.ListWorks()
 	for _, w := range worksList {
-		if w.Series != "" {
-			continue // already set (manual edit or prior run)
+		if w.Series != "" && w.Genre != "" {
+			continue // both already set (manual edit or prior run)
 		}
 		for _, tf := range w.TextFiles {
 			if tf.Format != "epub" {
 				continue
 			}
 			meta, err := library.ExtractEPUBMetadata(tf.Path)
-			if err != nil || meta.Series == "" {
+			if err != nil {
 				continue
 			}
-			if err := store.SetSeries(w.ID, meta.Series, meta.SeriesIndex); err != nil {
-				log.Printf("set-series for %q failed: %v", w.Title, err)
-				continue
+			if w.Series == "" && meta.Series != "" {
+				if err := store.SetSeries(w.ID, meta.Series, meta.SeriesIndex); err != nil {
+					log.Printf("set-series for %q failed: %v", w.Title, err)
+				} else {
+					log.Printf("series: %q → %q #%.1f", w.Title, meta.Series, meta.SeriesIndex)
+				}
 			}
-			log.Printf("series: %q → %q #%.1f", w.Title, meta.Series, meta.SeriesIndex)
+			if w.Genre == "" && meta.Genre != "" {
+				if err := store.SetGenre(w.ID, meta.Genre); err != nil {
+					log.Printf("set-genre for %q failed: %v", w.Title, err)
+				} else {
+					log.Printf("genre: %q → %q", w.Title, meta.Genre)
+				}
+			}
 			break
 		}
 	}

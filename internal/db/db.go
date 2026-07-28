@@ -32,6 +32,8 @@ type Work struct {
 	Description string `json:"description,omitempty"`
 	// Year is the published year (0 = unknown). User-editable.
 	Year int `json:"year,omitempty"`
+	// Genre from EPUB <dc:subject> or user-edited. "" = unknown.
+	Genre string `json:"genre,omitempty"`
 	// DisplayTextBookID is the user's per-work override of the display
 	// resolver. 0 = no override (resolver picks by OriginAuthority).
 	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
@@ -549,6 +551,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE works ADD COLUMN series_index REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE works ADD COLUMN description  TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN year         INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE works ADD COLUMN genre        TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE books ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
@@ -949,11 +952,18 @@ func (s *Store) UpdateWork(id int64, title, author string) error {
 // UpdateWorkMeta sets all user-editable metadata fields at once (the metadata
 // editor). Unlike UpdateWork, empty strings ARE written — this is a full save
 // of the form, so a cleared field clears the value.
-func (s *Store) UpdateWorkMeta(id int64, title, author, series string, seriesIndex float64, description string, year int) error {
+func (s *Store) UpdateWorkMeta(id int64, title, author, series string, seriesIndex float64, description string, year int, genre string) error {
 	_, err := s.db.Exec(`
-		UPDATE works SET title = ?, author = ?, series = ?, series_index = ?, description = ?, year = ?,
+		UPDATE works SET title = ?, author = ?, series = ?, series_index = ?, description = ?, year = ?, genre = ?,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, title, author, series, seriesIndex, description, year, id)
+		WHERE id = ?`, title, author, series, seriesIndex, description, year, genre, id)
+	return err
+}
+
+// SetGenre updates just the genre for a work (used by the EPUB backfill). Empty
+// string clears it.
+func (s *Store) SetGenre(id int64, genre string) error {
+	_, err := s.db.Exec(`UPDATE works SET genre = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, genre, id)
 	return err
 }
 
@@ -1053,7 +1063,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	// ASCII-case-insensitive, and the patterns are mutually exclusive
 	// ("A %" can't match "An "), so order of the WHENs doesn't matter.
 	rows, err := s.db.Query(`
-		SELECT id, title, author, series, series_index, description, year, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at
+		SELECT id, title, author, series, series_index, description, year, genre, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at
 		FROM works
 		ORDER BY series, series_index,
 			CASE
@@ -1071,7 +1081,7 @@ func (s *Store) ListWorks() ([]Work, error) {
 	var works []Work
 	for rows.Next() {
 		var w Work
-		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.Genre, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		works = append(works, w)
@@ -1108,8 +1118,8 @@ func (s *Store) ListWorks() ([]Work, error) {
 func (s *Store) GetWork(id int64) (*Work, error) {
 	var w Work
 	err := s.db.QueryRow(`
-		SELECT id, title, author, series, series_index, description, year, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
-	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
+		SELECT id, title, author, series, series_index, description, year, genre, display_text_book_id, display_audio_book_id, schema_version, content_version, created_at, updated_at FROM works WHERE id = ?
+	`, id).Scan(&w.ID, &w.Title, &w.Author, &w.Series, &w.SeriesIndex, &w.Description, &w.Year, &w.Genre, &w.DisplayTextBookID, &w.DisplayAudioBookID, &w.SchemaVersion, &w.ContentVersion, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
