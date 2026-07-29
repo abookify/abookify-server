@@ -2208,6 +2208,7 @@
     // Drives whether the Q&A panel shows the input or a "configure in settings"
     // hint. Loaded once at startup; updated when settings change.
     let llmConfigured = false;
+    let voiceAvailable = false; // an OpenAI key resolves → realtime voice can be offered
 
     async function loadLLMConfig() {
       try {
@@ -2220,6 +2221,12 @@
       } catch {
         llmConfigured = false;
       }
+      // Gate the voice entry point on a real capable credential (server-checked,
+      // no token minted) so we never invite a tap into a guaranteed failure.
+      try {
+        const v = await fetch('/api/voice/available').then(r => r.json());
+        voiceAvailable = !!v.available;
+      } catch { voiceAvailable = false; }
       // The reader "AI" affordance (recap + Q&A, #130/#134) needs an LLM.
       const rb = document.getElementById('np-ai-btn');
       if (rb) rb.style.display = llmConfigured ? '' : 'none';
@@ -3153,6 +3160,28 @@
     // now-playing drawer. Single rendered instance, so the work-keyed IDs
     // (qa-input-/chat-thread-/…) don't collide. The chat path enforces the #130
     // spoiler bound server-side.
+    // The voice entry point in the AI panel. Benefit-first + honest: it says
+    // what PJ gets (talk out loud, hear a reply), tagged "preview" because it is
+    // general conversation not yet grounded in this book. Gated on a capable
+    // credential — clearly disabled with a reason rather than a tap into failure.
+    function voiceLaunchHtml() {
+      if (!voiceAvailable) {
+        return `<div style="padding:0.4rem 1rem 0.2rem;">
+          <button disabled title="Add an OpenAI key in Settings to enable voice."
+            style="opacity:0.5; cursor:default; background:rgba(240,165,0,0.12); color:var(--text-muted); border:1px solid var(--border); border-radius:8px; padding:7px 12px; font-size:0.82rem;">
+            &#127908; Talk out loud</button>
+          <a href="/settings.html" onclick="openSettings(); return false;" style="color:var(--generate); text-decoration:none; font-size:0.75rem; margin-left:8px;">Add an OpenAI key to enable &rarr;</a>
+        </div>`;
+      }
+      return `<div style="padding:0.4rem 1rem 0.2rem;">
+        <button onclick="window.open('/voice.html','_blank','noopener')"
+          title="Have a spoken, back-and-forth conversation out loud. Preview — general chat for now; grounding it in this book is coming."
+          style="background:rgba(240,165,0,0.18); color:var(--generate); border:1px solid var(--generate); border-radius:8px; padding:7px 12px; font-size:0.82rem; font-weight:600; cursor:pointer;">
+          &#127908; Talk out loud <span style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; opacity:0.8; margin-left:4px;">preview</span></button>
+        <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">Spoken conversation you can talk to. Opens in a new tab.</div>
+      </div>`;
+    }
+
     function aiPanelHtml(work) {
       if (!work || !work.has_text) {
         return `<div class="qa-panel"><div class="qa-empty" style="padding:1rem;">No text source for AI tools.</div></div>`;
@@ -3168,6 +3197,7 @@
       const textFiles = work.text_files || [];
       return `<div class="qa-panel">
           <div class="qa-header">&#10022; AI tools</div>
+          ${voiceLaunchHtml()}
           <div class="chat-tabs" id="chat-tabs-${work.id}">
             <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
           </div>
