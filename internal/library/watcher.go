@@ -223,7 +223,15 @@ func (w *Watcher) processPending() {
 
 		info, err := os.Stat(path)
 		if err != nil {
-			// File was removed — could handle deletion here later
+			w.mu.Lock()
+			delete(w.attempts, path)
+			w.mu.Unlock()
+			// File is gone: remove its book — but ONLY if the root is still
+			// reachable (a genuine single-file delete). A whole vanished root is
+			// handled separately by handleRemoved (marked stale, never deleted).
+			if os.IsNotExist(err) && w.handleRemoved(path) {
+				changed = true
+			}
 			continue
 		}
 		if info.IsDir() {
@@ -354,6 +362,45 @@ func (w *Watcher) processPending() {
 			w.onChange()
 		}
 	}
+}
+
+// handleRemoved decides what to do when a watched path no longer exists.
+//
+// THE #220 SAFETY DISTINCTION between a vanished FILE and a vanished ROOT: if
+// the whole root is unreachable (an unmounted/unplugged drive — the sentinel is
+// gone), delete NOTHING. Those books are marked stale by the boot reconcile,
+// never dropped: losing an external drive's metadata is the worst-case failure.
+// Only when the root is still reachable is a missing file a genuine deletion.
+// Returns true iff a book row was actually deleted.
+func (w *Watcher) handleRemoved(path string) bool {
+	if !RootReachable(w.root) {
+		log.Printf("watcher: %s vanished but root %q is unreachable (unmounted?) — NOT deleting; leaving for the stale-reconcile", filepath.Base(path), w.root)
+		return false
+	}
+	return w.removeBook(path)
+}
+
+// removeBook deletes the book whose file is gone, and its work too if that was
+// the work's last book. The caller (handleRemoved) has confirmed the root is
+// reachable, so this is a real user deletion — not an unplugged drive.
+func (w *Watcher) removeBook(path string) bool {
+	workID, deleted, err := w.store.DeleteBookByPath(path)
+	if err != nil {
+		log.Printf("watcher: delete removed book %s: %v", filepath.Base(path), err)
+		return false
+	}
+	if !deleted {
+		return false // path wasn't a tracked book (or already gone)
+	}
+	log.Printf("watcher: removed book (file deleted): %s", filepath.Base(path))
+	if workID != 0 {
+		if n, _ := w.store.CountBooksInWork(workID); n == 0 {
+			if err := w.store.DeleteWork(workID); err == nil {
+				log.Printf("watcher: removed now-empty work %d", workID)
+			}
+		}
+	}
+	return true
 }
 
 func titleFromPath(path string) string {
