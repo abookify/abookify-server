@@ -1809,9 +1809,11 @@
         <!-- Cover column -->
         <div style="flex:0 0 150px;">
           <img id="meta-cover" alt="cover" onerror="this.removeAttribute('src')" style="width:150px; height:225px; object-fit:cover; border-radius:8px; border:1px solid var(--border); background:var(--bg); display:block;">
-          <div style="display:flex; gap:6px; margin-top:8px;">
-            <button type="button" onclick="document.getElementById('meta-cover-file').click()" style="flex:1; font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Upload</button>
-            <button type="button" onclick="searchCovers()" style="flex:1; font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Search</button>
+          <!-- Stacked (not side-by-side) so the labels can say what they act on —
+               the COVER — without wrapping in the 150px column. -->
+          <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+            <button type="button" onclick="document.getElementById('meta-cover-file').click()" style="font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Upload an image</button>
+            <button type="button" onclick="searchCovers()" style="font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Search for a cover</button>
           </div>
           <input type="file" id="meta-cover-file" accept="image/*" style="display:none" onchange="uploadCover(this.files[0])">
         </div>
