@@ -127,13 +127,22 @@ func (c *Client) Unload() (bool, error) {
 	if resp.StatusCode != 200 {
 		return false, fmt.Errorf("stt unload: status %d", resp.StatusCode)
 	}
+	// The two speech backends report the freed-a-model signal under DIFFERENT
+	// keys: the hermetic engine (engine/stt_server.py) returns {"unloaded":bool};
+	// the Docker whisper (services/whisper/server.py) returns {"was_loaded":bool}.
+	// Parse both so "freed" is accurate regardless of which backend is running —
+	// without this, an unload against Docker whisper always reported freed=false
+	// (the model WAS freed server-side; the Go side just never knew, so the
+	// "freed ~3 GB" log never fired). Both services should converge on one shape;
+	// until they do, accept either.
 	var out struct {
-		Unloaded bool `json:"unloaded"`
+		Unloaded  bool `json:"unloaded"`   // hermetic engine
+		WasLoaded bool `json:"was_loaded"` // Docker whisper
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return false, fmt.Errorf("decode unload result: %w", err)
 	}
-	return out.Unloaded, nil
+	return out.Unloaded || out.WasLoaded, nil
 }
 
 // TranscribeFile sends an audio file for transcription and returns the result.
