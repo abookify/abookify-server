@@ -409,7 +409,7 @@
   </div>
 
   <button type="button" class="floating-save" id="floating-save" onclick="saveSettings()"
-    title="Save all settings">&#128190; Save Settings</button>
+    title="Save all settings">Save Settings</button>
 
   <script>
     let allModels = {}; // { provider → [{id, label}, ...] }
@@ -714,7 +714,7 @@
         if (fab) {
           fab.classList.add('saved');
           fab.innerHTML = '✓ Saved';
-          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = '💾 Save Settings'; }, 2000);
+          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = 'Save Settings'; }, 2000);
         }
         document.getElementById('auth-password').value = '';
         loadAuthState();
