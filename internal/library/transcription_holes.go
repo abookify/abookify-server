@@ -1,6 +1,13 @@
 package library
 
-import "sort"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/pj/abookify/internal/db"
+)
 
 // Hole detection: contiguous stretches with NO words at all.
 //
@@ -150,4 +157,56 @@ func mergeGapSpans(gaps, holes []TranscriptionGap) []TranscriptionGap {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartSec < out[j].StartSec })
 	return out
+}
+
+// RedetectWorkGaps re-runs gap+hole detection for one work from its sidecar and
+// rewrites the stored result, WITHOUT re-importing the transcript.
+//
+// Needed because a detector only helps the books it has actually examined. When
+// the hole detector landed, every previously-imported book still carried a
+// verdict computed by the bucket scan alone — so "no problems shown" meant "not
+// re-checked", which is the same false clean this detector exists to remove.
+//
+// Returns the previous and new span counts so a sweep can report what changed.
+func RedetectWorkGaps(store *db.Store, libraryRoot string, workID int64) (before, after int, err error) {
+	w, err := store.GetWork(workID)
+	if err != nil || w == nil {
+		return 0, 0, fmt.Errorf("work %d not found: %w", workID, err)
+	}
+	if !w.HasAudio || len(w.AudioFiles) == 0 {
+		return 0, 0, nil
+	}
+	af := w.AudioFiles[0]
+	path := findSidecar(af.Path, libraryRoot)
+	if path == "" {
+		return 0, 0, nil // never transcribed; nothing to re-examine
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read sidecar: %w", err)
+	}
+	var sc sttSidecar
+	if err := json.Unmarshal(data, &sc); err != nil {
+		return 0, 0, fmt.Errorf("parse sidecar: %w", err)
+	}
+	if len(sc.Words) == 0 {
+		return 0, 0, nil
+	}
+
+	if raw, e := store.GetTranscriptionGaps(af.ID); e == nil && raw != "" && raw != "[]" {
+		var prev []TranscriptionGap
+		if json.Unmarshal([]byte(raw), &prev) == nil {
+			before = len(prev)
+		}
+	}
+	if err := PersistTranscriptionGaps(store, af.ID, &sc); err != nil {
+		return before, 0, err
+	}
+	if raw, e := store.GetTranscriptionGaps(af.ID); e == nil && raw != "" && raw != "[]" {
+		var now []TranscriptionGap
+		if json.Unmarshal([]byte(raw), &now) == nil {
+			after = len(now)
+		}
+	}
+	return before, after, nil
 }
