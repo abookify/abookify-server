@@ -16,6 +16,16 @@ import (
 	"github.com/pj/abookify/internal/library"
 )
 
+// importRoot returns the directory new uploads/imports should land in: the
+// default library root (#220) when it's reachable, else the legacy single
+// LibraryDir. Never writes into an unreachable (unplugged) drive.
+func (s *Server) importRoot() string {
+	if r, err := s.store.DefaultRoot(); err == nil && r != nil && library.RootReachable(r.Path) {
+		return r.Path
+	}
+	return s.LibraryDir
+}
+
 // handleListRoots: GET /api/library/roots — roots with live reachability + counts.
 func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 	roots, err := s.store.ListRoots()

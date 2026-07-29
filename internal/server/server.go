@@ -1878,7 +1878,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no files provided"})
 		return
 	}
-	importDir := filepath.Join(s.LibraryDir, "imports")
+	importDir := filepath.Join(s.importRoot(), "imports")
 	if err := os.MkdirAll(importDir, 0755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create imports dir: " + err.Error()})
 		return
@@ -2621,7 +2621,7 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := abook.Import(s.store, tmpPath, s.LibraryDir); err != nil {
+	if err := abook.Import(s.store, tmpPath, s.importRoot()); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
