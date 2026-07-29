@@ -53,6 +53,13 @@ var (
 	castStop   = words2set(`the a an and or but if then of to in on at by for with from as is was were be been being have has had do does did will would shall should may might must can could i you he she it we they me him her us them my your his its our their this that these those there here what which who whom whose when where why how not no nor so than too very just now then once mr mrs miss dr sir lady lord god yes oh ah`)
 	castBoiler = words2set(`gutenberg project foundation literary archive ebook etext donations trademark copyright pglaf hart michael online www http paragraph chapter chapters stave staves volume canto cantos prologue epilogue preface contents illustrations appendix section part`)
 	castPlaces = words2set(`london england geneva paris france germany europe america scotland ireland italy rome switzerland turkey russia india china japan africa asia thames danube rhine alps transylvania whitby varna carfax ingolstadt mont blanc states united kingdom british english french german american russian arabian turk oriental east west north south`)
+	// Titles whose trailing period ABBREVIATES rather than ends a sentence.
+	// Without this the dot in "Mr. Kirwin" reads as a full stop, so Kirwin looks
+	// sentence-initial and never earns a mid-sentence mention — the whole basis
+	// of the ranking. It cost Frankenstein three real characters (Mr. Kirwin,
+	// M. Waldman, M. Krempe), all of them people who are essentially ALWAYS
+	// introduced by title, so they scored ~0 rather than merely low.
+	castHonorific = words2set(`mr mrs ms miss dr m mme mlle prof professor capt col rev`)
 	// A word (letters + internal apostrophe/hyphen) OR a run of sentence-ending punctuation.
 	castTokenRe = regexp.MustCompile(`[A-Za-z][A-Za-z'\-]*|[.!?]+`)
 )
@@ -97,9 +104,16 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 	var prevLow, prevSurf string
 	var prevTitle bool
 	prevEnd := true
+	honorific := "" // surface form of a title awaiting its name ("Mr", "M")
 	for _, tok := range castTokenRe.FindAllString(text, -1) {
 		if c := tok[0]; c == '.' || c == '!' || c == '?' {
+			// A single dot right after a title abbreviates it — leave prevEnd
+			// alone so the name that follows still counts as mid-sentence.
+			if honorific != "" && tok == "." {
+				continue
+			}
 			prevEnd, prevTitle = true, false
+			honorific = ""
 			continue
 		}
 		low := strings.TrimSuffix(strings.ToLower(tok), "'s")
@@ -115,9 +129,22 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 				midcap[low]++
 			}
 			if display[low] == "" {
-				display[low] = tok
+				// Carry the title into the display name ("Mr. Kirwin") — it is
+				// how the book refers to them, and it separates the servant
+				// "Mr. Kirwin" from a bare surname used for someone else.
+				if honorific != "" {
+					display[low] = honorific + ". " + tok
+				} else {
+					display[low] = tok
+				}
 			}
 		}
+		if _, isHon := castHonorific[low]; isHon {
+			honorific = tok
+			prevLow, prevSurf, prevTitle, prevEnd = low, tok, isTitle, false
+			continue
+		}
+		honorific = ""
 		if isTitle && prevTitle && !isCastNoise(prevLow) && !isCastNoise(low) {
 			key := prevLow + " " + low
 			bigram[key]++
@@ -186,6 +213,13 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 }
 
 func isCastNoise(w string) bool {
+	// A title is never a character, and never half of a multi-word name: without
+	// this "M" pairs with the following surname into a bigram entity "M Waldman",
+	// beating the honorific path that would have produced "M. Waldman".
+	// (castStop already covers mr/mrs/miss/dr, but not m/ms/mme/mlle/prof/capt.)
+	if _, ok := castHonorific[w]; ok {
+		return true
+	}
 	if _, ok := castStop[w]; ok {
 		return true
 	}
