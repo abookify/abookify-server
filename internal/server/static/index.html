@@ -5936,7 +5936,7 @@
       const content = document.getElementById('np-toc-content');
       if (!content) return;
       if (!currentReaderWorkId) {
-        content.innerHTML = '<div class="np-toc-section">No work loaded</div>';
+        content.innerHTML = '<div class="np-toc-section">No book loaded</div>';
         return;
       }
       const work = allWorks.find(w => w.id === currentReaderWorkId);
@@ -7479,8 +7479,8 @@
     async function executeMerge() {
       const targetId = document.getElementById('merge-target').value;
       const sourceId = document.getElementById('merge-source').value;
-      if (!targetId || !sourceId) { alert('Select both works.'); return; }
-      if (targetId === sourceId) { alert('Cannot merge a work into itself.'); return; }
+      if (!targetId || !sourceId) { alert('Select both books.'); return; }
+      if (targetId === sourceId) { alert('Cannot merge a book into itself.'); return; }
       const source = allWorks.find(w => w.id === parseInt(sourceId));
       if (!confirm(`Move all files from "${source?.title}" into the other work? "${source?.title}" will be deleted.`)) return;
       const res = await fetch(`/api/works/${targetId}/merge`, {
