@@ -110,3 +110,39 @@ func TestIntegrityEmptyWords(t *testing.T) {
 		t.Errorf("empty word list flagged: %v", p)
 	}
 }
+
+// Collapsed word timings mean the timestamps were synthesized from a
+// segment-level result rather than measured. Heart Goes Last's re-transcription
+// wrote 151 words into a 31s span with up to 31 words on ONE timestamp, and
+// prose that did not match the audio — a word count that went UP while the
+// content went wrong. This is the check that catches that without reading the
+// text by hand.
+func TestIntegrityCatchesCollapsedTimestamps(t *testing.T) {
+	w := narration(0, 600)
+	for i := 0; i < 20; i++ { // 20 words all claiming the same instant
+		w = append(w, wordTS{Word: "x", Start: 300.0, End: 300.4})
+	}
+	sort.Slice(w, func(i, j int) bool { return w[i].Start < w[j].Start })
+
+	p := checkSidecarIntegrity(w, nil, 600)
+	if len(p) == 0 {
+		t.Fatal("collapsed word timings not detected")
+	}
+	if !strings.Contains(strings.Join(p, " "), "synthesized") {
+		t.Errorf("collapse not reported: %v", p)
+	}
+}
+
+// Genuine word timings occasionally coincide; a couple sharing an instant is
+// not corruption.
+func TestIntegrityToleratesIncidentalTies(t *testing.T) {
+	w := narration(0, 600)
+	w = append(w, wordTS{Word: "a", Start: 100.0, End: 100.2},
+		wordTS{Word: "b", Start: 100.0, End: 100.2})
+	sort.Slice(w, func(i, j int) bool { return w[i].Start < w[j].Start })
+	for _, p := range checkSidecarIntegrity(w, nil, 600) {
+		if strings.Contains(p, "synthesized") {
+			t.Errorf("two coincident words flagged as collapse: %s", p)
+		}
+	}
+}

@@ -49,6 +49,14 @@ const (
 
 	// Timeline drift tolerated between consecutive sources.
 	sourceContiguityTolSec = 1.0
+
+	// Real word timings are never identical for a run of words. When many words
+	// share one instant it means the timings were synthesized from a
+	// segment-level result, and the text that comes with them has repeatedly
+	// turned out not to match the audio. Heart Goes Last's re-transcription
+	// filled a 31s span with 151 words carrying up to 31 words on a SINGLE
+	// timestamp, and prose that belonged nowhere in that chapter.
+	maxWordsPerTimestamp = 6
 )
 
 // checkSidecarIntegrity returns human-readable problems with a freshly built
@@ -101,7 +109,15 @@ func checkSidecarIntegrity(words []wordTS, sources []sourceInfo, duration float6
 			worst, at, maxWordsPerMinute))
 	}
 
-	// 3. Sources must still tile the timeline.
+	// 3. Collapsed word timings — synthesized rather than measured.
+	if n, at, worst := collapsedTimestamps(words); n > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d timestamp(s) carry more than %d words (worst: %d words at %.1fs) — word timings "+
+				"were synthesized, not measured, and such spans have not matched the audio",
+			n, maxWordsPerTimestamp, worst, at))
+	}
+
+	// 4. Sources must still tile the timeline.
 	if len(sources) > 1 {
 		acc := sources[0].StartSec
 		for i, s := range sources {
@@ -116,6 +132,26 @@ func checkSidecarIntegrity(words []wordTS, sources []sourceInfo, duration float6
 		}
 	}
 	return problems
+}
+
+// collapsedTimestamps counts instants carrying an implausible number of words,
+// returning the count, the worst offender's position and its size.
+func collapsedTimestamps(words []wordTS) (int, float64, int) {
+	counts := map[float64]int{}
+	for _, w := range words {
+		counts[w.Start]++
+	}
+	var n, worst int
+	var at float64
+	for t, c := range counts {
+		if c > maxWordsPerTimestamp {
+			n++
+			if c > worst {
+				worst, at = c, t
+			}
+		}
+	}
+	return n, at, worst
 }
 
 // peakDensity returns the highest words-per-minute over any window, and where.
