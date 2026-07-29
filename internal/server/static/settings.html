@@ -833,6 +833,17 @@
             ${del}
           </div>`;
         }).join('');
+        // Generated/derived books (TTS output + transcripts) live under no root.
+        // Show them so the per-root counts reconcile to the whole library and no
+        // book is silently hidden (#220 FINDING 1).
+        if (data.unattributed_count > 0) {
+          box.innerHTML += `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; color:var(--text-muted);">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600;">Generated content</div>
+              <div class="hint">TTS narration + transcripts — not in a library location · ${data.unattributed_count} book${data.unattributed_count === 1 ? '' : 's'}</div>
+            </div>
+          </div>`;
+        }
       } catch { box.innerHTML = '<div class="hint">Could not load library locations.</div>'; }
     }
     function rootsStatus(msg, isErr) { const el = document.getElementById('roots-status'); el.textContent = msg; el.style.color = isErr ? 'var(--danger, #E94560)' : ''; }

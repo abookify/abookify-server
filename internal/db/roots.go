@@ -149,6 +149,22 @@ func (s *Store) CountBooksUnderRoot(rootID int64) (total, stale int, err error) 
 	return
 }
 
+// root_id semantics (#220): a book's root_id is the library location whose path
+// the book's file lives under. root_id = 0 is the DELIBERATE sentinel for a book
+// that belongs to NO filesystem library root — GENERATED / DERIVED content:
+// TTS output written under the generated dir, and virtual `generated://transcript`
+// books produced by STT. These are correctly outside every scanned library
+// location, so AssignBooksToRoot (path-prefix match) never claims them. They are
+// still real, visible books, so CountUnattributedBooks surfaces them in the
+// settings UI — the per-root counts PLUS this reconcile to the whole library, and
+// no visible book is ever silently hidden from the totals.
+func (s *Store) CountUnattributedBooks() (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM books WHERE root_id = 0 AND visibility != 'internal'`).Scan(&n)
+	return n, err
+}
+
 // AssignBooksToRoot sets root_id for every book whose path starts with prefix+"/"
 // (or equals prefix) and is currently unassigned. Used to migrate the pre-#220
 // single-root library. Returns rows affected.

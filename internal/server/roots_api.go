@@ -47,7 +47,11 @@ func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 			"stale_count": stale,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"roots": out})
+	// Generated/derived books (root_id=0: TTS output + virtual transcripts) belong
+	// to no filesystem root. Report them so the per-root totals + this reconcile to
+	// the whole library and nothing is silently hidden (#220 FINDING 1).
+	unattributed, _ := s.store.CountUnattributedBooks()
+	writeJSON(w, http.StatusOK, map[string]any{"roots": out, "unattributed_count": unattributed})
 }
 
 // pathsOverlap reports whether two absolute paths are equal or nested (one is a
