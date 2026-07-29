@@ -490,6 +490,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
 	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
+	// Shared cause→presentation contract both web + mobile render from (gap_status.go).
+	mux.HandleFunc("GET /api/transcription-gaps/legend", s.handleGapStatusLegend)
 	mux.HandleFunc("POST /api/works/{id}/scan-sources", s.handleScanSources)
 	mux.HandleFunc("POST /api/works/{id}/retry-stt", s.handleRetryTranscription)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
