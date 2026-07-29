@@ -392,6 +392,11 @@
       cursor: pointer;
     }
     .media-pill.gap-warn:hover { background: rgba(240, 165, 0, 0.25); }
+    /* Neutral (non-alarming) untranscribed state: source-truncated or unclassified
+       absence — real, but not something a local retry can fix, so it must not read
+       as an actionable "failure" the way gap-warn (amber) does. */
+    .media-pill.gap-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
+    .media-pill.gap-neutral:hover { background: var(--surface-2); border-color: var(--text-muted); }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3409,14 +3414,74 @@
         title="${escapeHtml(label)}${escapeHtml(m)} · click to compare sources">${pct}%</span>`;
     }
 
+    // The badge distinguishes what an untranscribed span actually IS (per
+    // transcription's spec), because the cause determines the remedy and a
+    // single "gap → re-transcribe" affordance is wrong for half of them:
+    //   dropped_segment  → the pipeline skipped it; re-running recovers it (retry)
+    //   truncated_source → never delivered in the source file; re-acquire, no retry
+    //   damaged_source   → decode errors; may be incomplete even with NO gaps
+    //   unknown          → unclassified absence; don't imply a cause or that retry
+    //                      is safe (this is also the interim state before the
+    //                      server's `cause` field lands — then it just works).
+    // Absence of a badge is NOT rendered as a positive "complete" claim.
     function renderGapBadge(workId) {
       const entry = transcriptionGapsByWork[workId];
-      if (!entry || !entry.segment_count) return '';
-      const label = `⚠ ${formatGapDuration(entry.total_missing_sec)} missing`;
-      return `<span class="media-pill gap-warn"
-        role="button" tabindex="0" aria-label="${escapeHtml(label)} — show transcription gap details"
+      if (!entry) return '';
+      const cause = entry.cause || 'unknown';
+      // State 4: damaged source — surfaced even when there's no untranscribed span.
+      if (cause === 'damaged_source') {
+        return gapPill(workId, 'gap-warn', '⚠ Source may be incomplete',
+          'The audio file has decode errors, so some words may be missing. Click for details.');
+      }
+      if (!entry.segment_count) return ''; // nothing untranscribed and not damaged → claim nothing
+      const dur = formatGapDuration(entry.total_missing_sec);
+      if (cause === 'truncated_source') {
+        return gapPill(workId, 'gap-neutral', `${dur} not in the source file`,
+          'This much audio was never delivered in the source file — re-acquire it. Re-transcribing cannot recover it. Click for details.');
+      }
+      if (cause === 'dropped_segment') {
+        return gapPill(workId, 'gap-warn', `${dur} not transcribed`,
+          'The pipeline skipped part of the audio — re-running transcription recovers it. Click for details.');
+      }
+      // unknown / interim — state-2 copy, but never implies a cause or that retry is safe.
+      return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
+        'Part of this audio has no transcript yet. Click for details.');
+    }
+
+    function gapPill(workId, cls, label, title) {
+      return `<span class="media-pill ${cls}"
+        role="button" tabindex="0" aria-label="${escapeHtml(label)} — details"
         onclick="event.stopPropagation(); showGapDetails(${workId})"
-        title="Transcription produced no output for part of this book. Click for details.">${label}</span>`;
+        title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+    }
+
+    // The modal's action is cause-specific: a one-click retry is offered ONLY when
+    // the pipeline dropped a segment (re-running genuinely recovers it). Truncated
+    // or damaged sources get re-acquire guidance and NO retry — offering one there
+    // would spin the GPU for an hour and change nothing. Unclassified absence
+    // (incl. the interim before the server's `cause` field lands) offers no
+    // one-click retry either — we never guess that retrying is safe — but keeps the
+    // advanced CLI escape hatch.
+    function gapActionHtml(workId, cause, fileList, cmd) {
+      if (!fileList.length) return '';
+      const cli = `<details style="margin-top:0.75rem">
+          <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">Fix from the command line (remote GPU runs)</summary>
+          <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
+        </details>`;
+      if (cause === 'truncated_source') {
+        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">These words were never delivered in the source file — re-transcribing cannot recover them. Re-acquire a complete copy of the audio. No retry is offered because it would change nothing.</p>`;
+      }
+      if (cause === 'damaged_source') {
+        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">The source file has decode errors, so the transcript may be incomplete. Re-acquiring a clean copy is the fix.</p>`;
+      }
+      if (cause === 'dropped_segment') {
+        return `<div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
+            <button class="primary-btn" id="gap-retry-btn" onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}</button>
+            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">The pipeline skipped these — re-running recovers them.</span>
+          </div>${cli}`;
+      }
+      // unknown / interim: no one-click retry (never guess it's safe); advanced CLI only.
+      return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">Part of this audio has no transcript, and the cause isn't classified yet — so no one-click retry is offered. If it was a dropped segment, the command below re-runs it.</p>${cli}`;
     }
 
     async function showGapDetails(workId) {
@@ -3440,6 +3505,7 @@
       }
       const fileSet = new Set(gaps.map(g => g.source_file).filter(Boolean));
       const fileList = Array.from(fileSet);
+      const cause = (transcriptionGapsByWork[workId] || {}).cause || 'unknown';
       const rows = gaps.map(g =>
         `<tr><td>${g.source_file || '(unknown)'}</td>` +
         `<td>${fmtPlayerTime(g.start_sec)} – ${fmtPlayerTime(g.end_sec)}</td>` +
@@ -3450,29 +3516,14 @@
         : '';
       const html = `
         <div class="modal-backdrop" onclick="closeGapModal(event)">
-          <div class="modal" role="dialog" aria-modal="true" aria-label="Transcription gaps" onclick="event.stopPropagation()">
-            <h2 style="margin-top:0">Transcription gaps</h2>
+          <div class="modal" role="dialog" aria-modal="true" aria-label="Untranscribed audio" onclick="event.stopPropagation()">
+            <h2 style="margin-top:0">Not transcribed</h2>
             <p style="color:var(--text-muted)">${escapeHtml(title)}</p>
             <table class="gap-table">
               <thead><tr><th>File</th><th>Span</th><th>Length</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
-            ${fileList.length ? `
-            <div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
-              <button class="primary-btn" id="gap-retry-btn"
-                onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">
-                Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}
-              </button>
-              <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">
-                Sends the gap files back to Whisper, merges the result, then reimports.
-              </span>
-            </div>
-            <details style="margin-top:0.75rem">
-              <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">
-                Or fix from the command line (for remote GPU runs)
-              </summary>
-              <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
-            </details>` : ''}
+            ${gapActionHtml(workId, cause, fileList, cmd)}
             <div style="text-align:right;margin-top:1rem">
               <button data-modal-close onclick="closeGapModal()">Close</button>
             </div>
