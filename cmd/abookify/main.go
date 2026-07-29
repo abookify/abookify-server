@@ -360,19 +360,42 @@ func main() {
 	// hermetic engine picks the right device on its next (re)start (bundle path).
 	srv.SyncEngineDeviceHint()
 
-	// Start file watcher for live library updates
-	watcher, err := library.NewWatcher(store, *libraryPath, func() {
+	// Start a file watcher per REACHABLE library root (#220) for live updates.
+	// Unreachable (unplugged) roots aren't watched — a remount is picked up on
+	// the next boot/rescan. The onChange callback is shared across roots.
+	onLibraryChange := func() {
 		srv.Events.Broadcast(server.Event{Type: "library_updated"})
 		// #159b: a newly-imported/scanned book gets embedded without a restart
 		// (no-op when no LLM; idempotent + single-flight, so cheap on every tick).
 		srv.EmbedNewWorks()
-	})
-	if err != nil {
-		log.Printf("warning: file watcher failed to start: %v", err)
-	} else {
-		watcher.Start()
-		defer watcher.Close()
 	}
+	var watchPaths []string
+	if roots, _ := store.ListRoots(); len(roots) > 0 {
+		for _, rt := range roots {
+			watchPaths = append(watchPaths, rt.Path)
+		}
+	} else if *libraryPath != "" {
+		watchPaths = append(watchPaths, *libraryPath)
+	}
+	var watchers []*library.Watcher
+	for _, wp := range watchPaths {
+		if !library.RootReachable(wp) {
+			log.Printf("#220: not watching unreachable root %q", wp)
+			continue
+		}
+		wch, err := library.NewWatcher(store, wp, onLibraryChange)
+		if err != nil {
+			log.Printf("warning: file watcher for %q failed to start: %v", wp, err)
+			continue
+		}
+		wch.Start()
+		watchers = append(watchers, wch)
+	}
+	defer func() {
+		for _, wch := range watchers {
+			wch.Close()
+		}
+	}()
 
 	// Start ingest queue: file-based drop-zone at <library>/incoming/.
 	// Users put audiobooks/ebooks there; the queue copies them into the
