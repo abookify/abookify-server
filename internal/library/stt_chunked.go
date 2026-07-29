@@ -19,12 +19,12 @@ const chunkDurationSecs = 600 // 10 minutes per segment
 // twice per segment: once before the Whisper call (Done=false, for progress
 // UIs) and once after (Done=true, with Words/RealtimeX for ETA logging).
 type SegmentEvent struct {
-	SegIdx       int     // 0-based segment index within this file
-	TotalSegs    int     // total segments in this file
-	SegStartSecs int     // segment start offset within this file
-	Done         bool    // false = about to transcribe; true = finished
-	Words        int     // words transcribed in this segment (Done only)
-	Failed       bool    // segment failed permanently after retries (Done only)
+	SegIdx       int  // 0-based segment index within this file
+	TotalSegs    int  // total segments in this file
+	SegStartSecs int  // segment start offset within this file
+	Done         bool // false = about to transcribe; true = finished
+	Words        int  // words transcribed in this segment (Done only)
+	Failed       bool // segment failed permanently after retries (Done only)
 }
 
 // ChunkedTranscribe is the single shared long-audio transcription primitive used
@@ -53,7 +53,7 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 
 	for i := 0; i < nSegments; i++ {
 		startSecs := i * chunkDurationSecs
-		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg-%04d.mp3", i))
+		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg-%04d%s", i, segmentExt(audioPath)))
 
 		// ffmpeg segment extraction (copy codec — fast, no re-encode).
 		cmd := exec.Command("ffmpeg", "-y", "-v", "error",
@@ -132,6 +132,31 @@ func transcribeChunked(client stt.Provider, audioPath string, onProgress func(se
 			onProgress(e.SegIdx, e.TotalSegs)
 		}
 	})
+}
+
+// segmentExt picks the container for an extracted chunk.
+//
+// It has to MATCH THE INPUT: segments are cut with `-c copy` (no re-encode, so
+// splitting a 17-hour book costs seconds), and ffmpeg refuses to mux a copied
+// AAC stream into a .mp3 container — "Error opening output files: Invalid
+// argument". Hardcoding .mp3 silently worked only because every book had been
+// MP3 until m4a and opus arrived; it made the library's 44.5 hours of m4a
+// (Animal Farm, the Dan Carlin epics) impossible to transcribe.
+//
+// A few extensions name a container ffmpeg has no muxer for, so they map to the
+// equivalent it does know.
+func segmentExt(audioPath string) string {
+	ext := strings.ToLower(filepath.Ext(audioPath))
+	switch ext {
+	case ".m4b", ".mp4", ".aac", ".m4a":
+		return ".m4a" // one MP4-family muxer for the lot
+	case ".oga", ".opus", ".ogg":
+		return ".ogg"
+	case "":
+		return ".mp3" // no extension to go on; MP3 is the library's default
+	default:
+		return ext // .mp3, .flac, .wav, … ffmpeg infers the muxer
+	}
 }
 
 // probeDurationFile returns the duration in seconds via ffprobe (0 on error).
