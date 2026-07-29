@@ -917,6 +917,24 @@ func (s *Store) ListCredentials() ([]Credential, error) {
 	return out, rows.Err()
 }
 
+// CredentialAPIKey returns the stored api_key for a vendor from the credentials
+// vault (the go-forward key store), or "" if none. Provider resolution prefers
+// this so a key saved once in the Keys section serves every lane it's verified
+// for, without re-entering it in each feature's legacy field. Uses the canonical
+// (lowest-id) row, matching UpsertProviderCredential.
+func (s *Store) CredentialAPIKey(provider string) string {
+	creds, err := s.ListCredentials()
+	if err != nil {
+		return ""
+	}
+	for _, c := range creds { // ListCredentials orders by provider, id
+		if c.Provider == provider {
+			return c.Fields["api_key"]
+		}
+	}
+	return ""
+}
+
 // UpsertProviderCredential maintains the one-key-per-provider case the UI
 // exposes today: update the canonical (lowest-id) row for the provider if one
 // exists, else insert. Returns the credential id. The table still permits

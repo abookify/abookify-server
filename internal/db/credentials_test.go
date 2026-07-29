@@ -85,3 +85,28 @@ func TestCredentialsCRUDAndOneToMany(t *testing.T) {
 		t.Fatalf("missing get should be (nil,nil), got (%v,%v)", c, err)
 	}
 }
+
+func TestCredentialAPIKey(t *testing.T) {
+	store := testStore(t)
+
+	// No credential → empty (resolution falls back to legacy/local).
+	if k := store.CredentialAPIKey("openai"); k != "" {
+		t.Fatalf("expected empty for missing provider, got %q", k)
+	}
+
+	if _, err := store.UpsertProviderCredential("openai", "", map[string]string{"api_key": "sk-proj-vault"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if k := store.CredentialAPIKey("openai"); k != "sk-proj-vault" {
+		t.Fatalf("expected the vault key back, got %q", k)
+	}
+
+	// A second row for the same provider must not shadow the canonical one — the
+	// resolver uses the lowest-id row, matching UpsertProviderCredential.
+	if _, err := store.CreateCredential("openai", "cost-lane-B", map[string]string{"api_key": "sk-proj-second"}); err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if k := store.CredentialAPIKey("openai"); k != "sk-proj-vault" {
+		t.Fatalf("resolver should return the canonical (lowest-id) key, got %q", k)
+	}
+}

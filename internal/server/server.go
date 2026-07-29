@@ -138,6 +138,15 @@ func (s *Server) ReloadLLM() {
 	provider := settings["llm_provider"]
 	apiKey := settings["llm_api_key"]
 
+	// Prefer the credentials vault for the selected provider — a key added once
+	// in the Keys section serves every lane it's verified for — falling back to
+	// the legacy inline llm_api_key when no vault credential exists.
+	if provider != "" && provider != "ollama" {
+		if k := s.store.CredentialAPIKey(provider); k != "" {
+			apiKey = k
+		}
+	}
+
 	if provider == "" {
 		if os.Getenv("ANTHROPIC_API_KEY") != "" {
 			provider = "anthropic"
@@ -2999,9 +3008,17 @@ func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 		body.Provider = settings["llm_provider"]
 	}
 	// Masked secret in the body means "the UI didn't touch the key" —
-	// fall through to the stored value just like handleSaveSettings does.
+	// fall through to the stored value just like handleSaveSettings does:
+	// the vault credential for the provider first (Keys section), then the
+	// legacy inline key.
 	if body.APIKey == "" || isMaskedSecret(body.APIKey) {
-		body.APIKey = settings["llm_api_key"]
+		body.APIKey = ""
+		if body.Provider != "" && body.Provider != "ollama" {
+			body.APIKey = s.store.CredentialAPIKey(body.Provider)
+		}
+		if body.APIKey == "" {
+			body.APIKey = settings["llm_api_key"]
+		}
 	}
 	if body.Model == "" {
 		body.Model = settings["llm_model"]

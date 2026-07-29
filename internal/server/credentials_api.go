@@ -104,6 +104,11 @@ func (s *Server) handleSaveCredential(w http.ResponseWriter, r *http.Request) {
 	// verifies nothing is still stored (an unconsumed key is fine).
 	caps := probeCredentialFn(desc, fields)
 	_ = s.store.SetCredentialCapabilities(id, caps)
+	// A vault key can now serve a lane whose provider is already selected —
+	// rebuild the LLM + speech clients so it takes effect without a restart
+	// (mirrors what a POST /api/settings does).
+	s.ReloadLLM()
+	s.ReloadSpeech()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "capabilities": caps})
 }
 
@@ -118,5 +123,8 @@ func (s *Server) handleDeleteCredential(w http.ResponseWriter, r *http.Request) 
 		writeServerError(w, r, err)
 		return
 	}
+	// Drop the now-removed key from any live client (falls back to legacy/local).
+	s.ReloadLLM()
+	s.ReloadSpeech()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
