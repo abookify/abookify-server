@@ -35,6 +35,7 @@ func main() {
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
 	allowCPU := flag.Bool("allow-cpu", false, "proceed even if the STT service is on CPU while this host has a GPU")
+	allowDamaged := flag.Bool("allow-damaged", false, "proceed even if source files contain corrupt frames (transcription will silently lose narration)")
 	bootstrapSidecar := flag.Bool("bootstrap-sidecar", false, "Write a stub sidecar (sources + durations only, no words) and exit. --audio must point to a directory. The stub can then be filled chapter-by-chapter via --redo-files across multiple sessions.")
 	flag.Parse()
 
@@ -131,6 +132,14 @@ func main() {
 	client := stt.NewClient(*whisperURL)
 	if err := client.Health(); err != nil {
 		log.Fatalf("Whisper not reachable at %s: %v", *whisperURL, err)
+	}
+
+	// Corrupt source frames silently truncate a transcript, so check the audio
+	// itself before spending hours on it. Deliberately ahead of the --redo-files
+	// branch: a redo is usually the response to missing words, which is exactly
+	// when the input is most likely to be damaged.
+	if err := damagePreflight(files, *allowDamaged); err != nil {
+		log.Fatalf("preflight: %v", err)
 	}
 
 	// Selective retry: only retranscribe the files named in --redo-files,
