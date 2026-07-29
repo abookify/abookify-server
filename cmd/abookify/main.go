@@ -321,12 +321,24 @@ func main() {
 	// the operator set ABOOKIFY_DEV_AUTH_TOKEN AND the instance isn't exposed via
 	// the relay (ABOOKIFY_PUBLIC_URL). This makes it impossible to enable on a real
 	// (network-facing) install — see engineering/server/docs/dev-auth.md.
-	if devTok := os.Getenv("ABOOKIFY_DEV_AUTH_TOKEN"); devTok != "" {
-		if pub := os.Getenv("ABOOKIFY_PUBLIC_URL"); pub != "" {
-			log.Printf("SECURITY: ABOOKIFY_DEV_AUTH_TOKEN IGNORED — this instance is relay-exposed (ABOOKIFY_PUBLIC_URL=%s). The dev auth bypass is local-test only.", pub)
+	// DURABLE across container recreates: the token is persisted in the settings
+	// DB (which lives in the data-dir volume), NOT in container env — a routine
+	// `docker compose up` recreate no longer wipes it. Set ABOOKIFY_DEV_AUTH_TOKEN
+	// ONCE (env/.env) → it's saved; thereafter it loads from the DB even without
+	// the env. Same gate as before: NEVER honored on a relay-exposed install
+	// (masked in GET /api/settings via the `_token` suffix). See docs/dev-auth.md.
+	relayExposed := os.Getenv("ABOOKIFY_PUBLIC_URL") != ""
+	if envTok := os.Getenv("ABOOKIFY_DEV_AUTH_TOKEN"); envTok != "" && !relayExposed {
+		if err := store.SetSetting("dev_auth_token", envTok); err != nil {
+			log.Printf("dev-auth: could not persist token: %v", err)
+		}
+	}
+	if tok, _ := store.GetSetting("dev_auth_token"); tok != "" {
+		if relayExposed {
+			log.Printf("SECURITY: a stored dev-auth token is IGNORED — this instance is relay-exposed (ABOOKIFY_PUBLIC_URL=%s). Never honored on a real install.", os.Getenv("ABOOKIFY_PUBLIC_URL"))
 		} else {
-			srv.DevAuthToken = devTok
-			log.Printf("⚠ DEV AUTH BYPASS ACTIVE — requests bearing ABOOKIFY_DEV_AUTH_TOKEN skip login. LOCAL DEVELOPMENT ONLY; never set this on a real install.")
+			srv.DevAuthToken = tok
+			log.Printf("⚠ DEV AUTH BYPASS ACTIVE (persisted) — requests bearing the dev token skip login. LOCAL DEVELOPMENT ONLY; never enable on a real install.")
 		}
 	}
 	srv.GeneratedDir = *generatedPath

@@ -13,20 +13,35 @@ backdoor:
   instance.
 - **Does not weaken production auth.** Normal login still works for everyone; this
   only adds one accepted token, constant-time compared, on a local box.
+- **Durable across container recreates.** The token is persisted in the settings
+  DB (the data-dir volume), not container env — so a routine `docker compose up`
+  that recreates the server no longer wipes it. **Set it once; it survives.**
 
-## Enabling it (local test instance only)
+## Enabling it (local test instance only) — set once, it persists
 
-Set the env var to any secret string and start the server without a relay URL:
+Set the env var to any secret string and start the server without a relay URL.
+On startup the server **saves the token to its settings DB**, so you only do this
+ONCE — every later recreate/reboot loads it back automatically (no need to keep
+the env around, though keeping it in `.env` is fine and re-asserts it).
 
 ```bash
-# docker compose: add to your .env (local test box only, no ABOOKIFY_PUBLIC_URL)
-ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please
+# docker compose: set it once, then `make server` (or up -d) — it's now persisted
+ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please docker compose \
+  -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-deps server
 
-# or native/desktop:
+# or put it in .env once (also fine — re-asserts the same token every boot):
+#   ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please
+
+# native/desktop:
 ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please ./abookify
 ```
 
-Startup logs `⚠ DEV AUTH BYPASS ACTIVE …` when it takes effect.
+Startup logs `⚠ DEV AUTH BYPASS ACTIVE (persisted) …` when it takes effect. After
+that first boot, the token is stored — a plain `make server` recreate keeps it.
+
+**To rotate/disable:** set a new `ABOOKIFY_DEV_AUTH_TOKEN` and reboot (overwrites
+the stored one), or clear the `dev_auth_token` setting. On any relay-exposed
+install the stored token is ignored and a `SECURITY:` line is logged instead.
 
 ## How the mobile lane uses it
 
