@@ -2,7 +2,7 @@
 # Endpoint status-contract smoke suite. Hits each major route against a running
 # server and asserts a sensible status — 2xx, or a graceful 4xx/503 with a JSON
 # error — but NEVER a bare 500. Locks the cast graceful-degradation contract
-# (extract-cast returns 503, not 500, when the opt-in BookNLP service is down).
+# (extract-cast returns 422, not 500, when a work has no EPUB text).
 #
 # Usage: ./testing/endpoint-smoke.sh [base-url]
 # Env:   ABOOKIFY_TOKEN  optional bearer token (server with auth enabled)

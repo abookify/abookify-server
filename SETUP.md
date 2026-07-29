@@ -21,8 +21,8 @@ terminal and Docker. (A one-click desktop app is in the works — see
 | `whisper` | 5200 | Speech‑to‑text (transcribe audiobooks)    | ~3 GB    |
 | `kokoro`  | 8880 | Text‑to‑speech (generate audio from text) | ~1 GB    |
 
-Two more are **opt-in** and off by default: `nullbore` (remote-access relay) and
-`booknlp` (experimental cast-of-characters). Both are covered below.
+One more is **opt-in** and off by default: `nullbore` (remote-access relay).
+Covered below.
 
 **Requirements:** Docker + Docker Compose, ~10 GB free disk for the images and
 models (more for your library and generated audio), and 4 GB+ RAM (8 GB+
@@ -239,19 +239,15 @@ You can also produce portable, per-book **`.abook`** bundles from
 
 ### Experimental: cast of characters
 
-An opt-in BookNLP service extracts a per-book character list (names + aliases).
-It's a large image (~6.5 GB), CPU-heavy, and labelled **experimental**
-everywhere (alias detection over-splits on some books). To try it:
+A per-book character list is derived from the work's EPUB by a lightweight
+in-process extractor — nothing to install, no container, under a second per
+book. Extract it from the cast panel on any ebook.
 
-```bash
-docker compose --profile booknlp up -d booknlp
-```
-
-Then enable it in **Settings → Cast** and extract per work. Stop the container
-(`docker compose stop booknlp`) to reclaim the RAM when you're done;
-already-extracted casts stay visible read-only.
-
----
+It is labelled **experimental**: places and allusions can surface as candidates,
+and aliases that share no tokens (Rodya / Raskolnikov) split into separate rows.
+(A 6.5 GB BookNLP container previously did this; it was retired in 2026-07 after
+measuring close enough not to justify the size — see
+`../distribution/cast-extraction-eval.md`.)
 
 ## 8. Troubleshooting
 

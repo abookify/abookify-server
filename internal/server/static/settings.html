@@ -645,7 +645,6 @@
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
         if (settings.voice_api_key) showSavedKey('voice-api-key', settings.voice_api_key);
-        document.getElementById('booknlp-enabled').checked = settings.booknlp_enabled === 'true';
         // Now that provider+model are loaded, populate the model <select>.
         onProviderChange();
       } catch {}
@@ -673,7 +672,6 @@
         voice_provider: document.getElementById('voice-provider').value,
         voice_api_key: keyFieldValue('voice-api-key'),
         auth_username: document.getElementById('auth-username').value.trim(),
-        booknlp_enabled: document.getElementById('booknlp-enabled').checked ? 'true' : 'false',
       };
       // Only send auth_password when the user actually typed one. Blank
       // means "keep current" — sending "" would clear it and disable

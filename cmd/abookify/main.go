@@ -40,7 +40,6 @@ func main() {
 	port := flag.String("port", envOrDefault("ABOOKIFY_PORT", "7654"), "HTTP server port")
 	ttsURL := flag.String("tts-url", envOrDefault("ABOOKIFY_TTS_URL", ""), "TTS service URL")
 	sttURL := flag.String("stt-url", envOrDefault("ABOOKIFY_STT_URL", ""), "STT service URL")
-	booknlpURL := flag.String("booknlp-url", envOrDefault("ABOOKIFY_BOOKNLP_URL", ""), "BookNLP cast service URL (experimental)")
 	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", filepath.Join(root, "generated")), "path for generated audio")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -281,7 +280,6 @@ func main() {
 	srv.Version = version
 	srv.LibraryDir = *libraryPath
 	srv.GeneratedDir = *generatedPath
-	srv.BookNLPURL = *booknlpURL
 	srv.DataDir = *dataDir
 	srv.ModelsDir = modelsDir
 	srv.TTSURL = *ttsURL

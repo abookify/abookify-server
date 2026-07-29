@@ -1,5 +1,7 @@
 // cast_heuristic.go — lightweight, no-container cast-of-characters extraction.
-// The DEFAULT "instant cast" path (BookNLP is the optional "deep" upgrade).
+// The ONLY cast path — it replaced a 6.5 GB BookNLP container in 2026-07
+// after measuring close enough not to justify it (see
+// ../../distribution/cast-extraction-eval.md).
 //
 // Signal: a token that appears Title-Case MID-sentence (not just after a period)
 // is almost certainly a proper noun — this separates names from sentence-initial

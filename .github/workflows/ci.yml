@@ -30,10 +30,9 @@ jobs:
       - name: Run Go tests
         run: go test -buildvcs=false ./... -count=1
 
-  # Endpoint status-contract smoke. Boots the server with the optional BookNLP
-  # service intentionally NOT running, then asserts every major route returns a
-  # sensible status (2xx, or a graceful 4xx/503 with a JSON error) and NEVER a
-  # bare 500 — locking the cast graceful-degradation contract PJ hit.
+  # Endpoint status-contract smoke. Boots the server with no engines running,
+  # then asserts every major route returns a sensible status (2xx, or a graceful
+  # 4xx with a JSON error) and NEVER a bare 500.
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -51,15 +50,12 @@ jobs:
       - name: Generate fixture library (one EPUB work, no binary committed)
         run: python3 testing/make_fixture_epub.py /tmp/smoke-lib
 
-      - name: Boot server — no engines, BookNLP intentionally NOT started
+      - name: Boot server — no engines running
         run: |
           mkdir -p /tmp/smoke-data
-          # BookNLP URL points at a closed port → connection refused → the
-          # extract-cast handler must return a graceful 503, never a 500.
           ABOOKIFY_LIBRARY_PATH=/tmp/smoke-lib \
           ABOOKIFY_DB_PATH=/tmp/smoke-data/smoke.db \
           ABOOKIFY_GENERATED_PATH=/tmp/smoke-data/gen \
-          ABOOKIFY_BOOKNLP_URL=http://127.0.0.1:5300 \
           ABOOKIFY_PORT=7654 \
           ./bin/abookify > /tmp/smoke-data/server.log 2>&1 &
 
@@ -75,7 +71,7 @@ jobs:
             sleep 1
           done
 
-      - name: Endpoint smoke (graceful-degradation contract; BookNLP is down)
+      - name: Endpoint smoke (graceful-degradation contract)
         run: ./testing/endpoint-smoke.sh http://localhost:7654
 
       - name: Server log on failure

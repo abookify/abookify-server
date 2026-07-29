@@ -464,35 +464,11 @@ func TestHandleGetCastGracefulDefault(t *testing.T) {
 	if !got.Experimental {
 		t.Errorf("experimental should always be true")
 	}
-	if got.Enabled {
-		t.Errorf("enabled should be false by default (no flag, no service)")
+	if !got.Enabled {
+		t.Errorf("enabled should be true — the extractor is in-process, so there is no service or flag to gate on")
 	}
 	if len(got.Characters) != 0 {
 		t.Errorf("characters should be empty by default, got %d", len(got.Characters))
-	}
-}
-
-func TestHandleExtractCastGatedByFlag(t *testing.T) {
-	srv, store, dir := newTestServer(t)
-	workID := seedAligned(t, store, dir)
-
-	// Flag off → 403 regardless of service URL.
-	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
-	req.SetPathValue("id", itoa(workID))
-	rec := httptest.NewRecorder()
-	srv.handleExtractCast(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("flag-off status = %d, want 403", rec.Code)
-	}
-
-	// Flag on but no service URL → 503.
-	store.SetSetting("booknlp_enabled", "true")
-	req = httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
-	req.SetPathValue("id", itoa(workID))
-	rec = httptest.NewRecorder()
-	srv.handleExtractCast(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("no-service status = %d, want 503", rec.Code)
 	}
 }
 

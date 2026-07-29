@@ -499,8 +499,8 @@ func migrate(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
 
-		-- Cast of characters (EXPERIMENTAL, #booknlp). Derived from an EPUB
-		-- text book by the optional booknlp service; additive and fully
+		-- Cast of characters (EXPERIMENTAL). Derived from an EPUB text book
+		-- by the in-process lightweight extractor; additive and fully
 		-- removable. A work with no rows here simply has no cast (the UI
 		-- degrades gracefully). Re-extraction replaces a book's rows.
 		CREATE TABLE IF NOT EXISTS characters (
@@ -509,7 +509,7 @@ func migrate(db *sql.DB) error {
 			book_id       INTEGER NOT NULL,   -- the EPUB text book the cast came from
 			name          TEXT NOT NULL DEFAULT '',  -- canonical display name
 			aliases       TEXT NOT NULL DEFAULT '[]', -- JSON array of variant names
-			gender        TEXT NOT NULL DEFAULT '',   -- BookNLP argmax gender or ''
+			gender        TEXT NOT NULL DEFAULT '',   -- unused by the heuristic; kept for a future extractor
 			mention_count INTEGER NOT NULL DEFAULT 0,
 			rank          INTEGER NOT NULL DEFAULT 0, -- 0-based, by mention_count desc
 			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1569,8 +1569,9 @@ func (s *Store) ListAllChunksWithEmbeddings(workID int64) ([]Chunk, error) {
 }
 
 // Character is one entry in a work's cast of characters (EXPERIMENTAL).
-// Derived from an EPUB by the optional booknlp service. Aliases is the set of
-// surface-name variants BookNLP clustered under this character.
+// Derived from an EPUB by the in-process lightweight extractor. Aliases is the
+// set of surface-name variants clustered under this character — empty for the
+// heuristic, which has no coreference, so variants stay separate rows.
 type Character struct {
 	ID           int64    `json:"id"`
 	WorkID       int64    `json:"work_id"`
