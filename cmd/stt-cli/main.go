@@ -68,11 +68,32 @@ func main() {
 	}
 
 	// Pre-probe all durations so we can show accurate overall progress / ETA.
-	durations := make([]float64, len(files))
+	// A file that will not probe — zero-byte or truncated download — is SKIPPED
+	// with a warning rather than killing the run. A 16-hour book should not be
+	// unreachable because one file in the set is a husk; this has bitten before
+	// (a 170-byte truncated Sherlock file), and For Whom the Bell Tolls ships
+	// with 13 zero-byte placeholders alongside its 17 real files.
+	var kept []string
+	var durations []float64
 	var totalDur float64
-	for i, f := range files {
-		durations[i] = probeDuration(f)
-		totalDur += durations[i]
+	var skipped []string
+	for _, f := range files {
+		d, err := probeDuration(f)
+		if err != nil || d <= 0 {
+			skipped = append(skipped, filepath.Base(f))
+			continue
+		}
+		kept = append(kept, f)
+		durations = append(durations, d)
+		totalDur += d
+	}
+	if len(skipped) > 0 {
+		log.Printf("WARNING: skipping %d unreadable/zero-length file(s): %s",
+			len(skipped), strings.Join(skipped, ", "))
+	}
+	files = kept
+	if len(files) == 0 {
+		log.Fatalf("No readable audio files in %s (%d skipped as unreadable)", *audioPath, len(skipped))
 	}
 	if len(files) == 1 {
 		log.Printf("Audio: %s (%.0fs / %.1f min)", files[0], totalDur, totalDur/60)
@@ -304,15 +325,21 @@ func transcribeFile(client *stt.Client, path string, baseOffset float64, wallSta
 	})
 }
 
-func probeDuration(path string) float64 {
+// probeDuration returns the audio duration in seconds. An error (or a
+// non-positive duration) means the file is unusable — the caller skips it
+// rather than aborting, so one bad file in a set does not cost the whole book.
+func probeDuration(path string) (float64, error) {
 	out, err := exec.Command("ffprobe", "-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
 	if err != nil {
-		log.Fatalf("ffprobe failed for %s: %v", path, err)
+		return 0, fmt.Errorf("ffprobe %s: %w", path, err)
 	}
-	d, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	return d
+	d, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration for %s: %w", path, err)
+	}
+	return d, nil
 }
 
 type wordTS struct {
