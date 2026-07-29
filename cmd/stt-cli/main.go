@@ -34,6 +34,7 @@ func main() {
 	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
+	allowCPU := flag.Bool("allow-cpu", false, "proceed even if the STT service is on CPU while this host has a GPU")
 	bootstrapSidecar := flag.Bool("bootstrap-sidecar", false, "Write a stub sidecar (sources + durations only, no words) and exit. --audio must point to a directory. The stub can then be filled chapter-by-chapter via --redo-files across multiple sessions.")
 	flag.Parse()
 
@@ -145,6 +146,11 @@ func main() {
 		}
 		log.Printf("Total: redo run finished in %s", time.Since(redoStart).Truncate(time.Second))
 		return
+	}
+
+	// Verify what we are actually about to run on BEFORE committing hours.
+	if err := preflight(client, *allowCPU, totalDur); err != nil {
+		log.Fatalf("preflight: %v", err)
 	}
 
 	start := time.Now()
