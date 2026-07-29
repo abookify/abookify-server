@@ -10,6 +10,11 @@ import (
 )
 
 func TestCredentialsAPI(t *testing.T) {
+	// Stub the capability probe so the test never hits the network.
+	orig := probeCredentialFn
+	probeCredentialFn = func(ProviderDescriptor, map[string]string) []string { return nil }
+	defer func() { probeCredentialFn = orig }()
+
 	srv, store, _ := newTestServer(t)
 
 	post := func(body string) *httptest.ResponseRecorder {

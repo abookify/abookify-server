@@ -99,7 +99,12 @@ func (s *Server) handleSaveCredential(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id})
+	// Probe which kinds this key actually serves (verified, never assumed) and
+	// record them — per-feature selectors gate on this. Best-effort: a key that
+	// verifies nothing is still stored (an unconsumed key is fine).
+	caps := probeCredentialFn(desc, fields)
+	_ = s.store.SetCredentialCapabilities(id, caps)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "capabilities": caps})
 }
 
 // DELETE /api/credentials/{id}
