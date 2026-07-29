@@ -3,6 +3,7 @@ package library
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +41,18 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 		return nil, fmt.Errorf("could not determine audio duration for %s", audioPath)
 	}
 
-	nSegments := int(dur/chunkDurationSecs) + 1
+	// ceil, NOT int()+1: a file whose duration is an exact multiple of the chunk
+	// size (a 60.0-minute part, which is how most ripped audiobooks are cut) got
+	// one segment too many, starting exactly AT the end. ffmpeg then produced an
+	// empty file and Whisper rejected it — "Invalid data found when processing
+	// input" — so every such file burned all 3 retry attempts plus backoff on
+	// nothing, and logged an alarming "failed permanently" that looked like data
+	// loss. Nothing was ever lost (the phantom segment is past the end), but it
+	// cost ~40s per file and buried real failures in noise.
+	nSegments := int(math.Ceil(dur / chunkDurationSecs))
+	if nSegments < 1 {
+		nSegments = 1
+	}
 
 	tmpDir, err := os.MkdirTemp("", "abookify-stt-*")
 	if err != nil {
