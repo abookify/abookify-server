@@ -1,4 +1,4 @@
-.PHONY: up server down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
+.PHONY: up server whisper down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
 
 # Compose invocation. IMPORTANT: on a GPU host the CUDA overlay MUST be passed on
 # EVERY `up` — even for a single service — or compose reconciles the project from
@@ -101,6 +101,13 @@ up:
 # regardless. Use this (not `make up`) for a server-only deploy.
 server:
 	$(COMPOSE) up -d --build --no-deps server
+
+# Recreate ONLY the whisper container WITH the CUDA overlay — the correct way to
+# restore GPU after a bare `docker compose up` stripped it (that footgun keeps
+# recurring). `--no-deps` leaves server/kokoro alone; no --build (reuse the image,
+# just re-apply the GPU device reservation). Verify `device=cuda` after.
+whisper:
+	$(COMPOSE) up -d --no-deps whisper
 
 down:
 	$(COMPOSE) down
