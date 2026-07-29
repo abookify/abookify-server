@@ -3183,11 +3183,11 @@
     // now-playing drawer. Single rendered instance, so the work-keyed IDs
     // (qa-input-/chat-thread-/…) don't collide. The chat path enforces the #130
     // spoiler bound server-side.
-    // The voice entry point in the AI panel. Benefit-first + honest: it says
-    // what PJ gets (talk out loud, hear a reply), tagged "preview" because it is
-    // general conversation not yet grounded in this book. Gated on a capable
-    // credential — clearly disabled with a reason rather than a tap into failure.
-    function voiceLaunchHtml() {
+    // The voice entry point in the AI panel. Benefit-first + honest, tagged
+    // "preview". Gated on a capable credential — clearly disabled with a reason
+    // rather than a tap into failure. Opens the voice page GROUNDED in this book:
+    // openVoice threads the reader's live position so answers stay spoiler-safe.
+    function voiceLaunchHtml(workId) {
       if (!voiceAvailable) {
         return `<div style="padding:0.4rem 1rem 0.2rem;">
           <button disabled title="Add an OpenAI key in Settings to enable voice."
@@ -3197,12 +3197,25 @@
         </div>`;
       }
       return `<div style="padding:0.4rem 1rem 0.2rem;">
-        <button onclick="window.open('/voice.html','_blank','noopener')"
-          title="Have a spoken, back-and-forth conversation out loud. Preview — general chat for now; grounding it in this book is coming."
+        <button onclick="openVoice(${workId})"
+          title="Talk out loud about this book. Answers stay behind where you're reading (spoiler-safe), same as its Q&amp;A."
           style="background:rgba(240,165,0,0.18); color:var(--generate); border:1px solid var(--generate); border-radius:8px; padding:7px 12px; font-size:0.82rem; font-weight:600; cursor:pointer;">
           &#127908; Talk out loud <span style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; opacity:0.8; margin-left:4px;">preview</span></button>
-        <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">Spoken conversation you can talk to. Opens in a new tab.</div>
+        <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">Spoken conversation about this book. Opens in a new tab.</div>
       </div>`;
+    }
+
+    // Open the voice page grounded in this work, threading the reader's CURRENT
+    // position (read at click time) so retrieval is bounded to what they've read
+    // — the same spoiler-safe scope the chat uses. No position tracked → the
+    // server falls back to whole-book, matching Q&A's ResolveSessionScope.
+    function openVoice(workId) {
+      const params = new URLSearchParams({ work: String(workId) });
+      const pos = currentReaderChapter[workId];
+      if (pos && pos.bookId) { params.set('book', String(pos.bookId)); params.set('chapter', String(pos.index)); }
+      const w = (typeof allWorks !== 'undefined' ? allWorks : []).find(x => x.id === workId);
+      if (w && w.title) params.set('title', w.title);
+      window.open('/voice.html?' + params.toString(), '_blank', 'noopener');
     }
 
     function aiPanelHtml(work) {
@@ -3220,7 +3233,7 @@
       const textFiles = work.text_files || [];
       return `<div class="qa-panel">
           <div class="qa-header">&#10022; AI tools</div>
-          ${voiceLaunchHtml()}
+          ${voiceLaunchHtml(work.id)}
           <div class="chat-tabs" id="chat-tabs-${work.id}">
             <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
           </div>

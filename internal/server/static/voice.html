@@ -35,7 +35,7 @@
 <body>
 <div class="wrap">
   <h1>Voice conversation <span class="badge">preview</span></h1>
-  <p class="sub">Talk out loud and hear a reply, in real time. This early preview is a general
+  <p class="sub" id="sub">Talk out loud and hear a reply, in real time. This early preview is a general
     conversation — it isn't grounded in a specific book yet. Uses your saved OpenAI key.</p>
 
   <div id="status" class="status">Ready.</div>
@@ -66,6 +66,19 @@
   let pc = null, micStream = null, dc = null;
   let connected = false, iceWatchdog = null;
   const $ = id => document.getElementById(id);
+
+  // Book grounding (optional): when opened from a book's AI panel the URL carries
+  // ?work=&book=&chapter= (the reader's live position). If present, the realtime
+  // model gets a search_book TOOL and is told to answer ONLY from what it returns
+  // — and the server bounds that to the reading position (spoiler-safe), so a
+  // spoken question can't leak what the reader hasn't read.
+  const _p = new URLSearchParams(location.search);
+  const BOOK = {
+    work: parseInt(_p.get('work') || '', 10) || 0,
+    bookId: parseInt(_p.get('book') || '', 10) || 0,
+    chapter: _p.has('chapter') ? parseInt(_p.get('chapter'), 10) : -1,
+    title: _p.get('title') || '',
+  };
   function setStatus(s, cls) { const el = $('status'); el.textContent = s; el.className = 'status ' + (cls || ''); }
   function clearWatchdog() { if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; } }
 
@@ -174,13 +187,40 @@
     pc = dc = micStream = null;
   }
 
-  function onEvent(ev) {
+  async function onEvent(ev) {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     // The assistant's spoken reply, as text.
     if (m.type === 'response.audio_transcript.done' && m.transcript) logLine('AI', m.transcript.trim());
     // What the user said (requires input transcription, requested below).
     else if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) logLine('You', m.transcript.trim());
+    // The model asked to look something up in the book → run the bounded,
+    // spoiler-scoped retrieval on the server and hand back ONLY those passages.
+    else if (m.type === 'response.function_call_arguments.done' && m.name === 'search_book') await handleBookSearch(m);
     else if (m.type === 'error' && m.error) console.warn('realtime event error:', m.error);
+  }
+
+  // Server-side book grounding: the model's search_book(query) call → our
+  // /voice-context endpoint (which bounds to the reader's position + honours
+  // extract-only), then the bounded passages go back as the tool result and the
+  // model speaks from them. The book content that reaches the model is exactly
+  // what the endpoint returns — the boundary is enforced there, in code.
+  async function handleBookSearch(m) {
+    let query = '';
+    try { query = (JSON.parse(m.arguments || '{}').query) || ''; } catch (e) {}
+    let output;
+    try {
+      const r = await fetch('/api/works/' + BOOK.work + '/voice-context', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, scope_mode: 'reading', reader_book_id: BOOK.bookId, reader_chapter: BOOK.chapter }),
+      });
+      output = await r.json();
+    } catch (e) { output = { grounded: false, reason: 'the book lookup failed' }; }
+    if (dc && dc.readyState === 'open') {
+      dc.send(JSON.stringify({ type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: m.call_id, output: JSON.stringify(output) } }));
+      dc.send(JSON.stringify({ type: 'response.create' }));
+    }
+    if (output && output.grounded === false && output.reason) logLine('AI', '(' + output.reason + ')');
   }
 
   async function start() {
@@ -223,15 +263,24 @@
 
       dc = pc.createDataChannel('oai-events');
       dc.onopen = () => {
-        // Generic persona + turn on input transcription for the on-screen log.
-        // NO book or library text is ever sent (privacy stance).
-        dc.send(JSON.stringify({
-          type: 'session.update',
-          session: {
-            instructions: 'You are a warm, friendly conversation partner for someone who loves books. Keep replies concise and natural.',
-            input_audio_transcription: { model: 'whisper-1' }
-          }
-        }));
+        const session = { input_audio_transcription: { model: 'whisper-1' } };
+        if (BOOK.work) {
+          // Grounded: force the model to answer book questions ONLY from the
+          // bounded passages search_book returns — never its own recall of the
+          // book. That plus the server's position bound is the spoiler guard.
+          session.instructions =
+            "You are a friendly reading companion. For ANYTHING about this book's content, characters or plot you MUST call search_book and answer ONLY from the passages it returns — never your own prior knowledge of the book. If it returns no relevant passage, say it hasn't come up yet in what they've read. Never reveal anything beyond those passages. Keep replies concise and natural.";
+          session.tools = [{
+            type: 'function', name: 'search_book',
+            description: "Search the part of the book the reader has read so far for passages relevant to their question. Returns only in-bounds passages — use them as the sole source for anything about the book.",
+            parameters: { type: 'object', properties: { query: { type: 'string', description: 'what to look up in the book' } }, required: ['query'] },
+          }];
+          session.tool_choice = 'auto';
+        } else {
+          // Ungrounded general chat — NO book/library text is ever sent.
+          session.instructions = 'You are a warm, friendly conversation partner for someone who loves books. Keep replies concise and natural.';
+        }
+        dc.send(JSON.stringify({ type: 'session.update', session }));
       };
       dc.onmessage = onEvent;
 
@@ -271,6 +320,15 @@
     setStatus('Stopped.');
     $('stopBtn').hidden = true;
     $('startBtn').disabled = false;
+  }
+
+  // When opened from a book, say so — and that answers stay behind the reading
+  // position (spoiler-safe), matching the book's Q&A.
+  if (BOOK.work) {
+    const sub = $('sub');
+    if (sub) sub.textContent = BOOK.title
+      ? 'Talk about “' + BOOK.title + '”. Answers stay behind where you are in the book (spoiler-safe), same as its Q&A. Uses your saved OpenAI key.'
+      : 'Talk about this book. Answers stay behind where you are in the book (spoiler-safe). Uses your saved OpenAI key.';
   }
 
   $('startBtn').onclick = start;
