@@ -55,8 +55,22 @@
 
 <script>
   let pc = null, micStream = null, dc = null;
+  let connected = false, iceWatchdog = null;
   const $ = id => document.getElementById(id);
   function setStatus(s, cls) { const el = $('status'); el.textContent = s; el.className = 'status ' + (cls || ''); }
+  function clearWatchdog() { if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; } }
+
+  // The failure PJ is most likely to hit — especially over the NullBore tunnel
+  // from his phone: the browser reaches OpenAI to negotiate, but the actual
+  // audio needs a direct UDP path that a tunnel / mobile data / VPN often blocks.
+  // Say THAT, not a generic error, so we don't chase the wrong thing.
+  function networkFail() {
+    clearWatchdog();
+    setStatus("Couldn't open the live audio connection. This usually means the network is blocking the direct voice stream (UDP) — common over a phone's mobile data, a VPN, or the remote tunnel. Try again on the same Wi-Fi network as the server.", 'warn');
+    cleanup();
+    $('stopBtn').hidden = true;
+    $('startBtn').disabled = false;
+  }
   function logLine(who, text) {
     if (!text) return;
     const d = document.createElement('div');
@@ -69,6 +83,8 @@
   }
 
   function cleanup() {
+    clearWatchdog();
+    connected = false;
     try { if (dc) dc.close(); } catch (e) {}
     try { if (pc) pc.close(); } catch (e) {}
     try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
@@ -86,6 +102,7 @@
 
   async function start() {
     $('startBtn').disabled = true;
+    connected = false;
     try {
       setStatus('Requesting microphone…');
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -101,7 +118,16 @@
       pc = new RTCPeerConnection();
       pc.ontrack = e => { $('remoteAudio').srcObject = e.streams[0]; };
       pc.oniceconnectionstatechange = () => {
-        if (['failed', 'disconnected', 'closed'].includes(pc.iceConnectionState)) setStatus('Disconnected.', 'warn');
+        const st = pc ? pc.iceConnectionState : '';
+        if (st === 'connected' || st === 'completed') {
+          connected = true; clearWatchdog();
+          setStatus('Live — just start talking.', 'live');
+          $('stopBtn').hidden = false;
+        } else if (st === 'failed') {
+          networkFail();
+        } else if (st === 'disconnected' && connected) {
+          setStatus('Connection dropped — check your network and start again.', 'warn');
+        }
       };
       pc.addTrack(micStream.getAudioTracks()[0], micStream);
 
@@ -131,10 +157,18 @@
       if (!sdpRes.ok) throw new Error('OpenAI SDP exchange failed: HTTP ' + sdpRes.status);
       await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
 
-      setStatus('Live — just start talking.', 'live');
+      // "Live" is set from the ICE handler once the media path actually connects
+      // — not here, because a successful SDP exchange doesn't mean audio flows.
+      setStatus('Connecting the audio…');
       $('stopBtn').hidden = false;
+      clearWatchdog();
+      iceWatchdog = setTimeout(() => { if (!connected) networkFail(); }, 12000);
     } catch (e) {
-      setStatus('Error: ' + (e && e.message ? e.message : e), 'warn');
+      const name = e && e.name;
+      if (name === 'NotAllowedError' || name === 'NotFoundError' || name === 'SecurityError')
+        setStatus('Microphone access is needed — allow it in your browser and try again.', 'warn');
+      else
+        setStatus('Error: ' + (e && e.message ? e.message : e), 'warn');
       cleanup();
       $('startBtn').disabled = false;
     }
