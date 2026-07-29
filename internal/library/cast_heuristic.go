@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -60,8 +61,13 @@ var (
 	// M. Waldman, M. Krempe), all of them people who are essentially ALWAYS
 	// introduced by title, so they scored ~0 rather than merely low.
 	castHonorific = words2set(`mr mrs ms miss dr m mme mlle prof professor capt col rev`)
-	// A word (letters + internal apostrophe/hyphen) OR a run of sentence-ending punctuation.
-	castTokenRe = regexp.MustCompile(`[A-Za-z][A-Za-z'\-]*|[.!?]+`)
+	// A word (letters + internal apostrophe/hyphen) OR a run of sentence-ending
+	// punctuation. \p{L}, not [A-Za-z]: an ASCII-only class SEVERS a name at its
+	// first accented letter, so Garnett's "Svidrigaïlov" (207 mentions, a lead in
+	// Crime and Punishment) tokenized as "Svidriga" — a mangled name in the cast,
+	// and its mentions split across the fragment. Same for any transliterated,
+	// French or German name.
+	castTokenRe = regexp.MustCompile(`\p{L}[\p{L}'\-]*|[.!?]+`)
 )
 
 func words2set(s string) map[string]struct{} {
@@ -98,7 +104,7 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 	total := map[string]int{}
 	allcaps := map[string]int{}
 	display := map[string]string{}
-	bigram := map[string]int{}       // "a b" (adjacent Title-case tokens)
+	bigram := map[string]int{} // "a b" (adjacent Title-case tokens)
 	bigramDisp := map[string]string{}
 
 	var prevLow, prevSurf string
@@ -122,7 +128,7 @@ func ExtractCastHeuristic(chapters []db.Chapter, minMentions int) []CastMember {
 		switch {
 		case isAllCapsWord(tok):
 			allcaps[low]++
-		case tok[0] >= 'A' && tok[0] <= 'Z':
+		case unicode.IsUpper([]rune(tok)[0]):
 			isTitle = true
 			titlecap[low]++
 			if !prevEnd {
@@ -244,10 +250,10 @@ func isAllCapsWord(s string) bool {
 	}
 	hasAlpha := false
 	for _, r := range s {
-		if r >= 'a' && r <= 'z' {
+		if unicode.IsLower(r) {
 			return false
 		}
-		if r >= 'A' && r <= 'Z' {
+		if unicode.IsUpper(r) {
 			hasAlpha = true
 		}
 	}
