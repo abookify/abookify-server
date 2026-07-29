@@ -751,6 +751,12 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
 		AlignmentMethod string   `json:"alignment_method,omitempty"`
+		// HasAlignableText is true when the work has a NON-transcript text source
+		// (epub/txt/pdf) — something an alignment COULD run against. Lets the UI
+		// tell "not aligned yet" (actionable) from "nothing to align" (a podcast,
+		// correct + final), WITHOUT touching the load-bearing Coverage pointer:
+		// Coverage stays *float64+omitempty so a podcast has NO coverage (not 0).
+		HasAlignableText bool `json:"has_alignable_text"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -760,8 +766,27 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			out[i].Coverage = &cov
 			out[i].AlignmentMethod = ba.Method
 		}
+		out[i].HasAlignableText = hasAlignableText(wk)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// hasAlignableText reports whether a work has a real (non-transcript) text source
+// — epub/txt/pdf — that an alignment could run against. A whisper transcript is a
+// text book but IS the audio, so it doesn't count: that's exactly why `has_text`
+// is the WRONG discriminator (it's true for a podcast). Distinguishes "not
+// aligned yet" from "nothing to align" for the coverage readout.
+func hasAlignableText(wk db.Work) bool {
+	for _, b := range wk.TextFiles {
+		if b.Visibility == "internal" {
+			continue
+		}
+		switch b.Format {
+		case "epub", "txt", "pdf":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
@@ -832,40 +857,45 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type catalogEntry struct {
-		ID             int64    `json:"id"`
-		Title          string   `json:"title"`
-		Author         string   `json:"author"`
-		Language       string   `json:"language"`
-		CoverPath      string   `json:"cover_path"`
-		HasAudio       bool     `json:"has_audio"`
-		HasText        bool     `json:"has_text"`
-		SourceKind     string   `json:"source_kind"`
-		CoveragePct    *float64 `json:"coverage_pct"`
-		AlignMethod    *string  `json:"align_method"`
-		AlignUnit      *string  `json:"align_unit"`
-		ContentVersion string   `json:"content_version"`
-		SchemaVersion  int      `json:"schema_version"`
-		UpdatedAt      string   `json:"updated_at"`
+		ID          int64    `json:"id"`
+		Title       string   `json:"title"`
+		Author      string   `json:"author"`
+		Language    string   `json:"language"`
+		CoverPath   string   `json:"cover_path"`
+		HasAudio    bool     `json:"has_audio"`
+		HasText     bool     `json:"has_text"`
+		SourceKind  string   `json:"source_kind"`
+		CoveragePct *float64 `json:"coverage_pct"`
+		AlignMethod *string  `json:"align_method"`
+		AlignUnit   *string  `json:"align_unit"`
+		// See handleListWorks: distinguishes "not aligned yet" from "nothing to
+		// align" (a podcast). CoveragePct stays a pointer so a podcast is null/
+		// absent, never 0.
+		HasAlignableText bool   `json:"has_alignable_text"`
+		ContentVersion   string `json:"content_version"`
+		SchemaVersion    int    `json:"schema_version"`
+		UpdatedAt        string `json:"updated_at"`
 	}
 	out := make([]catalogEntry, 0, len(works))
 	for i := range works {
 		wk := &works[i]
 		sum := abook.SummarizeWork(s.store, wk)
 		out = append(out, catalogEntry{
-			ID:             wk.ID,
-			Title:          wk.Title,
-			Author:         wk.Author,
-			Language:       "en",
-			CoverPath:      fmt.Sprintf("/api/works/%d/cover", wk.ID),
-			HasAudio:       wk.HasAudio,
-			HasText:        wk.HasText,
-			SourceKind:     sum.SourceKind,
-			CoveragePct:    sum.CoveragePct,
-			AlignMethod:    sum.AlignMethod,
-			AlignUnit:      sum.AlignUnit,
-			ContentVersion: wk.ContentVersion,
-			SchemaVersion:  wk.SchemaVersion,
-			UpdatedAt:      wk.UpdatedAt.UTC().Format(time.RFC3339),
+			ID:               wk.ID,
+			Title:            wk.Title,
+			Author:           wk.Author,
+			Language:         "en",
+			CoverPath:        fmt.Sprintf("/api/works/%d/cover", wk.ID),
+			HasAudio:         wk.HasAudio,
+			HasText:          wk.HasText,
+			SourceKind:       sum.SourceKind,
+			CoveragePct:      sum.CoveragePct,
+			AlignMethod:      sum.AlignMethod,
+			AlignUnit:        sum.AlignUnit,
+			HasAlignableText: hasAlignableText(*wk),
+			ContentVersion:   wk.ContentVersion,
+			SchemaVersion:    wk.SchemaVersion,
+			UpdatedAt:        wk.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
