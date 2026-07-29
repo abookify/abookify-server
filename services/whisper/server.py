@@ -1,8 +1,5 @@
 """Faster-whisper STT HTTP service."""
 import os
-import gc
-import time
-import threading
 import tempfile
 import json
 from flask import Flask, request, jsonify
@@ -10,14 +7,6 @@ from flask import Flask, request, jsonify
 from faster_whisper import WhisperModel
 
 app = Flask(__name__)
-
-# Idle unloading (server-web): the ~3 GB model can be freed when nothing is
-# transcribing. MODEL_LOCK serializes load / transcribe / unload so an unload
-# (only ever driven by the Go server when NO job is running) can't race a
-# transcribe. A transcribe after an unload transparently reloads via
-# _load_if_needed_locked — the first request just pays the cold-start cost.
-MODEL_LOCK = threading.Lock()
-LAST_LOAD_SECS = 0.0
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 # WHISPER_DEVICE may be "cpu", "cuda", or "auto" (default). "auto" probes for a
@@ -64,20 +53,6 @@ model, DEVICE, COMPUTE_TYPE = _load_model()
 print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
 
 
-def _load_if_needed_locked():
-    """Reload the model if it was unloaded. MODEL_LOCK MUST be held. Records the
-    cold-start cost in LAST_LOAD_SECS so PJ can see the reload penalty."""
-    global model, LAST_LOAD_SECS
-    if model is not None:
-        return
-    t = time.perf_counter()
-    print(f"Reloading Whisper model after idle unload "
-          f"(device={DEVICE}, compute={COMPUTE_TYPE})", flush=True)
-    model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-    LAST_LOAD_SECS = time.perf_counter() - t
-    print(f"Model reloaded in {LAST_LOAD_SECS:.2f}s.", flush=True)
-
-
 @app.route("/health")
 def health():
     return jsonify({
@@ -86,27 +61,11 @@ def health():
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "gpu_available": DEVICE == "cuda",
-        "loaded": model is not None,
-        "last_load_secs": round(LAST_LOAD_SECS, 2),
     })
 
 
-@app.route("/unload", methods=["POST"])
-def unload():
-    """Free the model from RAM/VRAM. Driven by the Go server only when no job is
-    running, so it never interrupts a transcription. A no-op if already unloaded.
-    The next /transcribe reloads transparently."""
-    global model
-    with MODEL_LOCK:
-        was_loaded = model is not None
-        model = None
-        gc.collect()  # CTranslate2 frees GPU/CPU memory when the model is collected
-    if was_loaded:
-        print("Whisper model unloaded (idle).", flush=True)
-    return jsonify({"unloaded": was_loaded})
-
-
-def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter):
+def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
+                    condition_on_previous_text=True):
     """One transcribe pass, fully materialized.
 
     faster-whisper returns a LAZY generator, so decode errors surface while
@@ -118,6 +77,7 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter)
         word_timestamps=word_timestamps,
         vad_filter=vad_filter,
         initial_prompt=initial_prompt,
+        condition_on_previous_text=condition_on_previous_text,
     )
 
     result_segments = []
@@ -144,7 +104,41 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter)
     return info, result_segments, full_text_parts
 
 
-def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
+def _looks_looped(segments):
+    """True when the output shows Whisper's repetition-loop signature.
+
+    Conditioning on previously generated text can trap the decoder: it emits the
+    same short phrase over and over instead of transcribing, and because it
+    RETURNS NORMALLY nothing downstream notices. Pride and Prejudice lost ~550
+    words of one chunk to 8 repetitions of "CHAPTER VII." spread over 210
+    seconds, with confidence collapsing 0.98 -> 0.02 as it went. Re-running
+    reproduced it exactly, because the failure is deterministic.
+
+    Detected structurally rather than by confidence: a loop repeats identical
+    segment text many times while covering a long stretch of audio. Ordinary
+    narration repeats a whole segment only rarely, and short recordings are
+    exempt so a genuine refrain in a 3-segment clip cannot trip it.
+    """
+    texts = [s["text"].strip() for s in segments if s.get("text", "").strip()]
+    if len(texts) < 8:
+        return False
+    counts = {}
+    for t in texts:
+        counts[t] = counts.get(t, 0) + 1
+    most = max(counts.values())
+    # A third of all segments being one identical string is not narration.
+    return most >= 4 and most / len(texts) >= 0.33
+
+
+def _span_seconds(segments):
+    """Audio actually covered by the returned segments."""
+    if not segments:
+        return 0.0
+    return max(s["end"] for s in segments) - min(s["start"] for s in segments)
+
+
+def _transcribe_degrading(path, language, word_timestamps, initial_prompt, vad_filter=True,
+                          condition_prev=True):
     """Transcribe, stepping down one capability at a time on a model crash.
 
     faster-whisper can hard-fail on a specific chunk — most often
@@ -160,9 +154,10 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
     that worked, or None when the normal path did.
     """
     ladder = [
-        (None, True, word_timestamps),
-        ("no_vad", False, word_timestamps),
+        (None, vad_filter, word_timestamps),
     ]
+    if vad_filter:
+        ladder.append(("no_vad", False, word_timestamps))
     if word_timestamps:
         # Last resort: segment-level times only. Costs word-level karaoke for
         # this chunk, but keeps its text and coarse timings.
@@ -172,7 +167,33 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
     for degraded, vad, words in ladder:
         try:
             info, segs, parts = _run_transcribe(
-                path, language, words, initial_prompt, vad)
+                path, language, words, initial_prompt, vad, condition_prev)
+
+            # A repetition loop is not an exception — the call SUCCEEDS and
+            # returns a plausible-looking result that is mostly one repeated
+            # phrase. Retry once without conditioning, which is what traps the
+            # decoder, and keep whichever pass transcribed more of the audio.
+            if condition_prev and _looks_looped(segs):
+                print(f"transcribe: repetition loop detected "
+                      f"({len(segs)} segments); retrying without "
+                      f"condition_on_previous_text", flush=True)
+                try:
+                    info2, segs2, parts2 = _run_transcribe(
+                        path, language, words, initial_prompt, vad, False)
+                    if len(" ".join(parts2).split()) > len(" ".join(parts).split()):
+                        print(f"transcribe: recovered from loop "
+                              f"({len(' '.join(parts).split())} -> "
+                              f"{len(' '.join(parts2).split())} words)", flush=True)
+                        tag = "no_condition_prev"
+                        if degraded:
+                            tag = degraded + "+no_condition_prev"
+                        return info2, segs2, parts2, tag
+                    print("transcribe: retry did not improve; keeping first pass",
+                          flush=True)
+                except Exception as e:
+                    print(f"transcribe: loop retry failed ({e}); keeping first pass",
+                          flush=True)
+
             if degraded:
                 print(f"transcribe: recovered via {degraded} "
                       f"(after: {last_err})", flush=True)
@@ -203,6 +224,14 @@ def transcribe():
     # (proper nouns, foreign terms) so they're more likely to be emitted
     # verbatim. Whisper truncates internally to the last 224 BPE tokens.
     initial_prompt = request.form.get("initial_prompt") or None
+    # vad_filter defaults to on (unchanged behaviour). Callers can disable it for
+    # recordings where the VAD discards real speech — it silently drops whole
+    # stretches on amateur/variable-level audio rather than erroring, which is
+    # invisible in the output.
+    cond_param = request.form.get("condition_on_previous_text")
+    condition_prev = True if cond_param is None else cond_param.lower() not in ("false", "0", "no")
+    vad_param = request.form.get("vad_filter")
+    vad_filter = True if vad_param is None else vad_param.lower() not in ("false", "0", "no")
 
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
@@ -210,14 +239,8 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        # Hold MODEL_LOCK across the whole transcribe: it reloads the model if it
-        # was idle-unloaded, and blocks any concurrent /unload for the duration
-        # (belt-and-suspenders with the Go job guard — the model can't vanish
-        # mid-transcription).
-        with MODEL_LOCK:
-            _load_if_needed_locked()
-            info, result_segments, full_text_parts, degraded = _transcribe_degrading(
-                tmp_path, language, word_timestamps, initial_prompt)
+        info, result_segments, full_text_parts, degraded = _transcribe_degrading(
+            tmp_path, language, word_timestamps, initial_prompt, vad_filter, condition_prev)
 
         body = {
             "language": info.language,
