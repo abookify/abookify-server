@@ -327,16 +327,16 @@
         <div id="disk-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading…</div>
       </div>
       <div class="field">
-        <label>RAG embeddings</label>
+        <label>Q&amp;A search index</label>
         <div id="embed-coverage" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:6px;">Loading…</div>
         <button type="button" id="embed-refresh-btn" onclick="refreshEmbeddings()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
-          Refresh embeddings
+          Rebuild search index
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Backfills the vector index for any chunk missing an embedding.
-          Without embeddings, Q&amp;A falls back to keyword search.
-          Requires an LLM provider with embedding support (OpenAI or Ollama).
+          Lets Book Q&amp;A find relevant passages by meaning, not just matching keywords.
+          Without it, Q&amp;A falls back to keyword search.
+          Requires an AI provider that supports it (OpenAI or Ollama).
         </div>
         <div id="embed-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -354,13 +354,13 @@
         <div id="rescan-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
       <div class="field">
-        <label>Anchor alignment</label>
+        <label>Audio–text alignment</label>
         <button type="button" id="align-all-btn" onclick="alignAll()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
           Re-align all books
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Backfills the audio↔ebook anchor alignment for every book that has both a transcript and an ebook.
+          Re-syncs each audiobook to its ebook — for every book that has both — so the reader can follow along word by word.
           Safe to re-run. Progress lands in the System Console.
         </div>
         <div id="align-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
