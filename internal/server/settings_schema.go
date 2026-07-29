@@ -223,9 +223,18 @@ func SettingsSchema() SettingsSchemaDoc {
 				},
 			},
 			{
-				Key:         "voice",
-				Title:       "Voice Chat",
-				Description: "Talk to your books using real-time voice conversation. Requires a speech-to-speech API key. This feature sends audio to an external service.",
+				Key:   "voice",
+				Title: "Voice Chat",
+				// HONEST STATE (verified 2026-07-29): real-time speech-to-speech
+				// (Gemini Live / OpenAI Realtime) is NOT wired up. A provider/key
+				// saved here is stored but nothing consumes it for a conversation —
+				// no server code reads voice_provider/voice_api_key for speech. (A
+				// separate, working push-to-talk round-trip exists at
+				// POST /api/works/{id}/converse using the local Whisper+Kokoro
+				// engines, but it is not this feature and has no web/mobile client.)
+				// Do not restore a "this works" description until the realtime path
+				// is actually built.
+				Description: "Coming soon — real-time voice conversation (Gemini Live / OpenAI Realtime) is not wired up yet. A provider and key saved here are stored but not yet used for a conversation.",
 				Fields: []SettingsField{
 					{
 						Key: "voice_provider", Label: "Provider", Type: "select", Default: "",
