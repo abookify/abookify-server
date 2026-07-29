@@ -138,6 +138,59 @@ def _looks_looped(segments):
     for t, (first, last, n) in spans.items():
         if n >= 4 and (last - first) >= 60.0:
             return True
+    return _looks_stuttered(segments)
+
+
+def _looks_stuttered(segments):
+    """True when a segment simply repeats what it just said.
+
+    The sustained loop above is one scale of the same defect; this is the other.
+    Frankenstein's fresh transcription produced "I am not a man, and I am not a
+    woman. I am not a man, and I am not a woman." where the audio says
+    "temperature of this place is not fitting to your fine sensations" — a clause
+    emitted twice back to back, over ~20 seconds. Two repetitions inside 20s clear
+    neither the >=4-times nor the >=60s bar, so the sustained-loop detector never
+    fires, and the result is fabricated text with collapsed word timings that
+    reads as a successful transcription.
+
+    Detected two ways, because the stutter shows up at both granularities:
+
+      - a segment whose text exactly repeats the previous segment's;
+      - a segment that says the same phrase twice within itself.
+
+    The second is checked as a repeated n-gram rather than an even split, because
+    the repeat is often TRUNCATED or has stray words wedged between the copies:
+
+        "I looked on the valley before me, and saw that there was nothing there.
+         I looked on the valley before me, and saw that there was"
+
+    An even-split test misses that; a repeated 6-word sequence catches it. Six is
+    long enough that ordinary prose does not repeat one by accident inside a
+    single ~25-word segment, so a refrain, a repeated name or "No, no." cannot
+    trip it.
+    """
+    MIN_WORDS = 6
+
+    prev = ""
+    for s in segments:
+        t = " ".join(s.get("text", "").strip().lower().split())
+        if not t:
+            continue
+        words = t.split()
+
+        # Consecutive segments carrying the same sentence.
+        if t == prev and len(words) >= MIN_WORDS:
+            return True
+        prev = t
+
+        # The same run of words said twice inside one segment.
+        if len(words) >= MIN_WORDS * 2:
+            seen = set()
+            for i in range(len(words) - MIN_WORDS + 1):
+                gram = tuple(words[i:i + MIN_WORDS])
+                if gram in seen:
+                    return True
+                seen.add(gram)
     return False
 
 
@@ -191,10 +244,18 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt, vad_f
                 try:
                     info2, segs2, parts2 = _run_transcribe(
                         path, language, words, initial_prompt, vad, False)
-                    if len(" ".join(parts2).split()) > len(" ".join(parts).split()):
+                    n1 = len(" ".join(parts).split())
+                    n2 = len(" ".join(parts2).split())
+                    # Prefer the pass that is CLEAN over the pass that is LONGER.
+                    # Selecting on word count alone is how a bad retry shipped:
+                    # Heart Goes Last's chunk came back with more words that were
+                    # fabricated, and every number read as a successful recovery.
+                    # A higher word count is not evidence of correctness.
+                    retry_clean = not _looks_looped(segs2)
+                    if retry_clean or n2 > n1:
+                        why = "clean" if retry_clean else "longer but still looped"
                         print(f"transcribe: recovered from loop "
-                              f"({len(' '.join(parts).split())} -> "
-                              f"{len(' '.join(parts2).split())} words)", flush=True)
+                              f"({n1} -> {n2} words, {why})", flush=True)
                         tag = "no_condition_prev"
                         if degraded:
                             tag = degraded + "+no_condition_prev"
