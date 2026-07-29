@@ -2027,7 +2027,7 @@
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
       <button id="np-ai-btn" onclick="toggleNpAI()" title="AI tools — recap + ask about this book" aria-label="AI tools" style="display:none;">&#10022; AI</button>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore" aria-label="Maximize or restore reader">&#9974;</button>
-      <button onclick="closeNpOverlay()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
+      <button onclick="readerCloseBtn()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
     </div>
     <div class="np-overlay-body">
       <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true">
@@ -4869,6 +4869,12 @@
         title: chMeta?.title || '',
       };
       delete currentReaderParagraph[workId];
+      // Keep the URL on the current chapter (bookmarkable) without a new history
+      // entry, so Back exits the reader rather than stepping through chapters (#221).
+      if (window.AppRouter) {
+        const w = (allWorks || []).find(x => x.id === workId);
+        AppRouter.syncReader(workId, bookId, index, w && w.display_text_id);
+      }
       // Reset synchronously so a stale ebook-karaoke flag from a previous
       // source can't suppress the transcript sync that loads after this
       // returns (#210b); setupReaderFollow re-sets it for word-anchor ebooks.
@@ -7052,13 +7058,185 @@
       }
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Browser-history routing (#221). Every distinct view gets a real URL so the
+    // browser Back/Forward walk THROUGH in-app views instead of leaving the site,
+    // and a deep link / refresh restores the view. Views + overlays are singleton
+    // DOM elements toggled by class, so popstate can't duplicate them. We WRAP the
+    // existing open/close functions (they're globals, so onclick handlers pick up
+    // the wrappers): a user-initiated call pushes history + routes; a router-
+    // initiated call (applying=true) runs the original DOM body.
+    const AppRouter = (() => {
+      let applying = false;   // true while enter() is driving the DOM (suppress re-push)
+      let depth = 0;          // in-app history depth, so back() knows if it can pop
+
+      function parse(pathAndSearch) {
+        const u = new URL(pathAndSearch, location.origin);
+        const p = u.pathname, q = u.searchParams;
+        let m;
+        if (p === '/' || p === '') return { view: 'library', params: {} };
+        if ((m = p.match(/^\/work\/(\d+)\/read(?:\/(\d+)\/(\d+))?$/)))
+          return { view: 'reader', params: { workId: +m[1], bookId: m[2] ? +m[2] : null, ch: m[3] != null ? +m[3] : null, src: q.get('src') ? +q.get('src') : null } };
+        if ((m = p.match(/^\/work\/(\d+)\/compare$/))) return { view: 'compare', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)\/summary$/))) return { view: 'summary', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)\/qa$/)))      return { view: 'qa', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)$/)))          return { view: 'work', params: { workId: +m[1] } };
+        if (p === '/settings') return { view: 'settings', params: {} };
+        if (p === '/console')  return { view: 'console', params: {} };
+        if (p === '/queue')    return { view: 'queue', params: {} };
+        return { view: 'library', params: {} }; // unknown → library (never dead-end)
+      }
+
+      function titleFor(view, p) {
+        const w = p.workId && (allWorks || []).find(x => x.id === p.workId);
+        const t = w ? w.title : '';
+        switch (view) {
+          case 'work': return t ? `${t} · Abookify` : 'Abookify';
+          case 'reader': return t ? `Reading — ${t}` : 'Reader · Abookify';
+          case 'compare': return t ? `Compare — ${t}` : 'Compare · Abookify';
+          case 'summary': return t ? `Summary — ${t}` : 'Summary · Abookify';
+          case 'qa': return t ? `Q&A — ${t}` : 'Q&A · Abookify';
+          case 'settings': return 'Settings · Abookify';
+          case 'console': return 'System Console · Abookify';
+          case 'queue': return 'Processing Queue · Abookify';
+          default: return 'Abookify';
+        }
+      }
+
+      // DOM-only close of every routable overlay except `keep` (safe under
+      // applying — the wrapped close fns run their original body).
+      function closeOverlays(keep) {
+        const ov = document.getElementById('np-overlay');
+        if (keep !== 'reader' && ov && ov.classList.contains('visible')) closeNpOverlay();
+        if (keep !== 'settings') { const s = document.getElementById('settings-overlay'); if (s && s.classList.contains('visible')) closeSettings(); }
+        if (keep !== 'console') { if (document.getElementById('logs-modal-host')) closeSystemConsole(); }
+        if (keep !== 'meld') { if (document.getElementById('abook-summary-host')) closeAbookSummary(); }
+      }
+
+      function setBase(workId) {
+        if (workId) { if (currentDetailWorkId !== workId) openWorkDetail(workId); }
+        else if (currentDetailWorkId) closeWorkDetail();
+      }
+
+      async function enter(view, p) {
+        switch (view) {
+          case 'library': setBase(null); closeOverlays(null); window.scrollTo(0, 0); break;
+          case 'work':    setBase(p.workId); closeOverlays(null); break;
+          case 'reader':  setBase(p.workId); closeOverlays('reader'); await enterReader(p); break;
+          case 'settings': closeOverlays('settings'); openSettings(); break;
+          case 'compare': setBase(p.workId); closeOverlays('meld'); openMeldModal(p.workId); break;
+          case 'summary': setBase(p.workId); closeOverlays('meld'); openAbookSummary(p.workId); break;
+          case 'qa':      setBase(p.workId); closeOverlays('reader'); openAITools(p.workId); break;
+          case 'console': closeOverlays('console'); openSystemConsole(); break;
+          case 'queue':   setBase(null); closeOverlays(null); { const q = document.getElementById('queue-section'); if (q) q.scrollIntoView({ behavior: 'smooth' }); } break;
+        }
+      }
+
+      async function enterReader(p) {
+        await openOverlayFromWork(p.workId);
+        if (p.src) {
+          const w = (allWorks || []).find(x => x.id === p.workId);
+          if (w && w.display_text_id !== p.src) { try { await switchTextEdition(p.workId, p.src); } catch {} }
+        }
+        if (p.bookId && p.ch != null) { try { await loadChapter(p.bookId, p.ch, p.workId, {}); } catch {} }
+      }
+
+      async function render(pathAndSearch) {
+        applying = true;
+        try {
+          const { view, params } = parse(pathAndSearch);
+          await enter(view, params);
+          document.title = titleFor(view, params);
+        } finally { applying = false; }
+      }
+
+      function navigate(path, opts) {
+        const cur = location.pathname + location.search;
+        const replace = opts && opts.replace;
+        if (path === cur && !replace) return; // no dupe entry for a re-click
+        if (replace) { history.replaceState({ appDepth: depth }, '', path); }
+        else { depth++; history.pushState({ appDepth: depth }, '', path); }
+        render(path);
+      }
+
+      // Pop one in-app entry if we have one; otherwise (deep-linked straight in)
+      // replace with a sensible parent so Back never leaves the site.
+      function back(fallback) {
+        if (depth > 0) history.back();
+        else navigate(fallback || '/', { replace: true });
+      }
+
+      // Keep the reader URL pointed at the current chapter (bookmarkable) WITHOUT
+      // a new history entry, so Back exits the reader instead of stepping chapters.
+      function syncReader(workId, bookId, index, srcId) {
+        if (applying) return;
+        const { view, params } = parse(location.pathname + location.search);
+        if (view !== 'reader' || params.workId !== workId) return;
+        let url = `/work/${workId}/read/${bookId}/${index}`;
+        if (srcId) url += `?src=${srcId}`;
+        history.replaceState({ appDepth: depth }, '', url);
+        document.title = titleFor('reader', { workId });
+      }
+
+      window.addEventListener('popstate', (e) => {
+        depth = (e.state && e.state.appDepth) || 0;
+        render(location.pathname + location.search);
+      });
+
+      // Wrap a user-facing open: push history + route unless the router is driving.
+      function wrapOpen(name, urlFn) {
+        const orig = window[name];
+        if (typeof orig !== 'function') { console.warn('router: no fn', name); return; }
+        window[name] = function (...args) {
+          if (!applying) { navigate(urlFn(...args)); return; }
+          return orig.apply(this, args);
+        };
+      }
+      // Wrap a user-facing close: go Back (walk history) unless the router is driving.
+      function wrapClose(name, fallbackFn) {
+        const orig = window[name];
+        if (typeof orig !== 'function') { console.warn('router: no fn', name); return; }
+        window[name] = function (...args) {
+          if (!applying) { back(fallbackFn ? fallbackFn() : '/'); return; }
+          return orig.apply(this, args);
+        };
+      }
+
+      function wire() {
+        wrapOpen('openWorkDetail', id => `/work/${id}`);
+        wrapOpen('openOverlayFromWork', id => `/work/${id}/read`);
+        wrapOpen('openSettings', () => '/settings');
+        wrapOpen('openMeldModal', id => `/work/${id}/compare`);
+        wrapOpen('openAbookSummary', id => `/work/${id}/summary`);
+        wrapOpen('openAITools', id => `/work/${id}/qa`);
+        wrapOpen('openSystemConsole', () => '/console');
+        wrapClose('closeWorkDetail', () => '/');
+        wrapClose('closeSettings', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+        wrapClose('closeSystemConsole', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+        wrapClose('closeAbookSummary', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+      }
+
+      function start() {
+        wire();
+        depth = 0;
+        history.replaceState({ appDepth: 0 }, '', location.pathname + location.search);
+        render(location.pathname + location.search);
+      }
+
+      return { start, navigate, back, syncReader, applying: () => applying };
+    })();
+    // Reader ✕ button + minimize call this; ✕ should walk Back, not just hide.
+    function readerCloseBtn() { AppRouter.back(currentReaderWorkId ? `/work/${currentReaderWorkId}` : '/'); }
+    window.AppRouter = AppRouter;
+
     // Auth gate (#197). Check status first; if a password is set and we
     // aren't authenticated, show the login overlay. The rest of the SPA
     // still boots underneath but is covered until login succeeds.
     enforceAuthGate();
     { const ss = document.getElementById('sort-select'); if (ss) ss.value = activeSort; } // restore saved sort
     { const gs = document.getElementById('group-select'); if (gs) gs.value = activeGroup; } // restore saved grouping
-    loadWorks();
+    // Start the router AFTER works load — work/reader views read from allWorks.
+    Promise.resolve(loadWorks()).then(() => AppRouter.start());
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
     applyWaveformVisibility();
