@@ -7239,6 +7239,7 @@
     { const gs = document.getElementById('group-select'); if (gs) gs.value = activeGroup; } // restore saved grouping
     // Start the router AFTER works load — work/reader views read from allWorks.
     Promise.resolve(loadWorks()).then(() => AppRouter.start());
+    loadExtractOnlyGlobal(); // the one global spoiler-safe answer-mode setting (#130)
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
     applyWaveformVisibility();
@@ -7656,36 +7657,47 @@
     // active session's stored scope: 'reading' (answer only up to where the
     // reader is — spoiler-safe, the default) or 'book' (whole book, opt-in).
     const activeChatScope = {};
-    // Per-chat answer mode (#130): 'generated' (the AI writes the answer, default)
-    // or 'extract' (answer only from the book's own text — no generation, so a
-    // memorized classic can't reveal anything the book itself hasn't said yet).
-    const activeAnswerMode = {};
+    // ONE global answer-mode setting (#130): false = the AI writes answers
+    // (default); true = answer only from the book's own text — no generation, so a
+    // memorized classic can't reveal anything the book itself hasn't said yet.
+    // A single control governs EVERY Q&A path (chat, single-shot, voice, recap,
+    // chapter summary), so spoiler-safety is turned on in one place, not three.
+    let extractOnlyGlobal = false;
 
-    // Refresh the answer-mode chip. Benefit-first labels: what it does for the
-    // reader, not the mechanism.
+    async function loadExtractOnlyGlobal() {
+      try {
+        const s = await fetch('/api/settings').then(r => r.json());
+        const v = s.qa_extract_only;
+        extractOnlyGlobal = (v === true || v === 'true' || v === '1');
+      } catch {}
+      refreshAllAnswerChips();
+    }
+    function refreshAllAnswerChips() {
+      document.querySelectorAll('[id^="qa-answer-chip-"]').forEach(chip => {
+        if (extractOnlyGlobal) { chip.innerHTML = '📖 From the book text'; chip.classList.add('book'); }
+        else { chip.innerHTML = '✦ AI answer'; chip.classList.remove('book'); }
+      });
+    }
+    // Refresh a single answer-mode chip. Benefit-first labels: what it does for
+    // the reader, not the mechanism.
     function refreshAnswerModeUI(workId) {
       const chip = document.getElementById('qa-answer-chip-' + workId);
       if (!chip) return;
-      if ((activeAnswerMode[workId] || 'generated') === 'extract') {
-        chip.innerHTML = '📖 From the book text'; chip.classList.add('book');
-      } else {
-        chip.innerHTML = '✦ AI answer'; chip.classList.remove('book');
-      }
+      if (extractOnlyGlobal) { chip.innerHTML = '📖 From the book text'; chip.classList.add('book'); }
+      else { chip.innerHTML = '✦ AI answer'; chip.classList.remove('book'); }
     }
 
-    // Toggle the active chat between an AI-written answer and a book-text-only
-    // answer, persisting on the session so the whole conversation respects it.
+    // Toggle the ONE global setting (persisted server-side), so it applies to
+    // every Q&A path everywhere — not just this chat.
     async function toggleAnswerMode(workId) {
-      const sessionId = activeChatSessionId[workId];
-      if (!sessionId) { showToast('Start a chat first', 'err'); return; }
-      const next = (activeAnswerMode[workId] === 'extract') ? 'generated' : 'extract';
-      activeAnswerMode[workId] = next;
-      refreshAnswerModeUI(workId);
+      extractOnlyGlobal = !extractOnlyGlobal;
+      refreshAllAnswerChips();
       try {
-        await fetch(`/api/sessions/${sessionId}/answer-mode`, {
+        await fetch('/api/settings', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ answer_mode: next }),
+          body: JSON.stringify({ qa_extract_only: extractOnlyGlobal ? 'true' : 'false' }),
         });
+        showToast(extractOnlyGlobal ? 'Answers now come only from the book text' : 'AI answers re-enabled');
       } catch { /* best-effort — the UI already reflects the choice */ }
     }
 
@@ -7887,10 +7899,10 @@
 
     async function selectChatSession(workId, sessionId) {
       activeChatSessionId[workId] = sessionId;
-      // Adopt this chat's spoiler scope + answer mode (#130) so the chips match.
+      // Adopt this chat's spoiler scope (#130) so the chip matches. The answer
+      // mode is a single global setting, refreshed by refreshScopeUI → refreshAnswerModeUI.
       const sess = (chatSessionsCache[workId] || []).find(s => s.id === sessionId);
       activeChatScope[workId] = (sess && sess.scope) || 'reading';
-      activeAnswerMode[workId] = (sess && sess.answer_mode) || 'generated';
       refreshScopeUI(workId);
       // Update active state on tabs without re-fetching the list.
       const tabsEl = document.getElementById('chat-tabs-' + workId);
