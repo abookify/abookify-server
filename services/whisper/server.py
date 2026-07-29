@@ -1,12 +1,54 @@
 """Faster-whisper STT HTTP service."""
 import os
+import sys
 import tempfile
 import json
+import threading
+from contextlib import contextmanager
 from flask import Flask, request, jsonify
 
 from faster_whisper import WhisperModel
 
 app = Flask(__name__)
+
+# --- GPU serialization (#132, ported from the hermetic engine) ---------------
+# Flask serves requests on THREADS, and one WhisperModel on one GPU is not a
+# thing to run two decodes through at once — concurrent callers contend for
+# VRAM and thrash. The hermetic engine has had this since #132; the Docker
+# service never did, so serialization here was only ever "whoever is driving
+# runs one job at a time", which is a convention, not a guarantee.
+#
+# A *file* lock rather than a thread lock, matching the engine: it also holds
+# across separate processes (a second container, a stray CLI) sharing the same
+# GPU, which a thread lock cannot see.
+_GPU_LOCK_PATH = os.environ.get("ABOOKIFY_GPU_LOCK", "/tmp/abookify-gpu.lock")
+_THREAD_LOCK = threading.Lock()
+
+try:
+    import fcntl  # Unix only
+except ImportError:  # pragma: no cover
+    fcntl = None
+
+
+@contextmanager
+def gpu_lock():
+    """Serialize GPU inference across threads and processes."""
+    with _THREAD_LOCK:
+        if fcntl is None:
+            yield
+            return
+        try:
+            fd = os.open(_GPU_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as e:  # unwritable → thread-only is still better than nothing
+            sys.stderr.write(f"gpu_lock file unavailable ({e}); thread-only\n")
+            yield
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 # WHISPER_DEVICE may be "cpu", "cuda", or "auto" (default). "auto" probes for a
@@ -70,13 +112,18 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter)
     faster-whisper returns a LAZY generator, so decode errors surface while
     iterating, not at the call — the list() is what makes a failure catchable.
     """
-    segments, info = model.transcribe(
-        path,
-        language=language if language else None,
-        word_timestamps=word_timestamps,
-        vad_filter=vad_filter,
-        initial_prompt=initial_prompt,
-    )
+    with gpu_lock():
+        segments, info = model.transcribe(
+            path,
+            language=language if language else None,
+            word_timestamps=word_timestamps,
+            vad_filter=vad_filter,
+            initial_prompt=initial_prompt,
+        )
+        # faster-whisper's generator is LAZY — the decode happens while
+        # iterating, so the list() must be INSIDE the lock or it serializes
+        # nothing at all.
+        segments = list(segments)
 
     result_segments = []
     full_text_parts = []
