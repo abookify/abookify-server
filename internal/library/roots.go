@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -77,6 +78,67 @@ func EnsureRoots(store *db.Store, defaultPath string) error {
 		MarkRootReachable(defaultPath)
 	}
 	return nil
+}
+
+// ReconcileLibraryRoots is the boot reconcile that REPLACES the old
+// "delete any book whose file is missing" cleanup (the mass-deletion hazard).
+// For each root:
+//   - unreachable (unplugged / no sentinel): mark ALL its books stale, delete
+//     NOTHING — losing an unplugged drive's metadata is the worst-case failure.
+//   - reachable: clear stale, then delete only books whose file is genuinely
+//     gone — UNLESS a suspiciously large fraction is missing (a partial/odd mount
+//     despite the sentinel), in which case mark stale instead of deleting.
+//
+// Books with no root (root_id = 0, including generated:// virtuals) are left
+// untouched. Returns (staleRoots, removedBooks).
+func ReconcileLibraryRoots(store *db.Store) (staleRoots, removed int) {
+	roots, err := store.ListRoots()
+	if err != nil {
+		log.Printf("#220: reconcile: list roots failed: %v", err)
+		return
+	}
+	for i := range roots {
+		r := roots[i]
+		if !RootReachable(r.Path) {
+			if n, _ := store.SetRootStale(r.ID, true); n > 0 {
+				log.Printf("#220: root %q unreachable — marked %d book(s) STALE (not deleted)", r.Path, n)
+			}
+			staleRoots++
+			continue
+		}
+		books, err := store.BooksUnderRoot(r.ID)
+		if err != nil {
+			continue
+		}
+		var missing []int64
+		for _, b := range books {
+			if strings.HasPrefix(b.Path, "generated://") {
+				continue
+			}
+			if _, err := os.Stat(b.Path); os.IsNotExist(err) {
+				missing = append(missing, b.ID)
+			}
+		}
+		// A "reachable" root that's suddenly missing a big chunk of its files is
+		// far more likely a mount glitch than the user deleting everything —
+		// mark stale, never mass-delete.
+		if len(missing) > 10 && len(missing)*100 >= len(books)*40 {
+			store.SetRootStale(r.ID, true)
+			staleRoots++
+			log.Printf("#220: root %q reachable but %d/%d files missing — marking STALE, NOT deleting (looks like a partial mount)", r.Path, len(missing), len(books))
+			continue
+		}
+		store.SetRootStale(r.ID, false)
+		for _, id := range missing {
+			if err := store.DeleteBook(id); err == nil {
+				removed++
+			}
+		}
+		if removed > 0 {
+			log.Printf("#220: root %q — removed %d genuinely-missing book(s)", r.Path, len(missing))
+		}
+	}
+	return
 }
 
 // RootForPath returns the root whose path is the longest prefix of p, or nil.

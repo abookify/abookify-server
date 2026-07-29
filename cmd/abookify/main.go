@@ -271,12 +271,15 @@ func main() {
 		}
 	}
 
-	// Clean up orphaned DB entries (files that no longer exist on disk)
-	if removed, err := store.CleanupOrphanedBooks(); err == nil && removed > 0 {
-		log.Printf("cleaned up %d orphaned book entries", removed)
+	// Reconcile books against their library roots (#220). REPLACES the old
+	// delete-any-missing-file cleanup: an unreachable (unplugged) root marks its
+	// books stale instead of deleting them — only a reachable root's genuinely
+	// missing files are removed. Books with no root (root_id=0, incl. generated)
+	// are left alone.
+	if staleRoots, removed := library.ReconcileLibraryRoots(store); staleRoots > 0 || removed > 0 {
+		log.Printf("library reconcile: %d root(s) stale/offline, %d missing book(s) removed", staleRoots, removed)
 	}
-	// Sweep content rows whose owning book is gone (debris from book
-	// deletions that predate the cascade fix in CleanupOrphanedBooks).
+	// Sweep content rows whose owning book is gone (debris from book deletions).
 	if removed, err := store.CleanupOrphanedRows(); err == nil && removed > 0 {
 		log.Printf("cleaned up %d orphaned content rows (chunks/paragraphs/chapters)", removed)
 	}

@@ -87,3 +87,69 @@ func TestSetRootStaleAndReassign(t *testing.T) {
 		t.Error("book should be un-stale after SetRootStale(false)")
 	}
 }
+
+// helper: make a root dir with the reachability sentinel + N book files that exist.
+func seedRoot(t *testing.T, store *db.Store, reachable bool, presentFiles, missingCount int) (string, int64) {
+	t.Helper()
+	root := t.TempDir()
+	if reachable {
+		MarkRootReachable(root)
+	}
+	id, _ := store.AddRoot(root, "R")
+	for i := 0; i < presentFiles; i++ {
+		p := filepath.Join(root, "present-"+string(rune('a'+i))+".mp3")
+		os.WriteFile(p, []byte("x"), 0o644)
+		store.UpsertBook(db.Book{Path: p, Filename: filepath.Base(p), Format: "mp3", MediaType: "audio"})
+	}
+	for i := 0; i < missingCount; i++ {
+		p := filepath.Join(root, "gone-"+string(rune('a'+i))+".mp3") // never created on disk
+		store.UpsertBook(db.Book{Path: p, Filename: filepath.Base(p), Format: "mp3", MediaType: "audio"})
+	}
+	store.AssignBooksToRoot(id, root)
+	return root, id
+}
+
+func TestReconcile_UnreachableMarksStaleNeverDeletes(t *testing.T) {
+	store := testStoreForLib(t)
+	// reachable=false → NO sentinel. Books' files even exist on disk, but the
+	// root reads as unplugged, so nothing must be deleted.
+	_, id := seedRoot(t, store, false, 2, 0)
+	staleRoots, removed := ReconcileLibraryRoots(store)
+	if removed != 0 {
+		t.Fatalf("removed=%d — an unreachable root must NEVER delete books", removed)
+	}
+	if staleRoots != 1 {
+		t.Errorf("staleRoots=%d, want 1", staleRoots)
+	}
+	total, stale, _ := store.CountBooksUnderRoot(id)
+	if total != 2 || stale != 2 {
+		t.Errorf("total=%d stale=%d, want 2/2 (kept + marked stale)", total, stale)
+	}
+}
+
+func TestReconcile_ReachableDeletesOnlyMissing(t *testing.T) {
+	store := testStoreForLib(t)
+	_, id := seedRoot(t, store, true, 2, 1) // 2 present, 1 genuinely missing
+	_, removed := ReconcileLibraryRoots(store)
+	if removed != 1 {
+		t.Fatalf("removed=%d, want 1 (only the genuinely-missing file)", removed)
+	}
+	total, stale, _ := store.CountBooksUnderRoot(id)
+	if total != 2 || stale != 0 {
+		t.Errorf("total=%d stale=%d, want 2/0 (present kept, not stale)", total, stale)
+	}
+}
+
+func TestReconcile_MassMissingMarksStaleNotDeleted(t *testing.T) {
+	store := testStoreForLib(t)
+	// reachable sentinel but almost everything missing → mount glitch → stale.
+	_, id := seedRoot(t, store, true, 1, 20)
+	_, removed := ReconcileLibraryRoots(store)
+	if removed != 0 {
+		t.Fatalf("removed=%d — mass-missing under a reachable root must mark stale, not delete", removed)
+	}
+	total, _, _ := store.CountBooksUnderRoot(id)
+	if total != 21 {
+		t.Errorf("total=%d, want 21 (nothing deleted)", total)
+	}
+}
