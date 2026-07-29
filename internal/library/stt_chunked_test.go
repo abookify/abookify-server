@@ -5,6 +5,8 @@ import (
 	"math"
 	"net"
 	"testing"
+
+	"github.com/pj/abookify/internal/stt"
 )
 
 // Chunks are cut with `-c copy`, so the segment container must match the input
@@ -112,3 +114,67 @@ func TestIsServiceUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// fakeProvider reports a device that the test can change underneath a run,
+// which is exactly what a `docker compose up` without the CUDA overlay does.
+type fakeProvider struct{ device string }
+
+func (f *fakeProvider) TranscribeFile(string) (*stt.TranscribeResult, error) {
+	return &stt.TranscribeResult{}, nil
+}
+func (f *fakeProvider) Name() string  { return "fake" }
+func (f *fakeProvider) Health() error { return nil }
+func (f *fakeProvider) Info() (*stt.Info, error) {
+	return &stt.Info{Device: f.device}, nil
+}
+
+// A boot-time check cannot catch a device that flips mid-run — all three GPU
+// incidents did exactly that, after any start-up guard had already passed. The
+// watcher must notice, and must NOT abort: the run still progresses, checkpoints
+// protect completed files, and killing a 23-hour transcription over a
+// recoverable misconfiguration would be worse than finishing slowly.
+func TestWatchDeviceDetectsMidRunChange(t *testing.T) {
+	p := &fakeProvider{device: "cuda"}
+	seen := currentDevice(p)
+	if seen != "cuda" {
+		t.Fatalf("initial device = %q, want cuda", seen)
+	}
+
+	// Unchanged: no state churn.
+	watchDevice(p, &seen, 1)
+	if seen != "cuda" {
+		t.Errorf("device tracking drifted while unchanged: %q", seen)
+	}
+
+	// The incident: whisper restarts without the GPU.
+	p.device = "cpu"
+	watchDevice(p, &seen, 7)
+	if seen != "cpu" {
+		t.Errorf("watcher did not adopt the new device: %q", seen)
+	}
+
+	// Adopted, so it reports once rather than every segment thereafter.
+	watchDevice(p, &seen, 8)
+	if seen != "cpu" {
+		t.Errorf("device tracking unstable after change: %q", seen)
+	}
+}
+
+// A provider that cannot report a device (a bare Provider, or an old service)
+// must not break the run.
+func TestWatchDeviceTolerantOfNoDeviceInfo(t *testing.T) {
+	seen := ""
+	watchDevice(nopProvider{}, &seen, 1) // must not panic
+	if got := currentDevice(nopProvider{}); got != "" {
+		t.Errorf("device for a non-reporting provider = %q, want empty", got)
+	}
+}
+
+type nopProvider struct{}
+
+func (nopProvider) TranscribeFile(string) (*stt.TranscribeResult, error) {
+	return &stt.TranscribeResult{}, nil
+}
+func (nopProvider) Name() string             { return "nop" }
+func (nopProvider) Health() error            { return nil }
+func (nopProvider) Info() (*stt.Info, error) { return nil, errors.New("no info") }

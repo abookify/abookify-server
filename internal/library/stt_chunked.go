@@ -65,6 +65,9 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 	var combined stt.TranscribeResult
 	combined.Duration = dur
 
+	// Device at the start of this file, to compare against later.
+	deviceSeen := currentDevice(client)
+
 	for i := 0; i < nSegments; i++ {
 		startSecs := i * chunkDurationSecs
 		// Skip a trailing sliver. ceil() fixes the exact-multiple case, but a
@@ -89,6 +92,13 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 		if onSeg != nil {
 			onSeg(SegmentEvent{SegIdx: i, TotalSegs: nSegments, SegStartSecs: startSecs})
 		}
+
+		// Watch for the compute device changing UNDER a running job. Every GPU
+		// incident so far flipped whisper to CPU mid-run — after any start-up
+		// check had already passed — so a boot-time guard is structurally blind
+		// to it. The symptom is otherwise invisible: transcription continues,
+		// just ~10x slower and at int8 instead of float16.
+		watchDevice(client, &deviceSeen, i+1)
 
 		// Retry, but treat the two failure classes differently — they need
 		// opposite responses and conflating them loses hours of work.
@@ -217,6 +227,46 @@ func isServiceUnavailable(err error) bool {
 		}
 	}
 	return false
+}
+
+// currentDevice reads the compute device the service is running on. Every
+// stt.Provider reports it (cloud providers answer "cloud"). Empty on error —
+// the caller treats "unknown" as "nothing to compare", never as a change.
+func currentDevice(client stt.Provider) string {
+	info, err := client.Info()
+	if err != nil || info == nil {
+		return ""
+	}
+	return info.Device
+}
+
+// watchDevice logs loudly if the compute device changed since the run started.
+//
+// This exists because of a specific, repeated failure: a `docker compose up`
+// elsewhere on the box strips whisper's GPU reservation, the container restarts
+// on CPU, and the run simply carries on ~10x slower at int8. Nothing errors.
+// /health still returns 200. Three separate runs lost time to it before anyone
+// noticed, and a start-up check cannot help — the device changes AFTER it passes.
+//
+// Deliberately does not abort: the run still makes progress, checkpoints protect
+// what is done, and killing a 23-hour transcription over a recoverable
+// misconfiguration would be worse than finishing it slowly. The point is that it
+// must be impossible to miss in the log.
+func watchDevice(client stt.Provider, seen *string, segNo int) {
+	if *seen == "" {
+		return // service does not report a device; nothing to compare
+	}
+	now := currentDevice(client)
+	if now == "" || now == *seen {
+		return
+	}
+	log.Printf("*** COMPUTE DEVICE CHANGED MID-RUN: %s -> %s (at segment %d) ***", *seen, now, segNo)
+	if *seen == "cuda" && now == "cpu" {
+		log.Printf("*** whisper lost its GPU — almost certainly a `docker compose up` without the CUDA overlay.")
+		log.Printf("*** Restore with: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d whisper")
+		log.Printf("*** (or `make up`). This run continues on CPU, ~10x slower, until it is fixed.")
+	}
+	*seen = now
 }
 
 // segmentExt picks the container for an extracted chunk.
