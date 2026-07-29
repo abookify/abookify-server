@@ -17,8 +17,9 @@ import (
 type engineState struct {
 	LocalURL  string `json:"local_url"`  // configured local-engine endpoint ("" = none)
 	Reachable bool   `json:"reachable"`  // local engine answered a health probe
-	// APIProvider/APIConfigured are reserved for when cloud STT/TTS is wired
-	// end-to-end (#54): today only the local engine path drives TTS/STT.
+	// APIProvider/APIConfigured describe a cloud (BYOK) engine — set when a cloud
+	// provider + key is configured in settings (#54 step 2), which makes the
+	// engine usable with no local install.
 	APIProvider   string `json:"api_provider,omitempty"`
 	APIConfigured bool   `json:"api_configured"`
 	Ready         bool   `json:"ready"` // reachable OR a usable API key (== usable now)
@@ -53,8 +54,22 @@ func (s *Server) speechEngines() (tts, stt engineState) {
 			stt.Reachable = probeHealth(c.Health)
 		}
 	}
-	// "ready" today == a reachable local engine (cloud STT/TTS not yet wired,
-	// see #54). When that lands, OR-in APIConfigured here.
+	// Cloud (BYOK) config (#54 step 2): a configured provider+key makes an engine
+	// usable with NO local install, so the welcome screen must not demand one.
+	settings, _ := s.store.GetAllSettings()
+	keyOr := func(k string) string {
+		if v := settings[k]; v != "" {
+			return v
+		}
+		return settings["openai_api_key"]
+	}
+	if settings["tts_provider"] == "openai" && keyOr("tts_api_key") != "" {
+		tts.APIProvider, tts.APIConfigured = "openai", true
+	}
+	if settings["stt_provider"] == "openai" && keyOr("stt_api_key") != "" {
+		stt.APIProvider, stt.APIConfigured = "openai", true
+	}
+	// Ready = a reachable local engine OR a configured cloud key.
 	tts.Ready = tts.Reachable || tts.APIConfigured
 	stt.Ready = stt.Reachable || stt.APIConfigured
 	return
