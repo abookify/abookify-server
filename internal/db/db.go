@@ -2203,6 +2203,27 @@ func (s *Store) BestAlignmentByWork() (map[int64]BestAlignment, error) {
 	return out, rows.Err()
 }
 
+// WorkIDsWithSyncData returns the set of work IDs that have at least one
+// sync_data row (word-level timestamps from the TTS→Whisper path). Lets the work
+// list flag "word-level sync" for a single-source book that has no cross-source
+// alignment (hence no coverage%), without loading every work's rows. One query.
+func (s *Store) WorkIDsWithSyncData() (map[int64]bool, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT work_id FROM sync_data`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var wid int64
+		if err := rows.Scan(&wid); err != nil {
+			return nil, err
+		}
+		out[wid] = true
+	}
+	return out, rows.Err()
+}
+
 // ListAlignmentsForBook returns all alignments where the given book is either
 // the from or to side. Used by ResolvePath to build a composition chain.
 func (s *Store) ListAlignmentsForBook(bookID int64) ([]Alignment, error) {

@@ -747,16 +747,20 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	// Enrich each work with its best alignment so the work-list UI can show
 	// a coverage pill without an N+1 fetch. One SQL query for the whole library.
 	best, _ := s.store.BestAlignmentByWork()
+	synced, _ := s.store.WorkIDsWithSyncData()
 	type workWithAlign struct {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
 		AlignmentMethod string   `json:"alignment_method,omitempty"`
-		// HasAlignableText is true when the work has a NON-transcript text source
-		// (epub/txt/pdf) — something an alignment COULD run against. Lets the UI
-		// tell "not aligned yet" (actionable) from "nothing to align" (a podcast,
-		// correct + final), WITHOUT touching the load-bearing Coverage pointer:
-		// Coverage stays *float64+omitempty so a podcast has NO coverage (not 0).
-		HasAlignableText bool `json:"has_alignable_text"`
+		// HasWordSync is true when the work has word-level sync_data (TTS→Whisper)
+		// but no cross-source alignment, so there's no coverage% to show. Lets the
+		// UI render a neutral "Word-level sync" chip — informational, NOT an error
+		// and NOT actionable — distinct from a coverage% pill and from a podcast
+		// (no coverage, no sync → render nothing). Coverage stays *float64+omitempty
+		// so a podcast has NO coverage (not 0); this field is orthogonal to it.
+		// (Discriminator per transcription: sync_data existence, not "has text" —
+		// a lone EPUB has text but no peer to align, so "not aligned" would mislead.)
+		HasWordSync bool `json:"has_word_sync"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -766,27 +770,9 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			out[i].Coverage = &cov
 			out[i].AlignmentMethod = ba.Method
 		}
-		out[i].HasAlignableText = hasAlignableText(wk)
+		out[i].HasWordSync = synced[wk.ID]
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// hasAlignableText reports whether a work has a real (non-transcript) text source
-// — epub/txt/pdf — that an alignment could run against. A whisper transcript is a
-// text book but IS the audio, so it doesn't count: that's exactly why `has_text`
-// is the WRONG discriminator (it's true for a podcast). Distinguishes "not
-// aligned yet" from "nothing to align" for the coverage readout.
-func hasAlignableText(wk db.Work) bool {
-	for _, b := range wk.TextFiles {
-		if b.Visibility == "internal" {
-			continue
-		}
-		switch b.Format {
-		case "epub", "txt", "pdf":
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
@@ -856,6 +842,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	synced, _ := s.store.WorkIDsWithSyncData()
 	type catalogEntry struct {
 		ID          int64    `json:"id"`
 		Title       string   `json:"title"`
@@ -868,13 +855,14 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		CoveragePct *float64 `json:"coverage_pct"`
 		AlignMethod *string  `json:"align_method"`
 		AlignUnit   *string  `json:"align_unit"`
-		// See handleListWorks: distinguishes "not aligned yet" from "nothing to
-		// align" (a podcast). CoveragePct stays a pointer so a podcast is null/
-		// absent, never 0.
-		HasAlignableText bool   `json:"has_alignable_text"`
-		ContentVersion   string `json:"content_version"`
-		SchemaVersion    int    `json:"schema_version"`
-		UpdatedAt        string `json:"updated_at"`
+		// See handleListWorks: word-level sync_data exists but no cross-source
+		// alignment (so no coverage%). Neutral "Word-level sync" chip; NOT an
+		// error, NOT actionable. CoveragePct stays a pointer so a podcast is
+		// null/absent, never 0.
+		HasWordSync    bool   `json:"has_word_sync"`
+		ContentVersion string `json:"content_version"`
+		SchemaVersion  int    `json:"schema_version"`
+		UpdatedAt      string `json:"updated_at"`
 	}
 	out := make([]catalogEntry, 0, len(works))
 	for i := range works {
@@ -890,12 +878,12 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			HasText:          wk.HasText,
 			SourceKind:       sum.SourceKind,
 			CoveragePct:      sum.CoveragePct,
-			AlignMethod:      sum.AlignMethod,
-			AlignUnit:        sum.AlignUnit,
-			HasAlignableText: hasAlignableText(*wk),
-			ContentVersion:   wk.ContentVersion,
-			SchemaVersion:    wk.SchemaVersion,
-			UpdatedAt:        wk.UpdatedAt.UTC().Format(time.RFC3339),
+			AlignMethod:    sum.AlignMethod,
+			AlignUnit:      sum.AlignUnit,
+			HasWordSync:    synced[wk.ID],
+			ContentVersion: wk.ContentVersion,
+			SchemaVersion:  wk.SchemaVersion,
+			UpdatedAt:      wk.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

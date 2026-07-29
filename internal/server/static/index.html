@@ -3378,17 +3378,19 @@
     function renderAlignBadge(work) {
       const c = work.coverage;
       if (typeof c !== 'number') {
-        // No alignment row. Distinguish "not aligned yet" (a real text edition
-        // exists — actionable) from "nothing to align" (a podcast / audio-only —
-        // render NOTHING, never a 0% or red state). has_alignable_text is the
-        // discriminator, NOT has_text (a whisper transcript is a text book).
-        if (work.has_alignable_text) {
-          return `<span class="media-pill align-neutral align-clickable"
-            role="button" tabindex="0" aria-label="Not aligned yet — align this book to its audio"
-            onclick="event.stopPropagation(); realignWork(${work.id})"
-            title="This book has a text edition that hasn't been aligned to the audio yet · click to align">Not aligned yet</span>`;
+        // No cross-source alignment row (no coverage%). If the book still has
+        // word-level sync_data (TTS→Whisper), show a neutral, INFORMATIONAL chip
+        // — not an error, not actionable. Otherwise render NOTHING (a podcast /
+        // audio-only, or a lone ebook with no peer to align — never a 0% or red
+        // state). Discriminator is has_word_sync, NOT has_text (a whisper
+        // transcript is a text book) and NOT "has an ebook" (nothing to align it
+        // against). Matches the mobile work-card render.
+        if (work.has_word_sync) {
+          return `<span class="media-pill align-neutral"
+            aria-label="Word-level sync available"
+            title="This book has word-level audio↔text sync">Word-level sync</span>`;
         }
-        return ''; // nothing to align — audio-only / podcast
+        return ''; // nothing to show — no coverage, no sync
       }
       let cls, label;
       if (c >= 0.9)      { cls = 'align-good'; label = 'Tightly aligned'; }
