@@ -12,7 +12,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pj/abookify/internal/db"
@@ -23,14 +25,14 @@ import (
 // carries real acoustic silence events from ffmpeg silencedetect as
 // ground truth for chapter/paragraph boundaries.
 type sttSidecar struct {
-	Version  int            `json:"version"`
-	Language string         `json:"language"`
-	Duration float64        `json:"duration"`
-	Text     string         `json:"text"`
-	Words    []sttWord      `json:"words"`
-	Silences []sttSilence   `json:"silences"` // v2 only
-	Chapters []sttChapter   `json:"chapters"`
-	Sources  []sttSource    `json:"sources"`
+	Version  int          `json:"version"`
+	Language string       `json:"language"`
+	Duration float64      `json:"duration"`
+	Text     string       `json:"text"`
+	Words    []sttWord    `json:"words"`
+	Silences []sttSilence `json:"silences"` // v2 only
+	Chapters []sttChapter `json:"chapters"`
+	Sources  []sttSource  `json:"sources"`
 }
 
 // Note the compact field names. stt-cli emits sync data in this shape
@@ -57,7 +59,7 @@ type sttChapter struct {
 	Title     string  `json:"title"`
 	Start     float64 `json:"start_sec"`
 	End       float64 `json:"end_sec"`
-	WordIdx   int     `json:"word_idx"`   // stt-cli emits this for precise chapter slicing
+	WordIdx   int     `json:"word_idx"` // stt-cli emits this for precise chapter slicing
 	WordCount int     `json:"word_count"`
 	Src       string  `json:"src,omitempty"` // "part" | "chapter" (empty = chapter by default)
 }
@@ -146,9 +148,9 @@ func ImportSidecars(store *db.Store, libraryRoot string) {
 
 // findSidecar locates a .stt.json sidecar for the given book path.
 // Tries:
-//   1. <parent-dir>.stt.json (multi-file audiobooks)
-//   2. <file>.stt.json (single-file audiobooks, replacing the original extension)
-//   3. <file-without-ext>.stt.json
+//  1. <parent-dir>.stt.json (multi-file audiobooks)
+//  2. <file>.stt.json (single-file audiobooks, replacing the original extension)
+//  3. <file-without-ext>.stt.json
 func findSidecar(bookPath, libraryRoot string) string {
 	// bookPath is the container path (/library/audiobooks/...). Map back to
 	// the host filesystem so we can stat.
@@ -732,7 +734,7 @@ func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 			WordIdx: wordIdx,
 		})
 	}
-	return chapters
+	return reconcileSilenceChapterNumbers(chapters)
 }
 
 // detectParagraphsFromSilences (v2 path) reads paragraph-grade silence
@@ -829,10 +831,10 @@ func wordAtOrAfter(words []sttWord, target float64) int {
 // against 438 Days, Why We Sleep, and PHM. No audio re-processing needed —
 // we just read gaps in the existing sidecar data.
 //
-// - CHAPTER_PAUSE_SECS: a really long gap, almost always a chapter boundary
-//   (includes silence + the narrator resetting + production edits).
-// - PARAGRAPH_PAUSE_SECS: a medium gap, typical sentence-break-plus-breath
-//   but also used for soft paragraph divisions in audiobooks.
+//   - CHAPTER_PAUSE_SECS: a really long gap, almost always a chapter boundary
+//     (includes silence + the narrator resetting + production edits).
+//   - PARAGRAPH_PAUSE_SECS: a medium gap, typical sentence-break-plus-breath
+//     but also used for soft paragraph divisions in audiobooks.
 const (
 	CHAPTER_PAUSE_SECS   = 3.0
 	PARAGRAPH_PAUSE_SECS = 0.6
@@ -917,23 +919,23 @@ func gapBetweenWords(words []sttWord, silences []sttSilence, idxA, idxB int) flo
 // extractChapterTitle handles the "Chapter/Part/Book N [subtitle]" case.
 // Real narrator patterns and how we disambiguate them:
 //
-//   A. "Chapter 4. [0.6s] Ape Beds, Dinosaurs, and Napping with Half a
-//      Brain. [pause] They do not…"
-//      → period on number, pause after, subtitle follows. Cut at next
-//        period-terminated word.
+//	A. "Chapter 4. [0.6s] Ape Beds, Dinosaurs, and Napping with Half a
+//	   Brain. [pause] They do not…"
+//	   → period on number, pause after, subtitle follows. Cut at next
+//	     period-terminated word.
 //
-//   B. "Chapter 2 [0.96s] Caffeine, Jet Lag and Melatonin Losing and
-//      Gaining Control of Your Sleep Rhythm [pause] …"
-//      → no period on number but clear pause after, subtitle follows.
-//        Cut at next period OR at a pause >= 0.6s.
+//	B. "Chapter 2 [0.96s] Caffeine, Jet Lag and Melatonin Losing and
+//	   Gaining Control of Your Sleep Rhythm [pause] …"
+//	   → no period on number but clear pause after, subtitle follows.
+//	     Cut at next period OR at a pause >= 0.6s.
 //
-//   C. "Chapter 1 [0s] What's two plus two? [1.76s] Something about…"
-//      → no pause after number, narrator flowed into body. No subtitle.
+//	C. "Chapter 1 [0s] What's two plus two? [1.76s] Something about…"
+//	   → no pause after number, narrator flowed into body. No subtitle.
 //
-//   D. (Norm Macdonald) "Chapter 23. [pause] Make a Wish [audible 0.7s
-//      silence in audio, but Whisper records 0s gap] Atom..."
-//      → ground-truth silence comes from the sidecar Silences[] stream,
-//        not from word.End → next.Start. We consult both and take the max.
+//	D. (Norm Macdonald) "Chapter 23. [pause] Make a Wish [audible 0.7s
+//	   silence in audio, but Whisper records 0s gap] Atom..."
+//	   → ground-truth silence comes from the sidecar Silences[] stream,
+//	     not from word.End → next.Start. We consult both and take the max.
 //
 // So the real signal is: does the narrator PAUSE after "Chapter N"? That
 // pause is the marker of a subtitle announcement. A period helps but
@@ -1745,4 +1747,64 @@ func buildChapterContentByIdxWithSilences(words []sttWord, silences []sttSilence
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// chapterTitleNumRe pulls the leading number out of a silence-path title
+// ("Chapter 22: The Devil, You Say" → 22). Only the announced-number form is
+// matched; a subtitle-only title has no number to reconcile.
+var chapterTitleNumRe = regexp.MustCompile(`(?i)^\s*(chapter|part|book)\s+(\d{1,3})\b`)
+
+// reconcileSilenceChapterNumbers repairs DUPLICATE chapter numbers on the
+// silence path.
+//
+// The two inputs here have very different reliability. A chapter-grade SILENCE
+// is acoustic ground truth — the boundary is real. The NUMBER is whatever
+// Whisper heard the narrator say, and it mishears: the Norm excerpt yields two
+// "Chapter 22", so the reader shows the same chapter number twice. The
+// narrator-pattern path guards against this with a monotonic-run validation;
+// the silence path had none.
+//
+// The rule is deliberately narrow: renumber ONLY a number already used by an
+// earlier chapter. A tempting stronger rule — "renumber anything that does not
+// advance" — is wrong here, because the silence path also emits POSITIONAL
+// fallbacks for boundaries where no number was announced, and those are
+// textually indistinguishable from spoken ones. Under the stronger rule a
+// positional "Chapter 4" sitting after a spoken "Chapter 20" consumes 21, which
+// then cascades and rewrites the genuine spoken "Chapter 22" to 23 — corrupting
+// the numbers the narrator actually said in order to tidy the ones he did not.
+//
+// Boundaries are never dropped: unlike the narrator path, where an orphan number
+// is evidence the match was spurious, here the silence already proved a boundary
+// exists. Any subtitle is preserved; only the "Chapter N" prefix is rewritten.
+func reconcileSilenceChapterNumbers(chapters []sttChapter) []sttChapter {
+	used := map[int]bool{}
+	highest := 0
+	fixed := 0
+	for i := range chapters {
+		m := chapterTitleNumRe.FindStringSubmatch(chapters[i].Title)
+		if m == nil {
+			continue // no announced number to reconcile
+		}
+		n, _ := strconv.Atoi(m[2])
+		if !used[n] {
+			used[n] = true
+			if n > highest {
+				highest = n
+			}
+			continue
+		}
+		// Already taken — this is the mis-hearing. Give it the next free number
+		// above everything seen so far, so it stays after its predecessor.
+		want := highest + 1
+		chapters[i].Title = chapterTitleNumRe.ReplaceAllString(
+			chapters[i].Title, fmt.Sprintf("%s %d", m[1], want))
+		used[want] = true
+		highest = want
+		fixed++
+	}
+	if fixed > 0 {
+		log.Printf("sidecar-import: silence path renumbered %d duplicate chapter number(s) "+
+			"(STT mis-hearing); boundaries kept", fixed)
+	}
+	return chapters
 }
