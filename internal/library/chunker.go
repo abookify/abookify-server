@@ -14,17 +14,89 @@ const (
 	chunkOverlap = 40
 )
 
-// ChunkBook breaks all chapters of a book into overlapping text chunks.
-func ChunkBook(store *db.Store, bookID int64) error {
-	// Skip if already chunked
-	count, _ := store.ChunkCount(bookID)
-	if count > 0 {
-		return nil
+// chunksStale reports whether a book's existing chunks still describe its
+// current chapters. Two independent signals, both exact enough to avoid
+// re-embedding a book that has not actually changed:
+//
+//  1. The set of chapter indices carrying chunks differs from the set of
+//     chapters carrying text. This is what a re-split produces — the chapter
+//     count itself moves, so chapter_idx no longer means what it did.
+//
+//  2. A chapter's chunks stop well short of its text. This is what a
+//     re-transcription produces — the chapter count is unchanged but the words
+//     behind it grew (a repaired source file recovering lost narration, say).
+//     Compared against the chapter's own word_count with a 10% tolerance, so
+//     tokenizer drift between the counter and strings.Fields cannot put a book
+//     into a permanent rebuild loop.
+func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, error) {
+	chunks, err := store.ListChunks(bookID)
+	if err != nil {
+		return false, err
 	}
 
+	chunkedIdx := map[int]bool{}
+	maxEnd := map[int]int{}
+	for _, c := range chunks {
+		chunkedIdx[c.ChapterIdx] = true
+		if c.EndWord > maxEnd[c.ChapterIdx] {
+			maxEnd[c.ChapterIdx] = c.EndWord
+		}
+	}
+
+	textIdx := map[int]bool{}
+	for _, ch := range chapters {
+		if ch.WordCount > 0 {
+			textIdx[ch.Index] = true
+		}
+	}
+
+	if len(chunkedIdx) != len(textIdx) {
+		return true, nil
+	}
+	for idx := range textIdx {
+		if !chunkedIdx[idx] {
+			return true, nil
+		}
+	}
+	for _, ch := range chapters {
+		if ch.WordCount > 0 && float64(maxEnd[ch.Index]) < float64(ch.WordCount)*0.9 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ChunkBook breaks all chapters of a book into overlapping text chunks.
+//
+// Chunks are rebuilt when they no longer describe the book's current chapters.
+// A transcript gets re-split whenever STT is re-run or its audio segmentation
+// changes, which renumbers every chapter — and chunks carry chapter_idx, so the
+// stale rows both under-cover the book and cite the wrong chapter. Skipping on
+// "any chunks exist" made that permanent: King of Kings held chunks from a
+// 16-chapter segmentation after re-splitting to 39 (34% of its words reachable),
+// and Blueprint for Armageddon held 21-chapter chunks after re-splitting to 6
+// (17%). Both looked fully chunked by row count.
+func ChunkBook(store *db.Store, bookID int64) error {
 	chapters, err := store.ListChapters(bookID)
 	if err != nil {
 		return err
+	}
+
+	count, _ := store.ChunkCount(bookID)
+	if count > 0 {
+		stale, err := chunksStale(store, bookID, chapters)
+		if err != nil {
+			return err
+		}
+		if !stale {
+			return nil
+		}
+		// Rebuild from scratch: a partial top-up would leave the old rows'
+		// chapter_idx pointing at chapters that have since been renumbered.
+		log.Printf("chunker: book %d has %d stale chunk(s) — rebuilding", bookID, count)
+		if err := store.DeleteChunksByBook(bookID); err != nil {
+			return err
+		}
 	}
 
 	totalChunks := 0
