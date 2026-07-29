@@ -1,5 +1,8 @@
 """Faster-whisper STT HTTP service."""
 import os
+import gc
+import time
+import threading
 import tempfile
 import json
 from flask import Flask, request, jsonify
@@ -7,6 +10,14 @@ from flask import Flask, request, jsonify
 from faster_whisper import WhisperModel
 
 app = Flask(__name__)
+
+# Idle unloading (server-web): the ~3 GB model can be freed when nothing is
+# transcribing. MODEL_LOCK serializes load / transcribe / unload so an unload
+# (only ever driven by the Go server when NO job is running) can't race a
+# transcribe. A transcribe after an unload transparently reloads via
+# _load_if_needed_locked — the first request just pays the cold-start cost.
+MODEL_LOCK = threading.Lock()
+LAST_LOAD_SECS = 0.0
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 # WHISPER_DEVICE may be "cpu", "cuda", or "auto" (default). "auto" probes for a
@@ -53,6 +64,20 @@ model, DEVICE, COMPUTE_TYPE = _load_model()
 print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
 
 
+def _load_if_needed_locked():
+    """Reload the model if it was unloaded. MODEL_LOCK MUST be held. Records the
+    cold-start cost in LAST_LOAD_SECS so PJ can see the reload penalty."""
+    global model, LAST_LOAD_SECS
+    if model is not None:
+        return
+    t = time.perf_counter()
+    print(f"Reloading Whisper model after idle unload "
+          f"(device={DEVICE}, compute={COMPUTE_TYPE})", flush=True)
+    model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+    LAST_LOAD_SECS = time.perf_counter() - t
+    print(f"Model reloaded in {LAST_LOAD_SECS:.2f}s.", flush=True)
+
+
 @app.route("/health")
 def health():
     return jsonify({
@@ -61,7 +86,24 @@ def health():
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "gpu_available": DEVICE == "cuda",
+        "loaded": model is not None,
+        "last_load_secs": round(LAST_LOAD_SECS, 2),
     })
+
+
+@app.route("/unload", methods=["POST"])
+def unload():
+    """Free the model from RAM/VRAM. Driven by the Go server only when no job is
+    running, so it never interrupts a transcription. A no-op if already unloaded.
+    The next /transcribe reloads transparently."""
+    global model
+    with MODEL_LOCK:
+        was_loaded = model is not None
+        model = None
+        gc.collect()  # CTranslate2 frees GPU/CPU memory when the model is collected
+    if was_loaded:
+        print("Whisper model unloaded (idle).", flush=True)
+    return jsonify({"unloaded": was_loaded})
 
 
 def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter):
@@ -168,8 +210,14 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        info, result_segments, full_text_parts, degraded = _transcribe_degrading(
-            tmp_path, language, word_timestamps, initial_prompt)
+        # Hold MODEL_LOCK across the whole transcribe: it reloads the model if it
+        # was idle-unloaded, and blocks any concurrent /unload for the duration
+        # (belt-and-suspenders with the Go job guard — the model can't vanish
+        # mid-transcription).
+        with MODEL_LOCK:
+            _load_if_needed_locked()
+            info, result_segments, full_text_parts, degraded = _transcribe_degrading(
+                tmp_path, language, word_timestamps, initial_prompt)
 
         body = {
             "language": info.language,
