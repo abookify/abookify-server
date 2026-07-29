@@ -103,6 +103,12 @@ func writeFileAtomic(path string, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
+	// os.CreateTemp makes the file 0600; match the extract path's 0644 so every
+	// cover has consistent, world-readable perms regardless of how it was set.
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
 	return os.Rename(tmpName, path)
 }
 

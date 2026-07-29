@@ -3058,7 +3058,7 @@
              role="button" tabindex="0" aria-label="Open ${escapeHtml(work.title)}"
              title="${escapeHtml(work.title)}">
           <div class="work-cover">
-            <img src="/api/works/${work.id}/cover" alt=""
+            <img src="/api/works/${work.id}/cover?v=${encodeURIComponent(work.content_version||'')}" alt=""
                  onload="this.closest('.work-cover').classList.add('has-art')"
                  onerror="this.remove()">
             <div class="cover-fallback"><div class="ct">${escapeHtml(work.title)}</div></div>
@@ -4169,7 +4169,7 @@
         </div>
         <div class="detail-hero">
           <div class="cover">
-            <img src="/api/works/${work.id}/cover" alt=""
+            <img src="/api/works/${work.id}/cover?v=${encodeURIComponent(work.content_version||'')}" alt=""
                  onload="this.closest('.cover').classList.add('has-art')" onerror="this.remove()">
             <div class="ct">${escapeHtml(work.title)}</div>
           </div>

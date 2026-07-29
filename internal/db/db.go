@@ -932,6 +932,20 @@ func (s *Store) StampVersions(workID int64, schemaVersion int) error {
 	return err
 }
 
+// BumpContentVersion stamps a fresh content_version (+ updated_at) WITHOUT
+// touching schema_version — used when an exportable-but-non-structural change
+// happens (a cover pick/upload), so the listing's cache-buster changes and
+// mobile's update-check re-syncs the new cover.
+func (s *Store) BumpContentVersion(workID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE works
+		SET content_version = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, workID)
+	return err
+}
+
 // SetContentVersion overrides a work's content_version. Used by .abook import to
 // PRESERVE the generation stamp from the manifest (vs stamping the import time),
 // so dedupe-by-generation works: an imported work reports when it was actually

@@ -34,12 +34,12 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	store      *db.Store
-	http       *http.Server
-	Events     *EventBus
-	Generator  *library.Generator
-	rag        atomic.Pointer[llm.RAG]
-	Ingest     *library.IngestQueue
+	store        *db.Store
+	http         *http.Server
+	Events       *EventBus
+	Generator    *library.Generator
+	rag          atomic.Pointer[llm.RAG]
+	Ingest       *library.IngestQueue
 	LibraryDir   string
 	GeneratedDir string
 	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
@@ -74,7 +74,7 @@ type Server struct {
 	// embedding dedupe — guards against re-entry when multiple STT jobs
 	// finish back-to-back for the same work, or when ReloadLLM kicks off
 	// a backfill while a per-work embed is already running.
-	embedMu      sync.Mutex
+	embedMu       sync.Mutex
 	embedInFlight map[int64]bool
 
 	// embed-all single-flight (#159b): library-change triggers (import/scan,
@@ -94,11 +94,11 @@ type Server struct {
 
 	// serializes on-demand voice-preview generation (see voice_preview.go).
 	voicePreviewMu sync.Mutex
-	embedAllDirty   bool
+	embedAllDirty  bool
 
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
-	alignMu      sync.Mutex
+	alignMu       sync.Mutex
 	alignInFlight map[int64]bool
 }
 
@@ -487,7 +487,7 @@ func New(store *db.Store, port string) *Server {
 	mux.Handle("GET /", http.FileServer(http.FS(staticFS)))
 
 	s.http = &http.Server{
-		Addr:    ":" + port,
+		Addr: ":" + port,
 		// auth is innermost so every request is still logged + CORS-
 		// decorated, and OPTIONS preflight is handled by cors before it
 		// reaches the gate (#197).
@@ -1332,9 +1332,9 @@ func (s *Server) handleRegenerateChapter(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		BookID      int64  `json:"book_id"`
-		ChapterIdx  int    `json:"chapter_idx"`
-		Voice       string `json:"voice"`
+		BookID     int64  `json:"book_id"`
+		ChapterIdx int    `json:"chapter_idx"`
+		Voice      string `json:"voice"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -1387,6 +1387,10 @@ func (s *Server) handleWorkCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Always revalidate: a picked/uploaded cover overwrites this same path, and
+	// without this the browser heuristic-caches the image and won't re-fetch even
+	// on a hard refresh. Callers that want a cached copy use the ?v= cache-buster.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, coverPath)
 }
 
@@ -1465,7 +1469,7 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Question string              `json:"question"`
+		Question string             `json:"question"`
 		Scope    library.QueryScope `json:"scope,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Question == "" {
@@ -2686,9 +2690,9 @@ func isSecretSettingKey(k string) bool {
 // last 4 makes "sk-proj-IsAbC…Xy9z" easy to recognize without
 // revealing the rotatable middle).
 //
-//   "sk-proj-IsAbCdEf...XyzXy9z" -> "sk-proj-…Xy9z"
-//   "sk-ant-IsAb...xyzXy9z"      -> "sk-ant-Is…Xy9z"
-//   "shortkey"                   -> "****"
+//	"sk-proj-IsAbCdEf...XyzXy9z" -> "sk-proj-…Xy9z"
+//	"sk-ant-IsAb...xyzXy9z"      -> "sk-ant-Is…Xy9z"
+//	"shortkey"                   -> "****"
 //
 // Format chosen so isMaskedSecret can detect the placeholder
 // unambiguously (presence of the unicode ellipsis '…' which a real
@@ -3115,7 +3119,9 @@ func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, 
 }
 
 // accessLogMiddleware prints one line per HTTP request:
-//   ACCESS 2026-05-21T20:14:01 ip=10.0.0.4 fwd=1.2.3.4 GET /api/works 200 1234b 12ms
+//
+//	ACCESS 2026-05-21T20:14:01 ip=10.0.0.4 fwd=1.2.3.4 GET /api/works 200 1234b 12ms
+//
 // `ip` is the immediate peer (the nullbore tunnel container when
 // served via the relay) and `fwd` is the original client IP from
 // X-Forwarded-For (or "-" when absent). Both must be examined to

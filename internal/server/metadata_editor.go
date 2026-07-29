@@ -235,6 +235,13 @@ func (s *Server) handleRelabelEdition(w http.ResponseWriter, r *http.Request) {
 
 // coverUpdated notifies clients + logs after a cover changes.
 func (s *Server) coverUpdated(workID int64) {
+	// Bump content_version so the listing's cache-buster (?v=) changes — without
+	// this the browser keeps serving the OLD cover bytes from disk cache for the
+	// bare card URL, even across a hard refresh (the search-and-pick bug: the file
+	// was written but nothing told the listing its image URL had changed).
+	if err := s.store.BumpContentVersion(workID); err != nil {
+		applog.Warnf("server", "cover: bump content_version for work %d: %v", workID, err)
+	}
 	applog.Info("server", fmt.Sprintf("cover updated for work %d", workID))
 	if s.Events != nil {
 		s.Events.Broadcast(Event{Type: "library_updated"})
