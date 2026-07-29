@@ -156,3 +156,77 @@ shorter path to something PJ can actually try:
 - Cost/latency: realtime audio is metered per minute; surface that in the UI.
 - Barge-in / echo handling is where realtime demos usually feel broken — budget
   time for it even though WebRTC helps.
+
+---
+
+# TURN / tunnel reachability — scope + recommendation (2026-07-29)
+
+**Question posed:** the phone-over-tunnel is PJ's primary way of using the product,
+so voice that only works on the same Wi-Fi is a demo, not a feature. Add a TURN
+relay so it works over the tunnel — but a TURN relay carries media through a
+server, and *whose* server has direct privacy consequences.
+
+## Evidence (pinned against the LIVE API, not docs)
+
+Inspected the real OpenAI Realtime WebRTC answer SDP + session response:
+
+- The session mint returns **no `ice_servers`** — OpenAI provides no TURN; the
+  client is expected to reach OpenAI's media endpoint itself.
+- OpenAI is **ICE-lite** and publishes **public host candidates on BOTH
+  `udp:3478` and `tcp:443`** (e.g. `172.214.226.198 443 tcp typ host tcptype
+  passive`). OpenAI's media endpoint is directly, publicly routable, and
+  **accepts media over TCP/443**.
+
+**Why this reframes the problem:** the tunnel/mobile-data failure is a blocked
+**UDP** path. But OpenAI already offers a **TCP/443** media path, which looks like
+HTTPS and traverses almost every restrictive network — including a phone on mobile
+data behind CGNAT. The browser's ICE agent tries both; if UDP is blocked it should
+fall back to OpenAI's TCP/443 candidate. **That path needs no relay at all, and
+keeps audio browser↔OpenAI — exactly the privacy stance already committed.**
+
+## The fork
+
+1. **No relay — rely on OpenAI's TCP/443 fallback (RECOMMENDED).** Audio stays
+   browser↔OpenAI. Nobody relays it; we carry nothing. Privacy story is unchanged
+   and stateable plainly. Already shipped the client robustness for it (widened
+   ICE window for slower TCP-ICE; on-connect readout of UDP-vs-TCP so a tunnel
+   connection is legible). **Cost: $0, no new infra, no privacy change.**
+2. **Abookify-operated TURN — REJECT.** Would route PJ's voice through our servers.
+   Directly contradicts the "exhaustive claims about our own handling" stance — we
+   would be relaying user audio. Not an option by default.
+3. **User self-hosted coturn — REJECT as the default.** Privacy-clean in principle
+   (the relay is the user's own box), BUT the target user runs this behind
+   home NAT/CGNAT — which is *why they use the tunnel*. A coturn on that box isn't
+   reachable from the phone unless it's exposed publicly (most self-hosters can't)
+   or tunnelled. It re-creates the reachability problem the tunnel exists to solve.
+4. **Third-party TURN (Twilio/Cloudflare/metered) — REJECT as default.** Requires a
+   third-party account and routes audio through them. The brief explicitly rules
+   out requiring a third-party account by default.
+
+Can NullBore carry TURN? NullBore is an HTTP(S) reverse tunnel; it does not speak
+the STUN/TURN protocol, and TURN needs its own reachable listener. Not a fit
+without a raw-TCP tunnel feature, and even then it only helps option 3.
+
+## Recommendation
+
+**Do NOT build a TURN relay yet.** The evidence says we most likely don't need one:
+OpenAI's own TCP/443 media path should carry the tunnel case with audio staying
+browser↔OpenAI. Building a relay now is premature and would introduce the exact
+privacy problem the brief flags (us carrying audio) — or an unsolved reachability
+problem (coturn behind CGNAT) — for a benefit that may not exist.
+
+**Next step is a measurement, not a build:** have PJ try voice over the tunnel
+from his phone. The UI now shows whether it connected over **UDP** or **TCP** (and
+a clear message if neither works). Three outcomes:
+
+- **Connects over TCP** → done. No relay ever needed; audio is browser↔OpenAI.
+- **Connects over UDP** → also done (his network wasn't blocking UDP after all).
+- **Neither** (rare — some carriers block even TCP/443 to non-standard hosts, or
+  do deep-packet filtering) → *then* revisit, and the only privacy-clean answer is
+  a relay on infrastructure the user controls with a public path (e.g. coturn
+  co-located with the NullBore relay, if that relay grows a TCP-tunnel or a
+  bundled-TURN feature). We would state plainly, in the UI and the privacy doc,
+  that in that fallback mode media transits that relay.
+
+This keeps the default on the path where **no one relays PJ's audio**, and only
+escalates to a relay with eyes open if the measurement proves it necessary.
