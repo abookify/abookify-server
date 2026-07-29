@@ -139,9 +139,10 @@ func SettingsSchema() SettingsSchemaDoc {
 						Addons:      []string{"test", "clear"},
 					},
 					{
-						Key: "tts_voice", Label: "Voice", Type: "select", Default: "af_heart",
-						OptionGroups: kokoroVoiceGroups, Addons: []string{"preview"},
-						Help: "Generates a short sample with the selected voice. Requires Kokoro to be running.",
+						Key: "tts_voice", Label: "Voice", Type: "select_or_custom", Default: "af_heart",
+						OptionsEndpoint: "/api/tts/voices", DependsOn: "tts_provider", AllowCustom: false,
+						Addons: []string{"preview"},
+						Help:   "Voice choices depend on the engine above. Preview generates a short sample (local Kokoro only).",
 					}},
 			},
 			{
@@ -163,13 +164,9 @@ func SettingsSchema() SettingsSchemaDoc {
 						Addons:      []string{"test", "clear"},
 					},
 					{
-						Key: "stt_model", Label: "Model", Type: "select", Default: "large-v3",
-						Options: []SettingsOption{
-							{"large-v3", "Large V3 (best quality, slowest)"},
-							{"medium", "Medium (good quality, moderate speed)"},
-							{"small", "Small (decent quality, fast)"},
-							{"base", "Base (basic quality, fastest)"},
-						},
+						Key: "stt_model", Label: "Model", Type: "select_or_custom", Default: "large-v3",
+						OptionsEndpoint: "/api/stt/models", DependsOn: "stt_provider", AllowCustom: false,
+						Help: "Model choices depend on the engine above. OpenAI offers only Whisper v2, the model whose word-level timestamps are verified for sync.",
 					},
 					{
 						Key: "stt_compute_mode", Label: "Compute device", Type: "select", Default: "auto",

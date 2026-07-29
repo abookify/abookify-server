@@ -504,6 +504,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/credentials", s.handleSaveCredential)
 	mux.HandleFunc("DELETE /api/credentials/{id}", s.handleDeleteCredential)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
+	mux.HandleFunc("GET /api/stt/models", s.handleListSTTModels)
+	mux.HandleFunc("GET /api/tts/voices", s.handleListTTSVoices)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
 	mux.HandleFunc("POST /api/stt/test", s.handleTestSTT)
