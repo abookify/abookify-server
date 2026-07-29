@@ -154,6 +154,38 @@ func (s *Server) ReloadLLM() {
 	}
 }
 
+// isSpeechProviderKey reports whether a settings key affects TTS/STT provider
+// selection (so a save should rebuild the providers). Voice/model/device keys
+// don't count — they don't change which provider is used.
+func isSpeechProviderKey(k string) bool {
+	switch k {
+	case "tts_provider", "tts_api_key", "stt_provider", "stt_api_key",
+		"openai_api_key", "kokoro_url", "whisper_url":
+		return true
+	}
+	return false
+}
+
+// ReloadSpeech rebuilds the TTS/STT providers from the current settings and
+// swaps them into the Generator, so a provider/key change takes effect without a
+// restart (mirrors ReloadLLM). No-op when the Generator isn't up.
+func (s *Server) ReloadSpeech() {
+	if s.Generator == nil {
+		return
+	}
+	tp := library.CreateTTSProvider(s.store, s.TTSURL)
+	sp := library.CreateSTTProvider(s.store, s.STTURL)
+	s.Generator.SetProviders(tp, sp)
+	ttsName, sttName := "none", "none"
+	if tp != nil {
+		ttsName = tp.Name()
+	}
+	if sp != nil {
+		sttName = sp.Name()
+	}
+	log.Printf("speech providers reloaded (TTS: %s, STT: %s)", ttsName, sttName)
+}
+
 // OnJobUpdate is the Generator's job-update callback. It broadcasts the
 // update to WebSocket subscribers and, on STT completion, kicks off a
 // background chunk+embed for the work (#159) so a newly transcribed
@@ -2969,6 +3001,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	llmTouched := false
 	computeTouched := false
+	speechTouched := false
 	for k, v := range body {
 		// If a secret field came back with the mask placeholder, the
 		// user didn't touch it on this save — keep the existing value
@@ -2986,6 +3019,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		if k == "stt_compute_mode" {
 			computeTouched = true
 		}
+		if isSpeechProviderKey(k) {
+			speechTouched = true
+		}
 	}
 	// Rebuild the LLM client when any llm_* key changed so the next
 	// /api/works/{id}/ask call uses the freshly-saved key/model without
@@ -2997,6 +3033,11 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	// the new compute device on its next (re)start.
 	if computeTouched {
 		s.SyncEngineDeviceHint()
+	}
+	// Swap the TTS/STT providers when the provider/key changed so a cloud key
+	// (or a switch back to local) takes effect without a restart (#54 step 2).
+	if speechTouched {
+		s.ReloadSpeech()
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

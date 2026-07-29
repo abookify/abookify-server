@@ -121,18 +121,45 @@ func SettingsSchema() SettingsSchemaDoc {
 			{
 				Key:         "tts",
 				Title:       "Text-to-Speech Voice",
-				Description: "Voice used when generating audiobooks from ebook text. All voices are powered by Kokoro and run locally.",
-				Fields: []SettingsField{{
-					Key: "tts_voice", Label: "Voice", Type: "select", Default: "af_heart",
-					OptionGroups: kokoroVoiceGroups, Addons: []string{"preview"},
-					Help: "Generates a short sample with the selected voice. Requires Kokoro to be running.",
-				}},
+				Description: "Voice used when generating audiobooks from ebook text. Use the local Kokoro engine (default), or add a cloud key to narrate without a local engine.",
+				Fields: []SettingsField{
+					{
+						Key: "tts_provider", Label: "Engine", Type: "select", Default: "",
+						Options: []SettingsOption{
+							{"", "Local engine — Kokoro (default)"},
+							{"openai", "OpenAI (cloud, bring your own key)"},
+						},
+						Help: "Local runs on this machine (no key, no cloud). OpenAI needs a key below and works with no local engine installed.",
+					},
+					{
+						Key: "tts_api_key", Label: "OpenAI API key", Type: "secret", Secret: true,
+						Placeholder: "sk-… (paste to replace, leave empty to keep)",
+						Addons:      []string{"test", "clear"},
+					},
+					{
+						Key: "tts_voice", Label: "Voice", Type: "select", Default: "af_heart",
+						OptionGroups: kokoroVoiceGroups, Addons: []string{"preview"},
+						Help: "Generates a short sample with the selected voice. Requires Kokoro to be running.",
+					}},
 			},
 			{
 				Key:         "stt",
 				Title:       "Speech-to-Text Model",
-				Description: "Whisper model used when transcribing audiobooks to text. Larger models are more accurate but slower. Changes apply to new transcription jobs.",
+				Description: "Engine + model for transcribing audiobooks to text. Use the local Whisper engine (default), or add a cloud key to transcribe without a local engine. Changes apply to new jobs.",
 				Fields: []SettingsField{
+					{
+						Key: "stt_provider", Label: "Engine", Type: "select", Default: "",
+						Options: []SettingsOption{
+							{"", "Local engine — Whisper (default)"},
+							{"openai", "OpenAI (cloud, bring your own key)"},
+						},
+						Help: "Local runs on this machine (no key, no cloud). OpenAI Whisper needs a key below and works with no local engine installed.",
+					},
+					{
+						Key: "stt_api_key", Label: "OpenAI API key", Type: "secret", Secret: true,
+						Placeholder: "sk-… (paste to replace, leave empty to keep)",
+						Addons:      []string{"test", "clear"},
+					},
 					{
 						Key: "stt_model", Label: "Model", Type: "select", Default: "large-v3",
 						Options: []SettingsOption{
