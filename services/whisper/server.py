@@ -114,20 +114,31 @@ def _looks_looped(segments):
     seconds, with confidence collapsing 0.98 -> 0.02 as it went. Re-running
     reproduced it exactly, because the failure is deterministic.
 
-    Detected structurally rather than by confidence: a loop repeats identical
-    segment text many times while covering a long stretch of audio. Ordinary
-    narration repeats a whole segment only rarely, and short recordings are
-    exempt so a genuine refrain in a 3-segment clip cannot trip it.
+    Keyed on the TIME the repetition spans, not on its share of the segments.
+    That distinction is the whole detector: P&P's loop is 8 segments out of
+    roughly 100 — under 10% — because 210 seconds of looping is followed by 390
+    seconds of ordinary narration in the same chunk. A share-based threshold
+    misses it completely, which is exactly what a first attempt keyed on share
+    did. What makes it pathological is that one short phrase covers 200 seconds
+    of audio, and nothing legitimate does that.
+
+    Requires the phrase to be short, since loops latch onto fragments rather than
+    sentences, and requires several repetitions so an incidental echo is ignored.
+    A false positive costs one extra pass and cannot lose words, because the
+    caller keeps whichever pass transcribed more.
     """
-    texts = [s["text"].strip() for s in segments if s.get("text", "").strip()]
-    if len(texts) < 8:
-        return False
-    counts = {}
-    for t in texts:
-        counts[t] = counts.get(t, 0) + 1
-    most = max(counts.values())
-    # A third of all segments being one identical string is not narration.
-    return most >= 4 and most / len(texts) >= 0.33
+    spans = {}
+    for s in segments:
+        t = s.get("text", "").strip()
+        if not t or len(t) > 60:
+            continue
+        first, last, n = spans.get(t, (s["start"], s["end"], 0))
+        spans[t] = (min(first, s["start"]), max(last, s["end"]), n + 1)
+
+    for t, (first, last, n) in spans.items():
+        if n >= 4 and (last - first) >= 60.0:
+            return True
+    return False
 
 
 def _span_seconds(segments):
