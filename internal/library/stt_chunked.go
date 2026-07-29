@@ -67,6 +67,15 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 
 	for i := 0; i < nSegments; i++ {
 		startSecs := i * chunkDurationSecs
+		// Skip a trailing sliver. ceil() fixes the exact-multiple case, but a
+		// duration a hair OVER a multiple (3600.013s — how a ripped 60-minute
+		// part actually measures) still yields a final segment of a few
+		// MILLISECONDS. ffmpeg writes it, Whisper rejects it as invalid data,
+		// and the run burns its retry budget on audio too short to hold a
+		// syllable. Anything under a second cannot contain speech.
+		if remaining := dur - float64(startSecs); remaining < minSegmentSecs {
+			break
+		}
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg-%04d%s", i, segmentExt(audioPath)))
 
 		// ffmpeg segment extraction (copy codec — fast, no re-encode).
@@ -168,6 +177,9 @@ func transcribeChunked(client stt.Provider, audioPath string, onProgress func(se
 }
 
 const (
+	// Shortest trailing chunk worth sending. Below this it is rounding dust from
+	// the container's duration, not audio.
+	minSegmentSecs = 1.0
 	// A chunk the model itself rejects is usually deterministic — fail fast.
 	segDecodeAttempts = 3
 	// A chunk that cannot reach the service is worth waiting out: 20 attempts

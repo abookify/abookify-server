@@ -59,6 +59,24 @@ func TestChunkCountNoPhantomSegment(t *testing.T) {
 			t.Errorf("duration %.2fs: last segment starts at %.0fs, at/past EOF", tc.dur, last)
 		}
 	}
+
+	// A duration a hair OVER a multiple is the case ceil() alone does not fix:
+	// a ripped 60-minute part measures 3600.013s, so segment 7 would carry 13
+	// milliseconds. The loop must skip any trailing sliver under minSegmentSecs.
+	for _, dur := range []float64{3600.013, 3599.987, 1200.004, 600.0009} {
+		n := int(math.Ceil(dur / chunkDurationSecs))
+		emitted := 0
+		for i := 0; i < n; i++ {
+			if dur-float64(i*chunkDurationSecs) < minSegmentSecs {
+				break
+			}
+			emitted++
+		}
+		lastStart := float64((emitted - 1) * chunkDurationSecs)
+		if tail := dur - lastStart; tail < minSegmentSecs {
+			t.Errorf("duration %.4fs: emitted a %.3fs trailing sliver", dur, tail)
+		}
+	}
 }
 
 // The two failure classes need opposite responses: a service that cannot be
