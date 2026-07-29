@@ -385,18 +385,27 @@
     .media-pill.audio { background: rgba(240,165,0,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
-    .media-pill.gap-warn {
+    /* Transcription-status badge — the SAME three-level model mobile renders
+       (transcription's spec: distinguishable without reading the number):
+         🔴 gap-missing      — verified missing narration (dropped_segment=retry,
+                               truncated_source=re-acquire). We checked; words are absent.
+         🟠 gap-unclassified — we can't vouch (damaged_source, or cause unknown/unscanned).
+       (🟢 complete isn't rendered from the summary — a work simply absent isn't
+       assumed complete.) Web + mobile MUST agree on which book is which colour. */
+    .media-pill.gap-missing {
+      background: rgba(200, 45, 45, 0.13);
+      color: #b23b3b;
+      border: 1px solid rgba(200, 45, 45, 0.4);
+      cursor: pointer;
+    }
+    .media-pill.gap-missing:hover { background: rgba(200, 45, 45, 0.22); }
+    .media-pill.gap-unclassified {
       background: rgba(240, 165, 0, 0.15);
       color: #b67400;
       border: 1px solid rgba(240, 165, 0, 0.4);
       cursor: pointer;
     }
-    .media-pill.gap-warn:hover { background: rgba(240, 165, 0, 0.25); }
-    /* Neutral (non-alarming) untranscribed state: source-truncated or unclassified
-       absence — real, but not something a local retry can fix, so it must not read
-       as an actionable "failure" the way gap-warn (amber) does. */
-    .media-pill.gap-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
-    .media-pill.gap-neutral:hover { background: var(--surface-2); border-color: var(--text-muted); }
+    .media-pill.gap-unclassified:hover { background: rgba(240, 165, 0, 0.25); }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3458,24 +3467,28 @@
       const entry = transcriptionGapsByWork[workId];
       if (!entry) return '';
       const cause = entry.cause || 'unknown';
-      // State 4: damaged source — surfaced even when there's no untranscribed span.
+      // 🟠 UNCLASSIFIED — decode errors mean we can't vouch it's complete. Shown
+      // even with no untranscribed span (the damaged_source case).
       if (cause === 'damaged_source') {
-        return gapPill(workId, 'gap-warn', '⚠ Source may be incomplete',
-          'The audio file has decode errors, so some words may be missing. Click for details.');
+        return gapPill(workId, 'gap-unclassified', '⚠ Source may be incomplete',
+          'The audio file has decode errors, so we can\'t verify it\'s complete. Scan the source for details.');
       }
       if (!entry.segment_count) return ''; // nothing untranscribed and not damaged → claim nothing
       const dur = formatGapDuration(entry.total_missing_sec);
+      // 🔴 VERIFIED MISSING — we checked; narration is absent. dropped=retry,
+      // truncated=re-acquire (both red; the ACTION differs, not the level).
       if (cause === 'truncated_source') {
-        return gapPill(workId, 'gap-neutral', `${dur} not in the source file`,
-          'This much audio was never delivered in the source file — re-acquire it. Re-transcribing cannot recover it. Click for details.');
+        return gapPill(workId, 'gap-missing', `${dur} missing from the source file`,
+          'This much narration was never delivered in the source file — re-acquire it. Re-transcribing cannot recover it. Click for details.');
       }
       if (cause === 'dropped_segment') {
-        return gapPill(workId, 'gap-warn', `${dur} not transcribed`,
+        return gapPill(workId, 'gap-missing', `${dur} not transcribed`,
           'The pipeline skipped part of the audio — re-running transcription recovers it. Click for details.');
       }
-      // unknown / interim — state-2 copy, but never implies a cause or that retry is safe.
-      return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
-        'Part of this audio has no transcript yet. Click for details.');
+      // 🟠 UNCLASSIFIED — cause unknown / source not scanned yet. Never implies a
+      // cause or that a retry is safe.
+      return gapPill(workId, 'gap-unclassified', `${dur} not transcribed · unverified`,
+        'Part of this audio has no transcript, and the source hasn\'t been scanned to classify why. Click for details.');
     }
 
     function gapPill(workId, cls, label, title) {
