@@ -1869,7 +1869,7 @@
   <div id="tts-wizard" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:110; align-items:center; justify-content:center;">
     <div role="dialog" aria-modal="true" aria-label="Generate narration" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; max-width:560px; width:94%; max-height:90vh; overflow:auto;">
       <h3 style="margin:0 0 4px; color:var(--text);">Generate a narration (TTS)</h3>
-      <p style="font-size:0.8rem; color:var(--text-muted); margin:0 0 14px;">Creates a new Kokoro-narrated audio edition that lives alongside the existing ones. Progress shows in the processing queue.</p>
+      <p style="font-size:0.8rem; color:var(--text-muted); margin:0 0 14px;">Creates a new AI-narrated audio edition that lives alongside the existing ones. Progress shows in the processing queue.</p>
       <input type="hidden" id="tts-work-id">
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
         <div style="flex:1; min-width:180px;">
@@ -3406,7 +3406,7 @@
       return `<span class="media-pill gap-warn"
         role="button" tabindex="0" aria-label="${escapeHtml(label)} — show transcription gap details"
         onclick="event.stopPropagation(); showGapDetails(${workId})"
-        title="Whisper produced no output for part of this book. Click for details.">${label}</span>`;
+        title="Transcription produced no output for part of this book. Click for details.">${label}</span>`;
     }
 
     async function showGapDetails(workId) {
