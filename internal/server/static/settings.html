@@ -475,7 +475,7 @@
             ? `<div class="key-test-row"><button type="button" class="test-btn" id="${engine}-test-btn" onclick="testConnection('${f.key}')">Test connection</button><span class="key-test-result" id="${engine}-test-result"></span></div>` : '';
           return `<div class="field">${label}
             <input type="password" id="${id}" autocomplete="off" placeholder="${schemaEscAttr(f.placeholder)}">
-            <div class="saved-key" id="${id}-saved" style="display:none;">Saved key: <code id="${id}-mask"></code> ${clear}</div>
+            <div class="saved-key" id="${id}-saved" style="display:none;"><span id="${id}-saved-label">Saved key:</span> <code id="${id}-mask"></code> ${clear}</div>
             ${test}${help}</div>`;
         }
         case 'bool':
@@ -541,6 +541,8 @@
           ? 'Models are namespaced like vendor/model (e.g. anthropic/claude-3.5-sonnet).'
           : 'Pick a model — switch to a more capable one for better answers.';
       }
+      // Keep the saved-key label in step with the selected provider.
+      if (_savedMasks['llm-api-key']) updateSavedKeyLabel('llm-api-key', _savedMasks['llm-api-key']);
     }
 
     function onModelSelectChange() {
@@ -564,10 +566,28 @@
       _savedMasks[inputId] = mask;
       const row = document.getElementById(inputId + '-saved');
       const codeEl = document.getElementById(inputId + '-mask');
+      updateSavedKeyLabel(inputId, mask);
       if (row && codeEl) {
         codeEl.textContent = mask;
         row.style.display = '';
       }
+    }
+
+    // Name the provider on the masked saved-key row ("Saved OpenAI key:") so an
+    // unlabelled secret can't sit next to a mismatched provider dropdown — which
+    // is what made a wrong-provider Test failure look like a bad key. Falls back
+    // to a plain "Saved key:" when the provider is unknown.
+    function updateSavedKeyLabel(inputId, mask) {
+      const labelEl = document.getElementById(inputId + '-saved-label');
+      if (!labelEl) return;
+      let provKey = '';
+      if (inputId === 'llm-api-key') {
+        provKey = (document.getElementById('llm-provider') || {}).value || detectKeyProvider(mask);
+      } else if (inputId === 'voice-api-key') {
+        provKey = (document.getElementById('voice-provider') || {}).value;
+      }
+      const name = LLM_PROVIDER_LABELS[provKey] || '';
+      labelEl.textContent = name ? `Saved ${name} key:` : 'Saved key:';
     }
 
     // Return the value to send back for a masked-secret field:
