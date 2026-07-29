@@ -4179,7 +4179,7 @@
           </div>
           <div class="detail-info">
             <h1>${escapeHtml(work.title)}</h1>
-            <div class="detail-by">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span title="Last processed ${work.content_version}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
+            <div class="detail-by">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span title="Last processed ${new Date(work.content_version).toLocaleString()}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
             <div class="detail-row work-badges">
               ${work.has_audio ? `<span class="media-pill audio">${audioFiles.length} audio</span>` : `<span class="media-pill missing">no audio</span>`}
               ${work.has_text ? `<span class="media-pill text">${textFiles.length} text</span>` : `<span class="media-pill missing">no text</span>`}
