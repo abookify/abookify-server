@@ -2505,7 +2505,7 @@
     // Toast: short-lived top-of-page message. Used for actions that
     // produce no other visible feedback (re-detect chapters, etc.) so
     // the user gets confirmation without hunting for it.
-    function showToast(text, kind) {
+    function showToast(text, kind, sticky) {
       const el = document.getElementById('toast');
       if (!el) return;
       const colors = {
@@ -2519,7 +2519,9 @@
       el.textContent = text;
       el.style.display = 'block';
       clearTimeout(el._hideTimer);
-      el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, kind === 'err' ? 5000 : 2800);
+      // sticky = stays until replaced/hidden (for an ongoing degraded state, e.g.
+      // an STT GPU→CPU downgrade that persists until the GPU is restored).
+      if (!sticky) el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, kind === 'err' ? 5000 : 2800);
     }
 
     async function reprocessWorkFromMenu(workId) {
@@ -8250,6 +8252,12 @@
             handleJobUpdate(event.data);
           } else if (event.type === 'queue_updated') {
             loadQueue();
+          } else if (event.type === 'stt_device_downgrade') {
+            // Mid-run GPU→CPU downgrade caught by the server's device monitor.
+            // Sticky — the run stays ~10× slower until the GPU is restored.
+            showToast('⚠ Transcription dropped to CPU — much slower now. Restore the GPU (make whisper), then check it reports device=cuda.', 'err', true);
+          } else if (event.type === 'stt_device_restored') {
+            showToast('Transcription is back on the GPU (CUDA).', 'ok');
           }
         } catch {}
       };
