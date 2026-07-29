@@ -357,10 +357,10 @@
         <label>Anchor alignment</label>
         <button type="button" id="align-all-btn" onclick="alignAll()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
-          Re-align all works
+          Re-align all books
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Backfills the audio↔ebook anchor alignment for every work that has both a transcript and an ebook.
+          Backfills the audio↔ebook anchor alignment for every book that has both a transcript and an ebook.
           Safe to re-run. Progress lands in the System Console.
         </div>
         <div id="align-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
@@ -376,7 +376,7 @@
           <input type="checkbox" id="export-lite"> Text-only (lite, no audio)
         </label>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Writes a self-contained <code>.abook</code> per aligned work to your library's
+          Writes a self-contained <code>.abook</code> per aligned book to your library's
           exports folder — the offline bundles mobile sideloads. By default each
           bundles the <b>audiobook + original ebook + alignment</b>: the alignment is
           edition-locked to that exact recording, so a bundle without its audio isn't portable.
@@ -394,8 +394,8 @@
           Fetch missing covers
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Looks up cover art on OpenLibrary for any work that has none. Best-effort —
-          works with a junk title or no author may not resolve. Safe to re-run.
+          Looks up cover art on OpenLibrary for any book that has none. Best-effort —
+          books with a junk title or no author may not resolve. Safe to re-run.
         </div>
         <div id="fetch-covers-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -920,7 +920,7 @@
           ? (totalBytes / (1024*1024*1024)).toFixed(1) + ' GB'
           : (totalBytes / (1024*1024)).toFixed(0) + ' MB';
         document.getElementById('lib-stats').textContent =
-          `${works.length} works, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
+          `${works.length} books, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
       } catch {}
 
       // Disk-space readout. Renders used (library + generated) and free,
@@ -1053,7 +1053,7 @@
         const d = await res.json();
         msg.style.display = 'block';
         msg.innerHTML =
-          'Queued <b>' + d.works_queued + '</b> works for backfill. ' +
+          'Queued <b>' + d.works_queued + '</b> books for backfill. ' +
           'Progress lands in the System Console (embed/rag).';
         // Coverage updates as embeds complete — poll a few times then back off.
         let attempts = 0;
@@ -1086,7 +1086,7 @@
         msg.innerHTML =
           '<b>' + d.scanned + ' new/changed</b> files · ' +
           'upserted ' + d.upserted + ' · ' +
-          'new works ' + d.new_works + ' · ' +
+          'new books ' + d.new_works + ' · ' +
           'chapters extracted ' + d.chapters_extracted;
         // Refresh the stats below so updated counts show without a reload.
         checkServices();
@@ -1114,7 +1114,7 @@
         msg.style.display = 'block';
         const pct = (d.average_coverage * 100).toFixed(1);
         msg.innerHTML =
-          '<b>Aligned ' + d.aligned + '</b> of ' + d.total + ' works · ' +
+          '<b>Aligned ' + d.aligned + '</b> of ' + d.total + ' books · ' +
           'skipped ' + d.skipped + ' (no transcript+ebook pair) · ' +
           'errored ' + d.errored + ' · ' +
           'avg coverage ' + pct + '%';
@@ -1124,7 +1124,7 @@
         msg.textContent = 'Align-all failed: ' + e.message;
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Re-align all works';
+        btn.textContent = 'Re-align all books';
       }
     }
 
