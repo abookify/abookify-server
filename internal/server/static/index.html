@@ -1841,7 +1841,7 @@
         <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Search OpenLibrary for a cover (edit if the title/author is wrong):</div>
         <div style="display:flex; gap:6px; margin-bottom:8px;">
           <input id="meta-cover-query" type="text" placeholder="e.g. Chocolat Joanne Harris" onkeydown="if(event.key==='Enter'){event.preventDefault();runCoverSearch();}" style="flex:1; padding:7px 9px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:0.82rem;">
-          <button type="button" onclick="runCoverSearch()" style="flex:0 0 auto; font-size:0.78rem; padding:7px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Search</button>
+          <button type="button" onclick="runCoverSearch()" style="flex:0 0 auto; font-size:0.78rem; padding:7px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Search covers</button>
         </div>
         <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; max-height:380px; overflow:auto;"></div>
       </div>
@@ -3532,7 +3532,7 @@
               <input type="search" id="logs-q" placeholder="Filter message / job id…" aria-label="Filter logs by message or job id" oninput="debouncedRefreshLogs()">
               <label class="logs-auto"><input type="checkbox" id="logs-auto" onchange="toggleLogsAuto()"> Live</label>
               <button onclick="refreshLogs()" title="Refresh" aria-label="Refresh logs">&#8635;</button>
-              <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear</button>
+              <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear filters</button>
             </div>
             <div class="logs-active-filters" id="logs-active-filters" style="display:none; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;"></div>
             <div class="logs-scroll" id="logs-scroll">

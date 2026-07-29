@@ -469,7 +469,7 @@
             <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${help}</div>`;
         case 'secret': {
           const clear = (f.addons || []).includes('clear')
-            ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear</button>` : '';
+            ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear saved key</button>` : '';
           const engine = f.key.replace(/_api_key$/, ''); // llm | tts | stt — one test id set per engine
           const test = (f.addons || []).includes('test')
             ? `<div class="key-test-row"><button type="button" class="test-btn" id="${engine}-test-btn" onclick="testConnection('${f.key}')">Test connection</button><span class="key-test-result" id="${engine}-test-result"></span></div>` : '';
