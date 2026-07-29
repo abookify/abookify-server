@@ -45,6 +45,15 @@
   <audio id="remoteAudio" autoplay></audio>
   <div id="log" class="log"></div>
 
+  <div id="diag-wrap" style="display:none; margin-top:22px;">
+    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:6px;">
+      Connection details
+      <button id="copyDiag" class="secondary" style="font-size:0.7rem; padding:3px 10px; margin-left:8px;">Copy</button>
+    </div>
+    <pre id="diag" style="background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:0.78rem; line-height:1.55; white-space:pre-wrap; word-break:break-word; margin:0;"></pre>
+    <div style="color:var(--muted); font-size:0.72rem; margin-top:6px;">If voice didn't work over the tunnel, tap Copy and send this — one attempt tells us everything.</div>
+  </div>
+
   <div class="foot">
     Your microphone audio streams directly from this browser to OpenAI over an encrypted
     peer connection — it does not pass through the Abookify server. The server only mints a
@@ -64,12 +73,65 @@
   // from his phone: the browser reaches OpenAI to negotiate, but the actual
   // audio needs a direct UDP path that a tunnel / mobile data / VPN often blocks.
   // Say THAT, not a generic error, so we don't chase the wrong thing.
-  function networkFail() {
+  async function networkFail() {
     clearWatchdog();
+    await finishDiag('could not connect'); // capture stats BEFORE teardown nulls pc
     setStatus("Couldn't open the live audio connection. The network is blocking BOTH the direct UDP path and the TCP/443 fallback to OpenAI — unusual, but it can happen over some corporate or carrier networks. Try again on the same Wi-Fi as the server, or a different network.", 'warn');
     cleanup();
     $('stopBtn').hidden = true;
     $('startBtn').disabled = false;
+  }
+
+  // One-shot connection diagnostics — enough that a SINGLE attempt from PJ's
+  // phone answers definitively: which candidate type was selected, whether media
+  // actually flowed (byte counts), and if it failed, why. Rendered on-screen with
+  // a Copy button, so one attempt settles the tunnel question with no debugger.
+  let diag = null;
+  function resetDiag() { diag = { ice: [], gathered: [] }; }
+  function noteIce(st) { if (diag && diag.ice[diag.ice.length - 1] !== st) diag.ice.push(st); }
+  function kb(n) { return (n / 1024).toFixed(1) + ' KB'; }
+
+  async function collectStats() {
+    const out = { pair: null, recv: 0, sent: 0 };
+    if (!pc) return out;
+    try {
+      const stats = await pc.getStats();
+      let pair = null;
+      stats.forEach(r => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || !pair)) pair = r; });
+      if (pair && stats.get) {
+        const L = stats.get(pair.localCandidateId), R = stats.get(pair.remoteCandidateId);
+        out.pair = {
+          lType: L && L.candidateType, lProto: L && L.protocol,
+          rType: R && R.candidateType, rProto: R && R.protocol,
+          rAddr: R && (R.address || R.ip), rPort: R && R.port
+        };
+      }
+      stats.forEach(r => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') out.recv = r.bytesReceived || 0;
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') out.sent = r.bytesSent || 0;
+      });
+    } catch (e) { /* best-effort */ }
+    return out;
+  }
+
+  async function finishDiag(outcome) {
+    if (!diag) return;
+    const s = await collectStats();
+    const lines = ['Voice diagnostics — ' + outcome];
+    if (s.pair) {
+      const proto = (s.pair.rProto || s.pair.lProto || '?').toUpperCase();
+      lines.push('Transport: ' + proto + '  (remote ' + (s.pair.rAddr || '?') + ':' + (s.pair.rPort || '?') + ', ' + (s.pair.lType || '?') + '→' + (s.pair.rType || '?') + ')');
+      lines.push('Media: received ' + kb(s.recv) + ', sent ' + kb(s.sent) + (s.recv > 0 ? '  → audio is flowing' : '  → no audio received yet'));
+    } else {
+      lines.push('Transport: none selected (no candidate pair succeeded)');
+      lines.push('Candidates the browser gathered: ' + (diag.gathered.length ? [...new Set(diag.gathered)].join(', ') : 'none'));
+      lines.push('Likely cause: the network blocked both UDP and OpenAI’s TCP/443 fallback (some carriers/VPNs do). Try same Wi-Fi as the server, or another network.');
+    }
+    lines.push('ICE path: ' + (diag.ice.join(' → ') || 'n/a'));
+    const text = lines.join('\n');
+    $('diag').textContent = text;
+    $('diag').dataset.copy = text;
+    $('diag-wrap').style.display = '';
   }
 
   // Report which media path actually connected — UDP (direct) or TCP (OpenAI's
@@ -124,6 +186,8 @@
   async function start() {
     $('startBtn').disabled = true;
     connected = false;
+    resetDiag();
+    $('diag-wrap').style.display = 'none';
     try {
       setStatus('Requesting microphone…');
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -138,13 +202,17 @@
 
       pc = new RTCPeerConnection();
       pc.ontrack = e => { $('remoteAudio').srcObject = e.streams[0]; };
+      pc.onicecandidate = e => { if (e.candidate && diag) diag.gathered.push((e.candidate.type || '?') + '/' + (e.candidate.protocol || '?')); };
       pc.oniceconnectionstatechange = () => {
         const st = pc ? pc.iceConnectionState : '';
+        noteIce(st);
         if (st === 'connected' || st === 'completed') {
           connected = true; clearWatchdog();
           setStatus('Live — just start talking.', 'live');
           $('stopBtn').hidden = false;
           showTransport(); // which path won — UDP or the TCP/443 fallback
+          // Give media ~3s to flow, then record the definitive diagnostics.
+          setTimeout(() => finishDiag('connected'), 3000);
         } else if (st === 'failed') {
           networkFail();
         } else if (st === 'disconnected' && connected) {
@@ -207,6 +275,12 @@
 
   $('startBtn').onclick = start;
   $('stopBtn').onclick = stop;
+  $('copyDiag').onclick = () => {
+    const t = $('diag').dataset.copy || $('diag').textContent;
+    const done = () => { $('copyDiag').textContent = 'Copied'; setTimeout(() => { $('copyDiag').textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done).catch(done);
+    else done();
+  };
 </script>
 </body>
 </html>
