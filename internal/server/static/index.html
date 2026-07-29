@@ -2252,14 +2252,21 @@
     // Populated by loadTranscriptionGapSummary; consumed by render() to
     // decorate work cards with a warning pill.
     let transcriptionGapsByWork = {};
+    // The shared cause→presentation contract (GET /api/transcription-gaps/legend),
+    // so web renders EXACTLY what mobile renders. Loaded alongside the summary.
+    let gapLegend = null;
 
     async function loadTranscriptionGapSummary() {
       try {
-        const res = await fetch('/api/transcription-gaps/summary');
+        const [res, legend] = await Promise.all([
+          fetch('/api/transcription-gaps/summary'),
+          fetch('/api/transcription-gaps/legend').then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
         const list = await res.json();
         const map = {};
         for (const entry of list) map[entry.work_id] = entry;
         transcriptionGapsByWork = map;
+        if (legend && legend.causes) gapLegend = legend;
       } catch {
         transcriptionGapsByWork = {};
       }
@@ -3460,44 +3467,27 @@
         title="${escapeHtml(label)}${escapeHtml(m)} · click to compare sources">${pct}%</span>`;
     }
 
-    // The badge distinguishes what an untranscribed span actually IS (per
-    // transcription's spec), because the cause determines the remedy and a
-    // single "gap → re-transcribe" affordance is wrong for half of them:
-    //   dropped_segment  → the pipeline skipped it; re-running recovers it (retry)
-    //   truncated_source → never delivered in the source file; re-acquire, no retry
-    //   damaged_source   → decode errors; may be incomplete even with NO gaps
-    //   unknown          → unclassified absence; don't imply a cause or that retry
-    //                      is safe (this is also the interim state before the
-    //                      server's `cause` field lands — then it just works).
+    // The severity `level` from the shared contract → this platform's pill class.
+    // (Mobile maps the same level tokens to its own styles.) The cause→level
+    // mapping itself lives ONCE on the server, so web + mobile can't drift.
+    const GAP_LEVEL_CLASS = { missing: 'gap-missing', unverified: 'gap-unclassified', text_incomplete: 'gap-neutral' };
+
+    // Render the work-card badge entirely from the served legend
+    // (GET /api/transcription-gaps/legend), so it matches mobile by construction.
     // Absence of a badge is NOT rendered as a positive "complete" claim.
     function renderGapBadge(workId) {
       const entry = transcriptionGapsByWork[workId];
       if (!entry) return '';
+      if (!gapLegend || !gapLegend.causes) return ''; // contract not loaded → no misleading badge
       const cause = entry.cause || 'unknown';
-      // 🟠 damaged — the RECORDING may be incomplete (audio unreadable past a
-      // point). Shown even with no untranscribed span (damaged_source).
-      if (cause === 'damaged_source') {
-        return gapPill(workId, 'gap-unclassified', '⚠ Recording may be incomplete',
-          'The audio file has decode errors past a point, so part of the recording may be unreadable. Scan the source for details.');
-      }
-      if (!entry.segment_count) return ''; // nothing untranscribed and not damaged → claim nothing
-      const dur = formatGapDuration(entry.total_missing_sec);
-      // 🔴 truncated — the AUDIO itself is short (never fully downloaded). This is
-      // the only "missing from the book" case; re-acquire, no retry.
-      if (cause === 'truncated_source') {
-        return gapPill(workId, 'gap-missing', `${dur} missing from the recording`,
-          'This audio was never fully downloaded — re-acquire the recording. Re-transcribing cannot recover it. Click for details.');
-      }
-      // (neutral) dropped_segment — audio plays fine; ONLY the transcript is
-      // incomplete. Never "missing from the book". Re-running STT recovers it.
-      if (cause === 'dropped_segment') {
-        return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
-          'Audio plays normally; only the text, search and Q&A are incomplete across this span. Re-running transcription recovers it. Click for details.');
-      }
-      // (neutral) unknown / unscanned — not transcribed, cause not classified, no
-      // retry (never guess retrying is safe).
-      return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
-        'Part of this audio has no transcript, and the source hasn\'t been scanned to classify why. Click for details.');
+      const model = gapLegend.causes[cause] || gapLegend.causes['unknown'];
+      if (!model) return '';
+      // Only render with an untranscribed span, unless the cause opts in
+      // (damaged_source shows even at segment_count == 0).
+      if (!entry.segment_count && !model.show_without_gap) return '';
+      const label = model.label.replace('{duration}', formatGapDuration(entry.total_missing_sec));
+      const cls = GAP_LEVEL_CLASS[model.level] || 'gap-neutral';
+      return gapPill(workId, cls, label, model.detail + ' Click for details.');
     }
 
     function gapPill(workId, cls, label, title) {
@@ -3507,33 +3497,26 @@
         title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
     }
 
-    // The modal's action is cause-specific: a one-click retry is offered ONLY when
-    // the pipeline dropped a segment (re-running genuinely recovers it). Truncated
-    // or damaged sources get re-acquire guidance and NO retry — offering one there
-    // would spin the GPU for an hour and change nothing. Unclassified absence
-    // (incl. the interim before the server's `cause` field lands) offers no
-    // one-click retry either — we never guess that retrying is safe — but keeps the
-    // advanced CLI escape hatch.
+    // The modal's action is driven by the SAME served contract as the badge: a
+    // one-click retry is offered iff the cause is `retryable` (re-running genuinely
+    // recovers it). Non-retryable causes get the contract's guidance and no retry
+    // button — offering one where it can't help would spin the GPU for nothing.
+    // Retry-safety and copy come from one server file, so web ↔ mobile stay aligned.
     function gapActionHtml(workId, cause, fileList, cmd) {
       if (!fileList.length) return '';
+      const model = (gapLegend && gapLegend.causes) ? (gapLegend.causes[cause] || gapLegend.causes['unknown']) : null;
+      const detail = model ? model.detail : "Part of this audio has no transcript, and the cause isn't classified yet.";
       const cli = `<details style="margin-top:0.75rem">
           <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">Fix from the command line (remote GPU runs)</summary>
           <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
         </details>`;
-      if (cause === 'truncated_source') {
-        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">This audio was never fully downloaded — the recording itself is short, so re-transcribing cannot recover it. Re-acquire a complete copy of the recording. No retry is offered because it would change nothing.</p>`;
-      }
-      if (cause === 'damaged_source') {
-        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">The source file has decode errors, so the transcript may be incomplete. Re-acquiring a clean copy is the fix.</p>`;
-      }
-      if (cause === 'dropped_segment') {
+      if (model && model.retryable) {
         return `<div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
             <button class="primary-btn" id="gap-retry-btn" onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}</button>
-            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">Audio plays fine — this only restores the missing text/search. Re-running recovers it.</span>
+            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(detail)}</span>
           </div>${cli}`;
       }
-      // unknown / interim: no one-click retry (never guess it's safe); advanced CLI only.
-      return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">Part of this audio has no transcript, and the cause isn't classified yet — so no one-click retry is offered. If it was a dropped segment, the command below re-runs it.</p>${cli}`;
+      return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">${escapeHtml(detail)}${cause === 'unknown' ? ' If it was a dropped segment, the command below re-runs it.' : ''}</p>${cli}`;
     }
 
     async function showGapDetails(workId) {
