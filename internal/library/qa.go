@@ -185,7 +185,11 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 		return fmt.Sprintf("Chapter %d", ch+1)
 	}
 
-	// Build context string + citations.
+	// OUTBOUND-DATA BOUNDARY (privacy stance): everything sent to the LLM for a
+	// Q&A answer is built HERE, and ONLY from `retrieved` — the bounded set of
+	// passages retrieval returned (≤8, see retrievePassages) plus the question
+	// below. The full book never leaves the machine. Do not widen this to
+	// un-retrieved content; TestQAOutboundBoundary_MinimalSend enforces it.
 	var contextBuf strings.Builder
 	var citations []llm.Citation
 	for i, chunk := range retrieved {
