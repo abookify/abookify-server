@@ -91,13 +91,13 @@ func TestListWorksFilingTitleSort(t *testing.T) {
 		got[i] = w.Title
 	}
 	want := []string{
-		"an apple",            // -> apple
-		"Brave New World",     // -> brave
-		"A Clockwork Orange",  // -> clockwork
-		"THE Iliad",           // -> iliad (case-insensitive article strip)
-		"The Moral Landscape", // -> moral
+		"an apple",             // -> apple
+		"Brave New World",      // -> brave
+		"A Clockwork Orange",   // -> clockwork
+		"THE Iliad",            // -> iliad (case-insensitive article strip)
+		"The Moral Landscape",  // -> moral
 		"Theory of Everything", // -> theory (NOT stripped — "Theory" != "The ")
-		"Zebra",               // -> zebra
+		"Zebra",                // -> zebra
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d works, want %d: %v", len(got), len(want), got)
@@ -363,6 +363,61 @@ func TestCleanupOrphanedRows(t *testing.T) {
 	// Re-running is idempotent (nothing left to remove).
 	if again, _ := store.CleanupOrphanedRows(); again != 0 {
 		t.Errorf("second sweep removed = %d, want 0", again)
+	}
+}
+
+func TestDeleteEmptyWorks(t *testing.T) {
+	store := testStore(t)
+
+	// A healthy work with a book.
+	store.UpsertBook(Book{Path: "/x/keep.epub", Filename: "keep.epub", Format: "epub", MediaType: "text"})
+	var keepBookID int64
+	for _, b := range mustListBooks(t, store) {
+		if b.Path == "/x/keep.epub" {
+			keepBookID = b.ID
+		}
+	}
+	keepWork, err := store.CreateWork("Keep", "Author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AssignBooksToWork(keepWork, []int64{keepBookID})
+
+	// A phantom: created, then its book reassigned away (matcher regroup) — the
+	// exact way works 112/113 became bookless.
+	store.UpsertBook(Book{Path: "/x/moved.mp3", Filename: "moved.mp3", Format: "mp3", MediaType: "audio"})
+	var movedBookID int64
+	for _, b := range mustListBooks(t, store) {
+		if b.Path == "/x/moved.mp3" {
+			movedBookID = b.ID
+		}
+	}
+	phantom, _ := store.CreateWork("disc2", "")
+	store.AssignBooksToWork(phantom, []int64{movedBookID})
+	store.AssignBooksToWork(keepWork, []int64{movedBookID}) // reassign → phantom now bookless
+
+	// A phantom created empty outright (headless-drop style).
+	emptyWork, _ := store.CreateWork("HeadlessDrop", "")
+
+	n, err := store.DeleteEmptyWorks()
+	if err != nil {
+		t.Fatalf("DeleteEmptyWorks: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("removed %d empty works, want 2 (the reassigned shell + the empty one)", n)
+	}
+	if wk, _ := store.GetWork(keepWork); wk == nil {
+		t.Error("the work that still has books must survive")
+	}
+	if wk, _ := store.GetWork(phantom); wk != nil {
+		t.Error("the reassigned-away shell should be gone")
+	}
+	if wk, _ := store.GetWork(emptyWork); wk != nil {
+		t.Error("the outright-empty work should be gone")
+	}
+	// Idempotent.
+	if again, _ := store.DeleteEmptyWorks(); again != 0 {
+		t.Errorf("second sweep removed %d, want 0", again)
 	}
 }
 

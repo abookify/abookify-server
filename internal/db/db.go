@@ -2397,3 +2397,38 @@ func (s *Store) DeleteWork(id int64) error {
 	tx.Exec(`DELETE FROM works WHERE id = ?`, id)
 	return tx.Commit()
 }
+
+// DeleteEmptyWorks removes "phantom" works that have no books left — the shells
+// left behind when a work's last book is reassigned to another work (the matcher
+// regrouping a multi-disc folder) or deleted (the #220 reconcile dropping a
+// vanished file). A work is defined entirely by its books, so a bookless work is
+// always junk. Returns how many were removed.
+//
+// Safe at the sweep points (end of MatchAndCreateWorks, end of the boot
+// reconcile): all book assignments are settled there, and a TTS/STT job always
+// operates on a work that already holds its source book, so this never races a
+// job into deletion.
+func (s *Store) DeleteEmptyWorks() (int, error) {
+	rows, err := s.db.Query(`
+		SELECT id FROM works
+		WHERE id NOT IN (SELECT work_id FROM books WHERE work_id != 0)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	n := 0
+	for _, id := range ids {
+		if err := s.DeleteWork(id); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}

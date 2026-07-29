@@ -138,6 +138,13 @@ func ReconcileLibraryRoots(store *db.Store) (staleRoots, removed int) {
 			log.Printf("#220: root %q — removed %d genuinely-missing book(s)", r.Path, len(missing))
 		}
 	}
+	// Deleting a root's last missing book can leave its work bookless — sweep
+	// those phantom shells so a vanished file doesn't leave a broken work card.
+	if n, err := store.DeleteEmptyWorks(); err != nil {
+		log.Printf("#220: reconcile empty-work sweep failed: %v", err)
+	} else if n > 0 {
+		log.Printf("#220: reconcile removed %d empty work(s)", n)
+	}
 	return
 }
 
