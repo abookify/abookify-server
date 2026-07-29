@@ -461,6 +461,31 @@ func migrate(db *sql.DB) error {
 			value TEXT NOT NULL DEFAULT ''
 		);
 
+		-- Service credentials (BYOK). Modelled provider -> credentials as a
+		-- one-to-MANY relationship on purpose (NO UNIQUE(provider)): the UI
+		-- exposes exactly one key per provider today, but per-lane cost tracking
+		-- (multiple keys for one provider) can be added later with no migration.
+		-- The fields column is a JSON object so each provider declares its shape:
+		-- {"api_key":"…"} for OpenAI, {"api_key","region","deployment"} for Azure,
+		-- {"access_key_id","secret_access_key","region"} for AWS. Secret sub-keys
+		-- are masked on read. A credential may exist with no feature consuming it
+		-- (add-a-key-before-it's-used). See docs/settings-credentials-restructure.md.
+		CREATE TABLE IF NOT EXISTS credentials (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider     TEXT NOT NULL,
+			label        TEXT NOT NULL DEFAULT '',
+			fields       TEXT NOT NULL DEFAULT '{}',
+			-- capabilities: JSON array of the feature kinds this credential was
+			-- VERIFIED to satisfy (e.g. ["llm","voice"]). One vendor key can serve
+			-- several features, but NOT necessarily all a vendor sells — a Gemini
+			-- key reaches Gemini LLM/voice/TTS but not Google Cloud TTS (a separate
+			-- GCP product). Per-feature selectors gate on this; it is probed, never
+			-- assumed from the vendor.
+			capabilities TEXT NOT NULL DEFAULT '[]',
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider);
+
 		-- Library roots (#220): the N filesystem locations the scanner walks
 		-- (Jellyfin/Plex-style). The single -library path is migrated in as
 		-- root #1 on boot. is_default marks the write target for new imports;
@@ -808,6 +833,135 @@ func (s *Store) GetAllSettings() (map[string]string, error) {
 		m[k] = v
 	}
 	return m, rows.Err()
+}
+
+// Credential is one stored BYOK credential for a provider. Fields is the
+// provider-declared shape (e.g. {"api_key":…}, or {"api_key","region",
+// "deployment"} for Azure). provider→credentials is one-to-many at the DB level
+// (see the credentials table comment); the helpers below cover the
+// one-key-per-provider case the UI exposes today.
+type Credential struct {
+	ID           int64             `json:"id"`
+	Provider     string            `json:"provider"`
+	Label        string            `json:"label"`
+	Fields       map[string]string `json:"fields"`
+	Capabilities []string          `json:"capabilities"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
+func scanCredential(sc interface{ Scan(...any) error }) (Credential, error) {
+	var c Credential
+	var fieldsBlob, capsBlob string
+	if err := sc.Scan(&c.ID, &c.Provider, &c.Label, &fieldsBlob, &capsBlob, &c.CreatedAt); err != nil {
+		return c, err
+	}
+	if err := json.Unmarshal([]byte(fieldsBlob), &c.Fields); err != nil {
+		return c, err
+	}
+	if c.Fields == nil {
+		c.Fields = map[string]string{}
+	}
+	if capsBlob != "" {
+		if err := json.Unmarshal([]byte(capsBlob), &c.Capabilities); err != nil {
+			return c, err
+		}
+	}
+	if c.Capabilities == nil {
+		c.Capabilities = []string{}
+	}
+	return c, nil
+}
+
+func (s *Store) CreateCredential(provider, label string, fields map[string]string) (int64, error) {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	blob, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.Exec(`INSERT INTO credentials (provider, label, fields) VALUES (?, ?, ?)`,
+		provider, label, string(blob))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) GetCredential(id int64) (*Credential, error) {
+	row := s.db.QueryRow(`SELECT id, provider, label, fields, capabilities, created_at FROM credentials WHERE id = ?`, id)
+	c, err := scanCredential(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) ListCredentials() ([]Credential, error) {
+	rows, err := s.db.Query(`SELECT id, provider, label, fields, capabilities, created_at FROM credentials ORDER BY provider, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Credential
+	for rows.Next() {
+		c, err := scanCredential(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpsertProviderCredential maintains the one-key-per-provider case the UI
+// exposes today: update the canonical (lowest-id) row for the provider if one
+// exists, else insert. Returns the credential id. The table still permits
+// multiple rows per provider for a future multi-key UI — this helper just
+// doesn't create them.
+func (s *Store) UpsertProviderCredential(provider, label string, fields map[string]string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM credentials WHERE provider = ? ORDER BY id LIMIT 1`, provider).Scan(&id)
+	if err == sql.ErrNoRows {
+		return s.CreateCredential(provider, label, fields)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	blob, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	_, err = s.db.Exec(`UPDATE credentials SET label = ?, fields = ? WHERE id = ?`, label, string(blob), id)
+	return id, err
+}
+
+// SetCredentialCapabilities records which feature kinds this credential was
+// VERIFIED to satisfy (e.g. ["llm","voice"]). Per-feature selectors gate on this
+// so the UI never offers a feature a key can't actually serve — a Gemini key
+// lights up Gemini LLM + voice but not Google Cloud TTS unless that separate
+// product is verified reachable. Probed on save/test, never assumed.
+func (s *Store) SetCredentialCapabilities(id int64, caps []string) error {
+	if caps == nil {
+		caps = []string{}
+	}
+	blob, err := json.Marshal(caps)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE credentials SET capabilities = ? WHERE id = ?`, string(blob), id)
+	return err
+}
+
+func (s *Store) DeleteCredential(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM credentials WHERE id = ?`, id)
+	return err
 }
 
 type ChapterLink struct {
