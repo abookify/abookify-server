@@ -526,9 +526,11 @@
       const detected = detectKeyProvider(input.value);
       const clearNote = () => { if (note) { note.style.display = 'none'; note.textContent = ''; } };
       if (!detected || detected === sel.value) { clearNote(); return; }
+      const dName = LLM_PROVIDER_LABELS[detected] || detected;
+      const art = /^[aeiou]/i.test(dName) ? 'an' : 'a'; // "an OpenAI", "a Deepgram"
       if (llmProviderUserSet) {
         if (note) {
-          note.textContent = `⚠ This looks like a ${LLM_PROVIDER_LABELS[detected]} key, but the provider is set to ${LLM_PROVIDER_LABELS[sel.value] || 'none'}. Change it above if that's not what you want.`;
+          note.textContent = `⚠ This looks like ${art} ${dName} key, but the provider is set to ${LLM_PROVIDER_LABELS[sel.value] || 'none'}. Change it above if that's not what you want.`;
           note.style.color = 'var(--danger)';
           note.style.display = '';
         }
@@ -537,7 +539,7 @@
       sel.value = detected;
       onProviderChange(); // repopulate models; keeps the flag false — this is auto, not a user choice
       if (note) {
-        note.textContent = `Detected a ${LLM_PROVIDER_LABELS[detected]} key — switched the provider to ${LLM_PROVIDER_LABELS[detected]}.`;
+        note.textContent = `Detected ${art} ${dName} key — switched the provider to ${dName}.`;
         note.style.color = 'var(--accent)';
         note.style.display = '';
       }
