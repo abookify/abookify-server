@@ -376,12 +376,12 @@
           <input type="checkbox" id="export-lite"> Text-only (lite, no audio)
         </label>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Writes a self-contained <code>.abook</code> per aligned work to
-          <code>library/exports/</code> — the offline bundles mobile sideloads. By default each
+          Writes a self-contained <code>.abook</code> per aligned work to your library's
+          exports folder — the offline bundles mobile sideloads. By default each
           bundles the <b>audiobook + original ebook + alignment</b>: the alignment is
           edition-locked to that exact recording, so a bundle without its audio isn't portable.
           The full set is therefore large (multi-GB). Tick <b>Text-only</b> for a small,
-          book.db-only set (audio then streams from the server). Runs in the background; safe
+          text-only set (audio then streams from the server). Runs in the background; safe
           to re-run.
         </div>
         <div id="exports-list" style="display:none; margin-top:8px; font-size:0.8rem; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;"></div>
@@ -993,7 +993,7 @@
         msg.style.display = 'block';
         msg.innerHTML =
           'New public URL: <code>' + data.public_url + '</code><br>' +
-          'Next: <code>' + data.command + '</code> (or restart the nullbore container manually).';
+          'Next: <code>' + data.command + '</code> (or restart the relay container manually).';
         await refreshPairing();
       } catch (e) {
         msg.style.display = 'block';
