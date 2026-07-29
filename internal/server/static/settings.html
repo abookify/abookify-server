@@ -493,6 +493,20 @@
       } catch {}
     }
 
+    // LLM provider detection from an API-key prefix — the prefixes are
+    // unambiguous: sk-ant-… = Anthropic, sk-or-… = OpenRouter, and sk-proj-… or
+    // a plain sk-… = OpenAI. Used to recover the provider on load when a key was
+    // saved without one, to label the saved-key row, and to auto-switch when a
+    // NEW key is pasted. Ollama has no key, so it never matches (stays manual).
+    const LLM_PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', ollama: 'Ollama' };
+    function detectKeyProvider(key) {
+      const k = (key || '').trim();
+      if (/^sk-ant-/i.test(k)) return 'anthropic';
+      if (/^sk-or-/i.test(k))  return 'openrouter';
+      if (/^sk-/i.test(k))     return 'openai'; // sk-proj-… or a plain sk-…
+      return '';
+    }
+
     // Re-populate the model <select> when the provider changes. Adds a
     // "Custom…" option that reveals the free-text input for any model
     // not in the curated list.
@@ -655,6 +669,15 @@
         if (settings.stt_model) document.getElementById('stt-model').value = settings.stt_model;
         if (settings.stt_idle_timeout) document.getElementById('stt-idle-timeout').value = settings.stt_idle_timeout;
         if (settings.llm_provider) document.getElementById('llm-provider').value = settings.llm_provider;
+        // Persistence guard: if a key was saved but the provider wasn't (an older
+        // save, or a mismatch), recover it from the key's own prefix so the
+        // dropdown never sits on the wrong provider — that's the bug that let an
+        // OpenAI key get Test-connected against Anthropic and look broken. The
+        // masked value keeps its prefix (sk-proj-…), so detection still works.
+        if (settings.llm_api_key && !settings.llm_provider) {
+          const recovered = detectKeyProvider(settings.llm_api_key);
+          if (recovered) document.getElementById('llm-provider').value = recovered;
+        }
         // Secrets arrive masked (e.g. "sk-proj-Is…Xy9z"). Don't put the
         // mask into the input — it'd look like a typed key. Show it
         // beneath the field instead, so the user can recognize which
