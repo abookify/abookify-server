@@ -452,6 +452,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
+	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
+	mux.HandleFunc("POST /api/stt/test", s.handleTestSTT)
 	mux.HandleFunc("GET /api/disk", s.handleDiskUsage)
 	mux.HandleFunc("POST /api/library/rescan", s.handleLibraryRescan)
 	mux.HandleFunc("GET /api/embeddings/coverage", s.handleEmbeddingsCoverage)
