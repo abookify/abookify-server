@@ -107,6 +107,35 @@ func (c *Client) Info() (*Info, error) {
 	return &info, nil
 }
 
+// Unload tells the whisper service to free its model from RAM/VRAM (idle
+// unloading). The next TranscribeFile transparently reloads it. Returns whether
+// a model was actually freed (false if it was already unloaded). A short
+// deadline — this is a control call, never inherits the 90-minute transcribe
+// timeout.
+func (c *Client) Unload() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/unload", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("stt unload: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false, fmt.Errorf("stt unload: status %d", resp.StatusCode)
+	}
+	var out struct {
+		Unloaded bool `json:"unloaded"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, fmt.Errorf("decode unload result: %w", err)
+	}
+	return out.Unloaded, nil
+}
+
 // TranscribeFile sends an audio file for transcription and returns the result.
 func (c *Client) TranscribeFile(audioPath string) (*TranscribeResult, error) {
 	f, err := os.Open(audioPath)

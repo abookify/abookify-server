@@ -12,5 +12,15 @@ type Provider interface {
 	TranscribeFile(audioPath string) (*TranscribeResult, error)
 }
 
+// Unloader is implemented by local engines that can free their model from
+// memory when idle and reload it on the next request. Cloud providers have no
+// local model to free, so they don't implement it — the idle monitor simply
+// skips any provider that isn't an Unloader.
+type Unloader interface {
+	// Unload frees the model from RAM/VRAM. Returns whether a model was actually
+	// unloaded (false if it was already unloaded).
+	Unload() (bool, error)
+}
+
 // The existing Client already satisfies Provider — just add Name().
 func (c *Client) Name() string { return "whisper-local" }
