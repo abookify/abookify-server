@@ -64,7 +64,8 @@ def health():
     })
 
 
-def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter):
+def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
+                    condition_on_previous_text=True):
     """One transcribe pass, fully materialized.
 
     faster-whisper returns a LAZY generator, so decode errors surface while
@@ -76,6 +77,7 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter)
         word_timestamps=word_timestamps,
         vad_filter=vad_filter,
         initial_prompt=initial_prompt,
+        condition_on_previous_text=condition_on_previous_text,
     )
 
     result_segments = []
@@ -102,7 +104,8 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter)
     return info, result_segments, full_text_parts
 
 
-def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
+def _transcribe_degrading(path, language, word_timestamps, initial_prompt, vad_filter=True,
+                          condition_prev=True):
     """Transcribe, stepping down one capability at a time on a model crash.
 
     faster-whisper can hard-fail on a specific chunk — most often
@@ -118,9 +121,10 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
     that worked, or None when the normal path did.
     """
     ladder = [
-        (None, True, word_timestamps),
-        ("no_vad", False, word_timestamps),
+        (None, vad_filter, word_timestamps),
     ]
+    if vad_filter:
+        ladder.append(("no_vad", False, word_timestamps))
     if word_timestamps:
         # Last resort: segment-level times only. Costs word-level karaoke for
         # this chunk, but keeps its text and coarse timings.
@@ -130,7 +134,7 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt):
     for degraded, vad, words in ladder:
         try:
             info, segs, parts = _run_transcribe(
-                path, language, words, initial_prompt, vad)
+                path, language, words, initial_prompt, vad, condition_prev)
             if degraded:
                 print(f"transcribe: recovered via {degraded} "
                       f"(after: {last_err})", flush=True)
@@ -161,6 +165,14 @@ def transcribe():
     # (proper nouns, foreign terms) so they're more likely to be emitted
     # verbatim. Whisper truncates internally to the last 224 BPE tokens.
     initial_prompt = request.form.get("initial_prompt") or None
+    # vad_filter defaults to on (unchanged behaviour). Callers can disable it for
+    # recordings where the VAD discards real speech — it silently drops whole
+    # stretches on amateur/variable-level audio rather than erroring, which is
+    # invisible in the output.
+    cond_param = request.form.get("condition_on_previous_text")
+    condition_prev = True if cond_param is None else cond_param.lower() not in ("false", "0", "no")
+    vad_param = request.form.get("vad_filter")
+    vad_filter = True if vad_param is None else vad_param.lower() not in ("false", "0", "no")
 
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
@@ -169,7 +181,7 @@ def transcribe():
 
     try:
         info, result_segments, full_text_parts, degraded = _transcribe_degrading(
-            tmp_path, language, word_timestamps, initial_prompt)
+            tmp_path, language, word_timestamps, initial_prompt, vad_filter, condition_prev)
 
         body = {
             "language": info.language,
