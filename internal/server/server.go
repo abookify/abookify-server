@@ -2721,10 +2721,16 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 
 // handleSettingsSchema serves the backend-driven settings schema (#202) — the
 // single source of truth web + mobile render their settings UIs from, so they
-// stop drifting against the flat KV. Static + cacheable; values still come
-// from GET /api/settings.
+// stop drifting against the flat KV. Mostly static; the llm/stt/tts provider
+// option lists are injected per-request from the credentials vault (see
+// applyProviderEligibility), so it is NOT cacheable across credential changes.
+// Values still come from GET /api/settings.
 func (s *Server) handleSettingsSchema(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, SettingsSchema())
+	doc := SettingsSchema()
+	// Inject per-feature provider options gated to verified, integrated
+	// credentials (single source both web + mobile render from).
+	s.applyProviderEligibility(&doc)
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
