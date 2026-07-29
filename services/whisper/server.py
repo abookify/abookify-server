@@ -1,5 +1,7 @@
 """Faster-whisper STT HTTP service."""
+import gc
 import os
+import threading
 import tempfile
 import json
 from flask import Flask, request, jsonify
@@ -49,8 +51,25 @@ def _load_model():
         raise
 
 
+# The model is held behind a lock so /unload can drop it while a transcribe is
+# NOT in flight, and so a reload cannot be started twice concurrently.
+_model_lock = threading.Lock()
 model, DEVICE, COMPUTE_TYPE = _load_model()
 print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
+
+
+def _get_model():
+    """Return the loaded model, reloading transparently after an unload.
+
+    Callers never see the difference: an unloaded service reloads on the next
+    transcribe, costing roughly two seconds on this hardware.
+    """
+    global model, DEVICE, COMPUTE_TYPE
+    with _model_lock:
+        if model is None:
+            print("Model not resident; reloading on demand...", flush=True)
+            model, DEVICE, COMPUTE_TYPE = _load_model()
+        return model
 
 
 @app.route("/health")
@@ -61,6 +80,41 @@ def health():
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "gpu_available": DEVICE == "cuda",
+        # Whether the weights are actually resident. The idle-unload setting is
+        # meaningless without this: a caller cannot otherwise tell whether the
+        # memory it thinks it freed is really free.
+        "model_loaded": model is not None,
+    })
+
+
+@app.route("/unload", methods=["POST"])
+def unload():
+    """Drop the model and release its memory (~3 GB, VRAM on GPU).
+
+    Exists because the product exposes an "Unload from memory after idle"
+    setting that, on the Docker stack, had nothing to call — the endpoint was
+    documented as shipped but was never implemented, so the setting silently
+    reclaimed nothing. Reporting a freed 3 GB that is still allocated is worse
+    than not offering the option.
+
+    Idempotent: unloading an already-unloaded service is a no-op success. The
+    next transcribe reloads transparently.
+    """
+    global model
+    with _model_lock:
+        was_loaded = model is not None
+        if was_loaded:
+            model = None
+            # ctranslate2 frees its device memory when the last reference goes;
+            # the collection is what makes that happen promptly rather than at
+            # some arbitrary later point.
+            gc.collect()
+            print("Model unloaded on request; memory released.", flush=True)
+    return jsonify({
+        "status": "ok",
+        "was_loaded": was_loaded,
+        "model_loaded": False,
+        "device": DEVICE,
     })
 
 
@@ -71,7 +125,7 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
     faster-whisper returns a LAZY generator, so decode errors surface while
     iterating, not at the call — the list() is what makes a failure catchable.
     """
-    segments, info = model.transcribe(
+    segments, info = _get_model().transcribe(
         path,
         language=language if language else None,
         word_timestamps=word_timestamps,
