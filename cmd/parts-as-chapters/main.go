@@ -143,6 +143,56 @@ func main() {
 		time.Now().UTC().Format(time.RFC3339), *workID); err != nil {
 		log.Fatalf("stamp: %v", err)
 	}
+	// The TRANSCRIPT keeps its finer segmentation — it is the only way to move
+	// around inside a 90-minute part, and it carries the text — but its segments
+	// must stop calling themselves "Chapter N". They are acoustic breaks, not
+	// authored chapters, and labelling them as chapters is the same lie the part
+	// structure exists to avoid. Relabel by containing part instead.
+	var tbID int64
+	if err := tx.QueryRow(`SELECT id FROM books WHERE work_id = ? AND format = 'transcript' LIMIT 1`,
+		*workID).Scan(&tbID); err == nil && tbID != 0 {
+		rows, err := tx.Query(`SELECT index_num, start_sec FROM chapters WHERE book_id = ? ORDER BY index_num`, tbID)
+		if err != nil {
+			log.Fatalf("read transcript chapters: %v", err)
+		}
+		type seg struct {
+			idx   int
+			start float64
+		}
+		var segs []seg
+		for rows.Next() {
+			var sg seg
+			rows.Scan(&sg.idx, &sg.start)
+			segs = append(segs, sg)
+		}
+		rows.Close()
+
+		// bounds[i] = start of part i on the book-continuous timeline
+		bounds := make([]float64, len(parts))
+		var a float64
+		for i, p := range parts {
+			bounds[i] = a
+			a += p.dur
+		}
+		within := map[int]int{}
+		for _, sg := range segs {
+			pi := 0
+			for i, b := range bounds {
+				if sg.start >= b {
+					pi = i
+				}
+			}
+			within[pi]++
+			title := fmt.Sprintf("%s %s · %d", *prefix, roman(pi+1), within[pi])
+			if _, err := tx.Exec(`UPDATE chapters SET title = ? WHERE book_id = ? AND index_num = ?`,
+				title, tbID, sg.idx); err != nil {
+				log.Fatalf("relabel transcript segment %d: %v", sg.idx, err)
+			}
+		}
+		fmt.Printf("  transcript: relabelled %d segment(s) as \"%s N · n\" (kept for in-part navigation)\n",
+			len(segs), *prefix)
+	}
+
 	if err := tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
