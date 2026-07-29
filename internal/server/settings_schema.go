@@ -219,6 +219,10 @@ func SettingsSchema() SettingsSchemaDoc {
 						Key: "llm_base_url", Label: "Base URL (optional, for proxies or self-hosted)", Type: "text",
 						Placeholder: "Leave blank for default",
 					},
+					{
+						Key: "qa_extract_only", Label: "Answer only from the book text (spoiler-safe)", Type: "bool", Default: "false",
+						Help: "Answers quote the book's own words up to where you're reading, instead of the AI writing them — so a famous book the AI already knows can't reveal what's coming. Also turns off AI chapter summaries and recaps (those are written by the AI). One switch; it governs Q&A everywhere.",
+					},
 				},
 			},
 			{

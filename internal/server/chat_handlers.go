@@ -21,6 +21,17 @@ import (
 	"github.com/pj/abookify/internal/llm"
 )
 
+// extractOnlyEnabled reports the ONE global "answer from the book text" setting
+// (#130). A single control governs every path that generates an answer from book
+// content — chat, single-shot Q&A, voice, recap, chapter summary — so a reader
+// turns spoiler-safety on in one place and it holds everywhere. When on, those
+// paths return the book's own text (or, for summaries, decline) and never let the
+// model generate, closing the memorized-classic leak.
+func (s *Server) extractOnlyEnabled() bool {
+	v, _ := s.store.GetSetting("qa_extract_only")
+	return v == "1" || v == "true"
+}
+
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	workID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
@@ -95,30 +106,6 @@ func (s *Server) handleSetSessionScope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetSessionScope(id, req.Scope); err != nil {
-		writeServerError(w, r, err)
-		return
-	}
-	sess, _ := s.store.GetSession(id)
-	writeJSON(w, http.StatusOK, sess)
-}
-
-// handleSetSessionAnswerMode changes a chat's answer mode (#130): "generated"
-// (the AI writes the answer) or "extract" (answer only from the book's own text
-// — no generation, so a memorized classic can't leak plot ahead of the reader).
-func (s *Server) handleSetSessionAnswerMode(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
-		return
-	}
-	var req struct {
-		AnswerMode string `json:"answer_mode"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	if err := s.store.SetSessionAnswerMode(id, req.AnswerMode); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -204,11 +191,13 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Extract-only answers from the book's own text, so it needs NO LLM. Only the
-	// generated mode requires a configured model.
+	// generated mode requires a configured model. ONE global setting governs
+	// every generate-from-book path (chat, single-shot Q&A, voice, recap, summary).
+	extractOnly := s.extractOnlyEnabled()
 	rag := s.RAG()
-	if rag == nil && sess.AnswerMode != "extract" {
+	if rag == nil && !extractOnly {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings, or switch this chat to answer from the book text.",
+			"error": "No LLM configured. Add an API key in Settings, or turn on 'answer from the book text'.",
 		})
 		return
 	}
@@ -270,9 +259,6 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	// Extract-only mode (#130): answer only from the book's own text — no model
-	// generation, so a memorized classic can't leak plot ahead of the reader.
-	extractOnly := sess.AnswerMode == "extract"
 	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope, extractOnly)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather

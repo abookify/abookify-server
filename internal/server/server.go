@@ -450,7 +450,6 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleAppendMessage)
 	mux.HandleFunc("PUT /api/sessions/{id}", s.handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/{id}/scope", s.handleSetSessionScope)
-	mux.HandleFunc("POST /api/sessions/{id}/answer-mode", s.handleSetSessionAnswerMode)
 	mux.HandleFunc("GET /api/works/{id}/qa-suggestions", s.handleQASuggestions)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/works/{id}/generate-audio", s.handleGenerateAudio)
@@ -1533,8 +1532,9 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// New path: vector search + alignment-aware citations with audio times.
-	// Falls back gracefully when embeddings aren't populated.
-	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope)
+	// Falls back gracefully when embeddings aren't populated. Extract-only (the
+	// one global spoiler-safe setting) answers from the book text, no generation.
+	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope, s.extractOnlyEnabled())
 	if err != nil {
 		// Legacy fallback: keyword-only search on the first text file
 		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)
@@ -2110,7 +2110,7 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(tmpPath)
 
-	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice)
+	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice, s.extractOnlyEnabled())
 	if err != nil {
 		writeServerError(w, r, err)
 		return

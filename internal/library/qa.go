@@ -134,8 +134,12 @@ func fetchChunksInScope(store *db.Store, scope QueryScope) []db.Chunk {
 //
 // scope narrows retrieval to a single chapter, "up to here" (spoiler
 // avoidance), or a paragraph. Pass the zero value for whole-work.
-func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string, scope QueryScope) (*llm.Answer, error) {
-	if rag == nil || rag.Client() == nil {
+// extractOnly (#130): answer only from the book's own text — return the
+// retrieved, position-bounded passages verbatim and never call the LLM, so a
+// memorized classic can't leak plot. Governed by the one global qa_extract_only
+// setting (same as the chat path). Works with no LLM key at all.
+func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string, scope QueryScope, extractOnly bool) (*llm.Answer, error) {
+	if !extractOnly && (rag == nil || rag.Client() == nil) {
 		return nil, fmt.Errorf("LLM not configured")
 	}
 	work, err := store.GetWork(workID)
@@ -153,7 +157,7 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 	if err != nil {
 		return nil, err
 	}
-	if len(retrieved) == 0 {
+	if len(retrieved) == 0 && !extractOnly {
 		return &llm.Answer{
 			Text:   "I couldn't find any relevant passages in the book to answer that question.",
 			Chunks: 0,
@@ -209,6 +213,11 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 			cit.AudioBookID = abkID
 		}
 		citations = append(citations, cit)
+	}
+
+	// Extract-only: hand back the passages themselves, no model generation.
+	if extractOnly {
+		return composeExtractAnswer(retrieved, citations, getTitle), nil
 	}
 
 	// Spoiler-safety (#130). The retrieval above is already bounded to what the
