@@ -3162,6 +3162,8 @@
             <span>This chat:</span>
             <button class="qa-scope-chip" id="qa-scope-chip-${work.id}" onclick="toggleChatScope(${work.id})"
               title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
+            <button class="qa-scope-chip" id="qa-answer-chip-${work.id}" onclick="toggleAnswerMode(${work.id})"
+              title="Answer style — let the AI explain in its own words, or answer only from the book's own text (nothing the book itself hasn't said yet)">&#10022; AI answer</button>
             <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
           </div>
           <div class="qa-chips" id="qa-chips-${work.id}"></div>
@@ -7654,6 +7656,38 @@
     // active session's stored scope: 'reading' (answer only up to where the
     // reader is — spoiler-safe, the default) or 'book' (whole book, opt-in).
     const activeChatScope = {};
+    // Per-chat answer mode (#130): 'generated' (the AI writes the answer, default)
+    // or 'extract' (answer only from the book's own text — no generation, so a
+    // memorized classic can't reveal anything the book itself hasn't said yet).
+    const activeAnswerMode = {};
+
+    // Refresh the answer-mode chip. Benefit-first labels: what it does for the
+    // reader, not the mechanism.
+    function refreshAnswerModeUI(workId) {
+      const chip = document.getElementById('qa-answer-chip-' + workId);
+      if (!chip) return;
+      if ((activeAnswerMode[workId] || 'generated') === 'extract') {
+        chip.innerHTML = '📖 From the book text'; chip.classList.add('book');
+      } else {
+        chip.innerHTML = '✦ AI answer'; chip.classList.remove('book');
+      }
+    }
+
+    // Toggle the active chat between an AI-written answer and a book-text-only
+    // answer, persisting on the session so the whole conversation respects it.
+    async function toggleAnswerMode(workId) {
+      const sessionId = activeChatSessionId[workId];
+      if (!sessionId) { showToast('Start a chat first', 'err'); return; }
+      const next = (activeAnswerMode[workId] === 'extract') ? 'generated' : 'extract';
+      activeAnswerMode[workId] = next;
+      refreshAnswerModeUI(workId);
+      try {
+        await fetch(`/api/sessions/${sessionId}/answer-mode`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ answer_mode: next }),
+        });
+      } catch { /* best-effort — the UI already reflects the choice */ }
+    }
 
     // Refresh the chat-scope chip + its context hint. Called when the chip,
     // the active chat, the reader chapter, or a paragraph anchor changes.
@@ -7661,6 +7695,7 @@
       const chip = document.getElementById('qa-scope-chip-' + workId);
       const hint = document.getElementById('qa-scope-hint-' + workId);
       const mode = activeChatScope[workId] || 'reading';
+      refreshAnswerModeUI(workId);
       const cur = currentReaderChapter[workId];
       const para = currentReaderParagraph[workId];
       if (chip) {
@@ -7852,9 +7887,10 @@
 
     async function selectChatSession(workId, sessionId) {
       activeChatSessionId[workId] = sessionId;
-      // Adopt this chat's spoiler scope (#130) so the chip + sent bound match.
+      // Adopt this chat's spoiler scope + answer mode (#130) so the chips match.
       const sess = (chatSessionsCache[workId] || []).find(s => s.id === sessionId);
       activeChatScope[workId] = (sess && sess.scope) || 'reading';
+      activeAnswerMode[workId] = (sess && sess.answer_mode) || 'generated';
       refreshScopeUI(workId);
       // Update active state on tabs without re-fetching the list.
       const tabsEl = document.getElementById('chat-tabs-' + workId);
