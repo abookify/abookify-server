@@ -1,4 +1,4 @@
-.PHONY: up server whisper down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
+.PHONY: up server whisper gpu-enable down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
 
 # Compose invocation. IMPORTANT: on a GPU host the CUDA overlay MUST be passed on
 # EVERY `up` — even for a single service — or compose reconciles the project from
@@ -7,6 +7,10 @@
 # the overlay when an NVIDIA GPU is present (same probe the engine build.sh uses),
 # so `make up`, `make relay`, etc. stay GPU-correct. Force with GPU=1 / CPU with
 # GPU=0. To rebuild ONE service without stripping the GPU: `$(COMPOSE) up -d --build server`.
+#
+# STRUCTURAL guard for compose calls OUTSIDE these targets: run `make gpu-enable`
+# once per GPU host to pin the overlay into COMPOSE_FILE in .env, so even a bare
+# `docker compose up whisper` keeps the GPU instead of silently dropping to CPU.
 GPU ?= $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q GPU && echo 1 || echo 0)
 COMPOSE_FILES := -f docker-compose.yml
 ifeq ($(GPU),1)
@@ -108,6 +112,31 @@ server:
 # just re-apply the GPU device reservation). Verify `device=cuda` after.
 whisper:
 	$(COMPOSE) up -d --no-deps whisper
+
+# STRUCTURAL GPU guard — run ONCE on a GPU host. Pins the CUDA overlay into
+# COMPOSE_FILE in the host-local (gitignored) .env, so EVERY compose call — a
+# bare `docker compose up whisper`, a `restart`, anything OUTSIDE these make
+# targets — carries the GPU reservation instead of silently reconciling whisper
+# onto CPU. That silent downgrade (base file pins WHISPER_DEVICE=cpu/int8) has
+# dropped STT to CPU mid-run three times; a rule nobody remembers isn't a guard.
+# COMPOSE_FILE is read on every invocation, and explicit `-f` flags (all the make
+# targets) take precedence over it, so those are unaffected. Idempotent +
+# append-only — never rewrites existing .env creds. No-op on a non-GPU host
+# (leaves CPU compose, which is correct there). WHISPER_DEVICE=auto in the
+# overlay still degrades to CPU if the reservation applies but CUDA is unusable,
+# so a broken driver fails loud instead of crash-looping.
+gpu-enable:
+ifeq ($(GPU),1)
+	@if grep -qs '^COMPOSE_FILE=' .env; then \
+	  echo "gpu-enable: COMPOSE_FILE already pinned in .env:"; grep '^COMPOSE_FILE=' .env; \
+	else \
+	  if [ -f .env ] && [ -n "$$(tail -c1 .env)" ]; then printf '\n' >> .env; fi; \
+	  printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml\n' >> .env; \
+	  echo "gpu-enable: pinned CUDA overlay into .env — bare 'docker compose' calls now keep whisper on GPU."; \
+	fi
+else
+	@echo "gpu-enable: no NVIDIA GPU here (nvidia-smi absent) — CPU compose is correct, nothing to pin."
+endif
 
 down:
 	$(COMPOSE) down
