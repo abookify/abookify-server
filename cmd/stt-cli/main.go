@@ -35,6 +35,8 @@ func main() {
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
 	allowCPU := flag.Bool("allow-cpu", false, "proceed even if the STT service is on CPU while this host has a GPU")
+	noVAD := flag.Bool("no-vad", false, "disable the voice-activity filter — use when whisper is silently discarding real speech (credits, quiet passages)")
+	noCondition := flag.Bool("no-condition", false, "disable conditioning on previously generated text — use when a stretch transcribes as a repetition loop or not at all")
 	allowDamaged := flag.Bool("allow-damaged", false, "proceed even if source files contain corrupt frames (transcription will silently lose narration)")
 	bootstrapSidecar := flag.Bool("bootstrap-sidecar", false, "Write a stub sidecar (sources + durations only, no words) and exit. --audio must point to a directory. The stub can then be filled chapter-by-chapter via --redo-files across multiple sessions.")
 	flag.Parse()
@@ -130,6 +132,12 @@ func main() {
 	}
 
 	client := stt.NewClient(*whisperURL)
+	client.DisableVAD = *noVAD
+	client.DisableConditioning = *noCondition
+	if *noVAD || *noCondition {
+		log.Printf("STT overrides: vad_filter=%v condition_on_previous_text=%v",
+			!*noVAD, !*noCondition)
+	}
 	if err := client.Health(); err != nil {
 		log.Fatalf("Whisper not reachable at %s: %v", *whisperURL, err)
 	}
