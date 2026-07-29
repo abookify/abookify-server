@@ -123,6 +123,44 @@ func (c *Client) Info() (*Info, error) {
 	return &info, nil
 }
 
+// Unload tells the whisper service to free its model from RAM/VRAM (idle
+// unloading). The next TranscribeFile transparently reloads it. Returns whether
+// a model was actually freed (false if it was already unloaded). A short
+// deadline — this is a control call, never inherits the 90-minute transcribe
+// timeout.
+func (c *Client) Unload() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/unload", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("stt unload: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false, fmt.Errorf("stt unload: status %d", resp.StatusCode)
+	}
+	// The two speech backends report the freed-a-model signal under DIFFERENT
+	// keys: the hermetic engine (engine/stt_server.py) returns {"unloaded":bool};
+	// the Docker whisper (services/whisper/server.py) returns {"was_loaded":bool}.
+	// Parse both so "freed" is accurate regardless of which backend is running —
+	// without this, an unload against Docker whisper always reported freed=false
+	// (the model WAS freed server-side; the Go side just never knew, so the
+	// "freed ~3 GB" log never fired). Both services should converge on one shape;
+	// until they do, accept either.
+	var out struct {
+		Unloaded  bool `json:"unloaded"`   // hermetic engine
+		WasLoaded bool `json:"was_loaded"` // Docker whisper
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, fmt.Errorf("decode unload result: %w", err)
+	}
+	return out.Unloaded || out.WasLoaded, nil
+}
+
 // TranscribeFile sends an audio file for transcription and returns the result.
 func (c *Client) TranscribeFile(audioPath string) (*TranscribeResult, error) {
 	f, err := os.Open(audioPath)

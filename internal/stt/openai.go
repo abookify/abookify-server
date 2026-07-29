@@ -4,6 +4,7 @@ package stt
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,11 +46,38 @@ func (c *OpenAIClient) Health() error {
 	if c.apiKey == "" {
 		return fmt.Errorf("OpenAI API key not configured")
 	}
+	return openaiKeyCheck(c.httpClient, c.baseURL, c.apiKey)
+}
+
+// openaiKeyCheck validates an OpenAI key with a cheap GET /v1/models (bounded to
+// 5s so the test button / startup probe can't hang).
+func openaiKeyCheck(client *http.Client, baseURL, apiKey string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("OpenAI unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("invalid OpenAI API key")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OpenAI returned HTTP %d", resp.StatusCode)
+	}
 	return nil
 }
 
 // TranscribeFile calls OpenAI's /v1/audio/transcriptions endpoint.
 // Returns word-level timestamps via the "verbose_json" response format.
+//
+// OUTBOUND-DATA BOUNDARY (privacy stance): the multipart body carries EXACTLY
+// the audio file to transcribe plus the model/response-format/granularity flags
+// — never the work's title, author, path (only the bare basename as the form
+// filename), or other library metadata. The provider's own policy governs the
+// audio.
 func (c *OpenAIClient) TranscribeFile(audioPath string) (*TranscribeResult, error) {
 	f, err := os.Open(audioPath)
 	if err != nil {

@@ -385,16 +385,40 @@
     .media-pill.audio { background: rgba(240,165,0,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
-    .media-pill.gap-warn {
+    /* Transcription-status badge — transcription's TIGHTENED model (split by WHICH
+       artefact is damaged, so the badge doesn't cry "book broken" when only the
+       text is incomplete). Web + mobile MUST agree on which book is which.
+         🔴 gap-missing      — the RECORDING is short (truncated_source): the AUDIO
+                               itself is missing. Re-acquire, no retry.
+         🟠 gap-unclassified — the recording MAY be incomplete (damaged_source):
+                               audio unreadable past a point. Scan.
+         (neutral) gap-neutral — only the TRANSCRIPT is incomplete; audio plays
+                               fine (dropped_segment=Retry; unknown=no retry). NOT
+                               "missing from the book". */
+    .media-pill.gap-missing {
+      background: rgba(200, 45, 45, 0.13);
+      color: #b23b3b;
+      border: 1px solid rgba(200, 45, 45, 0.4);
+      cursor: pointer;
+    }
+    .media-pill.gap-missing:hover { background: rgba(200, 45, 45, 0.22); }
+    .media-pill.gap-unclassified {
       background: rgba(240, 165, 0, 0.15);
       color: #b67400;
       border: 1px solid rgba(240, 165, 0, 0.4);
       cursor: pointer;
     }
-    .media-pill.gap-warn:hover { background: rgba(240, 165, 0, 0.25); }
+    .media-pill.gap-unclassified:hover { background: rgba(240, 165, 0, 0.25); }
+    /* Text-only incompleteness — audio is fine, so this is informational, never an
+       alarm. dropped_segment (Retry recovers it) + unknown (no retry). */
+    .media-pill.gap-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
+    .media-pill.gap-neutral:hover { background: var(--surface-2); border-color: var(--text-muted); }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
+    /* Neutral "not aligned yet" — actionable, NOT an alarm. Never red; a podcast
+       (nothing to align) renders no pill at all. */
+    .media-pill.align-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); }
     .media-pill.align-clickable { cursor: pointer; }
     .media-pill.align-clickable:hover { filter: brightness(1.15); text-decoration: underline; }
 
@@ -1383,6 +1407,12 @@
       font-size: 0.8rem; cursor: pointer; white-space: nowrap;
     }
     .qa-input-row button:hover { background: rgba(240,165,0,0.25); }
+    /* Modal Close/Cancel buttons — style ALL of them consistently; three
+       (gap modal, system console, .abook summary) were unstyled default browser
+       chrome while their siblings carried inline styling. Inline-styled ones are
+       unaffected (identical values). */
+    button[data-modal-close] { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-family: inherit; font-size: 0.85rem; }
+    button[data-modal-close]:hover { border-color: var(--accent); color: var(--accent); }
     .qa-results {
       max-height: 250px; overflow-y: auto;
     }
@@ -1763,7 +1793,7 @@
     <button class="filter-btn" data-filter="paired">Paired</button>
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
     <button class="filter-btn" data-filter="text-only">Text only</button>
-    <button class="filter-btn" data-filter="misaligned" title="Paired works with weak alignment — likely a wrong-edition ebook">Misaligned</button>
+    <button class="filter-btn" data-filter="misaligned" title="Paired books with weak alignment — likely a wrong-edition ebook">Misaligned</button>
     <select id="sort-select" class="sort-select" aria-label="Sort library" title="Sort library" onchange="onSortChange()">
       <option value="default">Sort: Default</option>
       <option value="title">Title (A–Z)</option>
@@ -1781,13 +1811,13 @@
       Import .abook
       <input type="file" accept=".abook" style="display:none;" onchange="importAbook(this)">
     </label>
-    <button class="filter-btn" onclick="openMergeDialog()" title="Merge two works together">Merge works</button>
+    <button class="filter-btn" onclick="openMergeDialog()" title="Merge two books together">Merge books</button>
   </div>
 
   <!-- Merge dialog -->
   <div id="rename-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div role="dialog" aria-modal="true" aria-label="Rename work" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
-      <h3 style="margin:0 0 16px; color:var(--text);">Rename work</h3>
+    <div role="dialog" aria-modal="true" aria-label="Rename book" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+      <h3 style="margin:0 0 16px; color:var(--text);">Rename book</h3>
       <input type="hidden" id="rename-work-id" value="">
       <label style="font-size:0.8rem; color:var(--text-muted);">Title:</label>
       <input id="rename-title" type="text" style="width:100%; padding:8px; margin:4px 0 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
@@ -1809,9 +1839,11 @@
         <!-- Cover column -->
         <div style="flex:0 0 150px;">
           <img id="meta-cover" alt="cover" onerror="this.removeAttribute('src')" style="width:150px; height:225px; object-fit:cover; border-radius:8px; border:1px solid var(--border); background:var(--bg); display:block;">
-          <div style="display:flex; gap:6px; margin-top:8px;">
-            <button type="button" onclick="document.getElementById('meta-cover-file').click()" style="flex:1; font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Upload</button>
-            <button type="button" onclick="searchCovers()" style="flex:1; font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Search</button>
+          <!-- Stacked (not side-by-side) so the labels can say what they act on —
+               the COVER — without wrapping in the 150px column. -->
+          <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+            <button type="button" onclick="document.getElementById('meta-cover-file').click()" style="font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Upload an image</button>
+            <button type="button" onclick="searchCovers()" style="font-size:0.75rem; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Search for a cover</button>
           </div>
           <input type="file" id="meta-cover-file" accept="image/*" style="display:none" onchange="uploadCover(this.files[0])">
         </div>
@@ -1839,14 +1871,14 @@
         <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">Search OpenLibrary for a cover (edit if the title/author is wrong):</div>
         <div style="display:flex; gap:6px; margin-bottom:8px;">
           <input id="meta-cover-query" type="text" placeholder="e.g. Chocolat Joanne Harris" onkeydown="if(event.key==='Enter'){event.preventDefault();runCoverSearch();}" style="flex:1; padding:7px 9px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:0.82rem;">
-          <button type="button" onclick="runCoverSearch()" style="flex:0 0 auto; font-size:0.78rem; padding:7px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Search</button>
+          <button type="button" onclick="runCoverSearch()" style="flex:0 0 auto; font-size:0.78rem; padding:7px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Search covers</button>
         </div>
-        <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:8px; max-height:200px; overflow:auto;"></div>
+        <div id="meta-cover-candidates" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; max-height:380px; overflow:auto;"></div>
       </div>
       <!-- Editions: every audio + text edition, with default / rename / remove -->
       <div id="meta-editions" style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-          <span style="font-size:0.75rem; color:var(--text-muted);">Editions in this work — ◉ marks the default</span>
+          <span style="font-size:0.75rem; color:var(--text-muted);">Editions in this book — ◉ marks the default</span>
           <button type="button" onclick="openTTSWizard()" style="font-size:0.74rem; padding:5px 11px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">➕ Generate narration</button>
         </div>
         <div id="meta-editions-list" style="display:flex; flex-direction:column; gap:2px;"></div>
@@ -1864,7 +1896,7 @@
   <div id="tts-wizard" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:110; align-items:center; justify-content:center;">
     <div role="dialog" aria-modal="true" aria-label="Generate narration" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; max-width:560px; width:94%; max-height:90vh; overflow:auto;">
       <h3 style="margin:0 0 4px; color:var(--text);">Generate a narration (TTS)</h3>
-      <p style="font-size:0.8rem; color:var(--text-muted); margin:0 0 14px;">Creates a new Kokoro-narrated audio edition that lives alongside the existing ones. Progress shows in the processing queue.</p>
+      <p style="font-size:0.8rem; color:var(--text-muted); margin:0 0 14px;">Creates a new AI-narrated audio edition that lives alongside the existing ones. Progress shows in the processing queue.</p>
       <input type="hidden" id="tts-work-id">
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
         <div style="flex:1; min-width:180px;">
@@ -1901,9 +1933,9 @@
   </div>
 
   <div id="merge-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div role="dialog" aria-modal="true" aria-label="Merge works" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
-      <h3 style="margin:0 0 16px; color:var(--text);">Merge works</h3>
-      <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 12px;">Move all files from one work into another. The source work will be deleted.</p>
+    <div role="dialog" aria-modal="true" aria-label="Merge books" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+      <h3 style="margin:0 0 16px; color:var(--text);">Merge books</h3>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 12px;">Move all files from one book into another. The source book will be deleted.</p>
       <label style="font-size:0.8rem; color:var(--text-muted);">Keep (target):</label>
       <select id="merge-target" style="width:100%; padding:8px; margin:4px 0 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
       <label style="font-size:0.8rem; color:var(--text-muted);">Merge from (will be deleted):</label>
@@ -2025,7 +2057,7 @@
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
       <button id="np-ai-btn" onclick="toggleNpAI()" title="AI tools — recap + ask about this book" aria-label="AI tools" style="display:none;">&#10022; AI</button>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore" aria-label="Maximize or restore reader">&#9974;</button>
-      <button onclick="closeNpOverlay()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
+      <button onclick="readerCloseBtn()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
     </div>
     <div class="np-overlay-body">
       <aside class="np-toc-drawer" id="np-toc-drawer" aria-hidden="true">
@@ -2192,6 +2224,7 @@
     // Drives whether the Q&A panel shows the input or a "configure in settings"
     // hint. Loaded once at startup; updated when settings change.
     let llmConfigured = false;
+    let voiceAvailable = false; // an OpenAI key resolves → realtime voice can be offered
 
     async function loadLLMConfig() {
       try {
@@ -2204,6 +2237,12 @@
       } catch {
         llmConfigured = false;
       }
+      // Gate the voice entry point on a real capable credential (server-checked,
+      // no token minted) so we never invite a tap into a guaranteed failure.
+      try {
+        const v = await fetch('/api/voice/available').then(r => r.json());
+        voiceAvailable = !!v.available;
+      } catch { voiceAvailable = false; }
       // The reader "AI" affordance (recap + Q&A, #130/#134) needs an LLM.
       const rb = document.getElementById('np-ai-btn');
       if (rb) rb.style.display = llmConfigured ? '' : 'none';
@@ -2213,14 +2252,21 @@
     // Populated by loadTranscriptionGapSummary; consumed by render() to
     // decorate work cards with a warning pill.
     let transcriptionGapsByWork = {};
+    // The shared cause→presentation contract (GET /api/transcription-gaps/legend),
+    // so web renders EXACTLY what mobile renders. Loaded alongside the summary.
+    let gapLegend = null;
 
     async function loadTranscriptionGapSummary() {
       try {
-        const res = await fetch('/api/transcription-gaps/summary');
+        const [res, legend] = await Promise.all([
+          fetch('/api/transcription-gaps/summary'),
+          fetch('/api/transcription-gaps/legend').then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
         const list = await res.json();
         const map = {};
         for (const entry of list) map[entry.work_id] = entry;
         transcriptionGapsByWork = map;
+        if (legend && legend.causes) gapLegend = legend;
       } catch {
         transcriptionGapsByWork = {};
       }
@@ -2340,7 +2386,7 @@
     }
 
     async function mergeDuplicateGroup(targetId, sourceIds) {
-      if (!confirm(`Merge ${sourceIds.length} work(s) into #${targetId}? This deletes the duplicates.`)) return;
+      if (!confirm(`Merge ${sourceIds.length} book(s) into #${targetId}? This deletes the duplicates.`)) return;
       for (const sid of sourceIds) {
         const res = await fetch(`/api/works/${targetId}/merge`, {
           method: 'POST',
@@ -2453,7 +2499,7 @@
       }
       items.push(`<div class="work-menu-divider"></div>`);
       items.push(`<button class="work-menu-item danger" onclick="closeAllWorkMenus(); deleteWork(${work.id});">
-        <span class="icon">&#128465;</span>Delete work
+        <span class="icon">&#128465;</span>Delete book
       </button>`);
       return items.join('');
     }
@@ -2494,7 +2540,7 @@
     // Toast: short-lived top-of-page message. Used for actions that
     // produce no other visible feedback (re-detect chapters, etc.) so
     // the user gets confirmation without hunting for it.
-    function showToast(text, kind) {
+    function showToast(text, kind, sticky) {
       const el = document.getElementById('toast');
       if (!el) return;
       const colors = {
@@ -2508,7 +2554,9 @@
       el.textContent = text;
       el.style.display = 'block';
       clearTimeout(el._hideTimer);
-      el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, kind === 'err' ? 5000 : 2800);
+      // sticky = stays until replaced/hidden (for an ongoing degraded state, e.g.
+      // an STT GPU→CPU downgrade that persists until the GPU is restored).
+      if (!sticky) el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, kind === 'err' ? 5000 : 2800);
     }
 
     async function reprocessWorkFromMenu(workId) {
@@ -2707,7 +2755,7 @@
     async function removeEdition(workId, bookIds, name) {
       const n = bookIds.length;
       const what = n > 1 ? `this edition (${n} files)` : 'this edition';
-      if (!confirm(`Remove ${what}${name ? ' — "' + name + '"' : ''}? This deletes ${n > 1 ? 'those sources' : 'that source'} and their chapters (the work + other editions stay).`)) return;
+      if (!confirm(`Remove ${what}${name ? ' — "' + name + '"' : ''}? This deletes ${n > 1 ? 'those sources' : 'that source'} and their chapters (the book + other editions stay).`)) return;
       metaStatus('Removing edition…');
       for (const id of bookIds) {
         const res = await fetch(`/api/works/${workId}/sources/${id}`, { method: 'DELETE' });
@@ -2743,7 +2791,7 @@
       const edEl = document.getElementById('tts-edition'); edEl.dataset.touched = '';
       const data = await fetch(`/api/works/${workId}/editions`).then(r => r.json()).catch(() => ({}));
       const texts = data.text || [];
-      if (!texts.length) { alert('This work has no text edition to narrate — add an EPUB first.'); return; }
+      if (!texts.length) { alert('This book has no text edition to narrate — add an EPUB first.'); return; }
       document.getElementById('tts-text-book').innerHTML = texts.map(e =>
         `<option value="${e.book_ids[0]}">${escapeHtml(e.label)} (${escapeHtml(e.provenance)})</option>`).join('');
       await ttsPopulateVoices();
@@ -2915,8 +2963,8 @@
 
     async function deleteWork(workId) {
       const work = (allWorks || []).find(w => w.id === workId);
-      const name = work ? work.title : `#${workId}`;
-      if (!confirm(`Delete "${name}"? This removes the work from the library (files on disk are kept).`)) return;
+      const name = work ? work.title : 'this book';
+      if (!confirm(`Delete "${name}"? This removes the book from the library (files on disk are kept).`)) return;
       const res = await fetch(`/api/works/${workId}`, { method: 'DELETE' });
       if (!res.ok) { alert('Delete failed: ' + (await res.text())); return; }
       if (currentDetailWorkId === workId) closeWorkDetail();
@@ -2961,12 +3009,12 @@
 
       filtered = sortWorks(filtered);
 
-      document.getElementById('stats').textContent = `${filtered.length} works`;
+      document.getElementById('stats').textContent = `${filtered.length} book${filtered.length === 1 ? '' : 's'}`;
       const el = document.getElementById('works-list');
 
       if (filtered.length === 0) {
         el.classList.remove('grouped');
-        el.innerHTML = `<div class="empty"><h2>No works found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
+        el.innerHTML = `<div class="empty"><h2>No books found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
         return;
       }
 
@@ -3001,7 +3049,7 @@
         const head = (field === 'author' && name !== unknown)
           ? `<span class="author-link" role="button" tabindex="0" title="Filter to ${escapeHtml(name)}" data-author="${attrEsc(name)}" onclick="filterByAuthor(this.dataset.author)">${escapeHtml(name)}</span>`
           : escapeHtml(name);
-        return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} work${items.length === 1 ? '' : 's'}</span></h3>
+        return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} book${items.length === 1 ? '' : 's'}</span></h3>
           <div class="group-grid">${items.map(posterCardHtml).join('')}</div></div>`;
       }).join('');
     }
@@ -3058,7 +3106,7 @@
              role="button" tabindex="0" aria-label="Open ${escapeHtml(work.title)}"
              title="${escapeHtml(work.title)}">
           <div class="work-cover">
-            <img src="/api/works/${work.id}/cover" alt=""
+            <img src="/api/works/${work.id}/cover?v=${encodeURIComponent(work.content_version||'')}" alt=""
                  onload="this.closest('.work-cover').classList.add('has-art')"
                  onerror="this.remove()">
             <div class="cover-fallback"><div class="ct">${escapeHtml(work.title)}</div></div>
@@ -3135,6 +3183,28 @@
     // now-playing drawer. Single rendered instance, so the work-keyed IDs
     // (qa-input-/chat-thread-/…) don't collide. The chat path enforces the #130
     // spoiler bound server-side.
+    // The voice entry point in the AI panel. Benefit-first + honest: it says
+    // what PJ gets (talk out loud, hear a reply), tagged "preview" because it is
+    // general conversation not yet grounded in this book. Gated on a capable
+    // credential — clearly disabled with a reason rather than a tap into failure.
+    function voiceLaunchHtml() {
+      if (!voiceAvailable) {
+        return `<div style="padding:0.4rem 1rem 0.2rem;">
+          <button disabled title="Add an OpenAI key in Settings to enable voice."
+            style="opacity:0.5; cursor:default; background:rgba(240,165,0,0.12); color:var(--text-muted); border:1px solid var(--border); border-radius:8px; padding:7px 12px; font-size:0.82rem;">
+            &#127908; Talk out loud</button>
+          <a href="/settings.html" onclick="openSettings(); return false;" style="color:var(--generate); text-decoration:none; font-size:0.75rem; margin-left:8px;">Add an OpenAI key to enable &rarr;</a>
+        </div>`;
+      }
+      return `<div style="padding:0.4rem 1rem 0.2rem;">
+        <button onclick="window.open('/voice.html','_blank','noopener')"
+          title="Have a spoken, back-and-forth conversation out loud. Preview — general chat for now; grounding it in this book is coming."
+          style="background:rgba(240,165,0,0.18); color:var(--generate); border:1px solid var(--generate); border-radius:8px; padding:7px 12px; font-size:0.82rem; font-weight:600; cursor:pointer;">
+          &#127908; Talk out loud <span style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em; opacity:0.8; margin-left:4px;">preview</span></button>
+        <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">Spoken conversation you can talk to. Opens in a new tab.</div>
+      </div>`;
+    }
+
     function aiPanelHtml(work) {
       if (!work || !work.has_text) {
         return `<div class="qa-panel"><div class="qa-empty" style="padding:1rem;">No text source for AI tools.</div></div>`;
@@ -3150,6 +3220,7 @@
       const textFiles = work.text_files || [];
       return `<div class="qa-panel">
           <div class="qa-header">&#10022; AI tools</div>
+          ${voiceLaunchHtml()}
           <div class="chat-tabs" id="chat-tabs-${work.id}">
             <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
           </div>
@@ -3160,6 +3231,8 @@
             <span>This chat:</span>
             <button class="qa-scope-chip" id="qa-scope-chip-${work.id}" onclick="toggleChatScope(${work.id})"
               title="Spoiler scope — toggle between answering only up to where you're reading vs the whole book">&#128737; Spoiler-safe</button>
+            <button class="qa-scope-chip" id="qa-answer-chip-${work.id}" onclick="toggleAnswerMode(${work.id})"
+              title="Answer style — let the AI explain in its own words, or answer only from the book's own text (nothing the book itself hasn't said yet)">&#10022; AI answer</button>
             <span id="qa-scope-hint-${work.id}" style="color:var(--text-muted); font-style:italic;"></span>
           </div>
           <div class="qa-chips" id="qa-chips-${work.id}"></div>
@@ -3364,7 +3437,21 @@
      // in this file). Only renders when the work has an alignment row.
     function renderAlignBadge(work) {
       const c = work.coverage;
-      if (typeof c !== 'number') return '';
+      if (typeof c !== 'number') {
+        // No cross-source alignment row (no coverage%). If the book still has
+        // word-level sync_data (TTS→Whisper), show a neutral, INFORMATIONAL chip
+        // — not an error, not actionable. Otherwise render NOTHING (a podcast /
+        // audio-only, or a lone ebook with no peer to align — never a 0% or red
+        // state). Discriminator is has_word_sync, NOT has_text (a whisper
+        // transcript is a text book) and NOT "has an ebook" (nothing to align it
+        // against). Matches the mobile work-card render.
+        if (work.has_word_sync) {
+          return `<span class="media-pill align-neutral"
+            aria-label="Word-level sync available"
+            title="This book has word-level audio↔text sync">Word-level sync</span>`;
+        }
+        return ''; // nothing to show — no coverage, no sync
+      }
       let cls, label;
       if (c >= 0.9)      { cls = 'align-good'; label = 'Tightly aligned'; }
       else if (c >= 0.6) { cls = 'align-good'; label = 'Mostly aligned'; }
@@ -3380,19 +3467,61 @@
         title="${escapeHtml(label)}${escapeHtml(m)} · click to compare sources">${pct}%</span>`;
     }
 
+    // The severity `level` from the shared contract → this platform's pill class.
+    // (Mobile maps the same level tokens to its own styles.) The cause→level
+    // mapping itself lives ONCE on the server, so web + mobile can't drift.
+    const GAP_LEVEL_CLASS = { missing: 'gap-missing', unverified: 'gap-unclassified', text_incomplete: 'gap-neutral' };
+
+    // Render the work-card badge entirely from the served legend
+    // (GET /api/transcription-gaps/legend), so it matches mobile by construction.
+    // Absence of a badge is NOT rendered as a positive "complete" claim.
     function renderGapBadge(workId) {
       const entry = transcriptionGapsByWork[workId];
-      if (!entry || !entry.segment_count) return '';
-      const label = `⚠ ${formatGapDuration(entry.total_missing_sec)} missing`;
-      return `<span class="media-pill gap-warn"
-        role="button" tabindex="0" aria-label="${escapeHtml(label)} — show transcription gap details"
+      if (!entry) return '';
+      if (!gapLegend || !gapLegend.causes) return ''; // contract not loaded → no misleading badge
+      const cause = entry.cause || 'unknown';
+      const model = gapLegend.causes[cause] || gapLegend.causes['unknown'];
+      if (!model) return '';
+      // Only render with an untranscribed span, unless the cause opts in
+      // (damaged_source shows even at segment_count == 0).
+      if (!entry.segment_count && !model.show_without_gap) return '';
+      const label = model.label.replace('{duration}', formatGapDuration(entry.total_missing_sec));
+      const cls = GAP_LEVEL_CLASS[model.level] || 'gap-neutral';
+      return gapPill(workId, cls, label, model.detail + ' Click for details.');
+    }
+
+    function gapPill(workId, cls, label, title) {
+      return `<span class="media-pill ${cls}"
+        role="button" tabindex="0" aria-label="${escapeHtml(label)} — details"
         onclick="event.stopPropagation(); showGapDetails(${workId})"
-        title="Whisper produced no output for part of this book. Click for details.">${label}</span>`;
+        title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+    }
+
+    // The modal's action is driven by the SAME served contract as the badge: a
+    // one-click retry is offered iff the cause is `retryable` (re-running genuinely
+    // recovers it). Non-retryable causes get the contract's guidance and no retry
+    // button — offering one where it can't help would spin the GPU for nothing.
+    // Retry-safety and copy come from one server file, so web ↔ mobile stay aligned.
+    function gapActionHtml(workId, cause, fileList, cmd) {
+      if (!fileList.length) return '';
+      const model = (gapLegend && gapLegend.causes) ? (gapLegend.causes[cause] || gapLegend.causes['unknown']) : null;
+      const detail = model ? model.detail : "Part of this audio has no transcript, and the cause isn't classified yet.";
+      const cli = `<details style="margin-top:0.75rem">
+          <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">Fix from the command line (remote GPU runs)</summary>
+          <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
+        </details>`;
+      if (model && model.retryable) {
+        return `<div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
+            <button class="primary-btn" id="gap-retry-btn" onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}</button>
+            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(detail)}</span>
+          </div>${cli}`;
+      }
+      return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">${escapeHtml(detail)}${cause === 'unknown' ? ' If it was a dropped segment, the command below re-runs it.' : ''}</p>${cli}`;
     }
 
     async function showGapDetails(workId) {
       const work = allWorks.find(w => w.id === workId);
-      const title = work ? work.title : `Work ${workId}`;
+      const title = work ? work.title : 'this book';
       let detail;
       try {
         const res = await fetch(`/api/works/${workId}/transcription-gaps`);
@@ -3411,6 +3540,7 @@
       }
       const fileSet = new Set(gaps.map(g => g.source_file).filter(Boolean));
       const fileList = Array.from(fileSet);
+      const cause = (transcriptionGapsByWork[workId] || {}).cause || 'unknown';
       const rows = gaps.map(g =>
         `<tr><td>${g.source_file || '(unknown)'}</td>` +
         `<td>${fmtPlayerTime(g.start_sec)} – ${fmtPlayerTime(g.end_sec)}</td>` +
@@ -3421,29 +3551,14 @@
         : '';
       const html = `
         <div class="modal-backdrop" onclick="closeGapModal(event)">
-          <div class="modal" role="dialog" aria-modal="true" aria-label="Transcription gaps" onclick="event.stopPropagation()">
-            <h2 style="margin-top:0">Transcription gaps</h2>
+          <div class="modal" role="dialog" aria-modal="true" aria-label="Untranscribed audio" onclick="event.stopPropagation()">
+            <h2 style="margin-top:0">Not transcribed</h2>
             <p style="color:var(--text-muted)">${escapeHtml(title)}</p>
             <table class="gap-table">
               <thead><tr><th>File</th><th>Span</th><th>Length</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
-            ${fileList.length ? `
-            <div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
-              <button class="primary-btn" id="gap-retry-btn"
-                onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">
-                Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}
-              </button>
-              <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">
-                Sends the gap files back to Whisper, merges the result, then reimports.
-              </span>
-            </div>
-            <details style="margin-top:0.75rem">
-              <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-muted);">
-                Or fix from the command line (for remote GPU runs)
-              </summary>
-              <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
-            </details>` : ''}
+            ${gapActionHtml(workId, cause, fileList, cmd)}
             <div style="text-align:right;margin-top:1rem">
               <button data-modal-close onclick="closeGapModal()">Close</button>
             </div>
@@ -3528,7 +3643,7 @@
               <input type="search" id="logs-q" placeholder="Filter message / job id…" aria-label="Filter logs by message or job id" oninput="debouncedRefreshLogs()">
               <label class="logs-auto"><input type="checkbox" id="logs-auto" onchange="toggleLogsAuto()"> Live</label>
               <button onclick="refreshLogs()" title="Refresh" aria-label="Refresh logs">&#8635;</button>
-              <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear</button>
+              <button onclick="clearLogFilters()" title="Reset all filters" style="background:transparent; border:1px solid var(--border); color:var(--text-muted); padding:4px 8px; border-radius:6px; cursor:pointer;">Clear filters</button>
             </div>
             <div class="logs-active-filters" id="logs-active-filters" style="display:none; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;"></div>
             <div class="logs-scroll" id="logs-scroll">
@@ -3819,7 +3934,7 @@
         note = 'The audio follows the ebook paragraph by paragraph — coarser, used when the editions differ.';
       }
       if (payload.method === 'embedding' && (payload.match_quality ?? 1) < 0.3) {
-        note = 'Low correlation between the audio and this text — they may be different works.';
+        note = 'Low correlation between the audio and this text — they may be different books.';
       }
 
       const seg = (frac, color) => frac > 0
@@ -3908,7 +4023,7 @@
           fetch(`/api/works/${workId}`),
           fetch(`/api/works/${workId}/alignments`),
         ]);
-        if (!wRes.ok) throw new Error('work ' + wRes.status);
+        if (!wRes.ok) throw new Error('book ' + wRes.status);
         work = await wRes.json();
         if (aRes.ok) alignments = (await aRes.json()) || [];
       } catch (e) {
@@ -4014,7 +4129,7 @@
       try {
         const res = await fetch(`/api/works/${workId}/diff`);
         if (res.status === 404) {
-          body.innerHTML = `<p style="color:var(--text-muted)">No source comparison available for this work.</p>
+          body.innerHTML = `<p style="color:var(--text-muted)">No source comparison available for this book.</p>
             <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>`;
           return;
         }
@@ -4169,13 +4284,13 @@
         </div>
         <div class="detail-hero">
           <div class="cover">
-            <img src="/api/works/${work.id}/cover" alt=""
+            <img src="/api/works/${work.id}/cover?v=${encodeURIComponent(work.content_version||'')}" alt=""
                  onload="this.closest('.cover').classList.add('has-art')" onerror="this.remove()">
             <div class="ct">${escapeHtml(work.title)}</div>
           </div>
           <div class="detail-info">
             <h1>${escapeHtml(work.title)}</h1>
-            <div class="detail-by">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span title="Last processed ${work.content_version}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
+            <div class="detail-by">${work.author ? escapeHtml(work.author) : 'Unknown author'} &middot; ${formatSize(work.total_size)}${formatProcessed(work.content_version) ? ` &middot; <span title="Last processed ${new Date(work.content_version).toLocaleString()}">processed ${formatProcessed(work.content_version)}</span>` : ''}</div>
             <div class="detail-row work-badges">
               ${work.has_audio ? `<span class="media-pill audio">${audioFiles.length} audio</span>` : `<span class="media-pill missing">no audio</span>`}
               ${work.has_text ? `<span class="media-pill text">${textFiles.length} text</span>` : `<span class="media-pill missing">no text</span>`}
@@ -4800,6 +4915,12 @@
         title: chMeta?.title || '',
       };
       delete currentReaderParagraph[workId];
+      // Keep the URL on the current chapter (bookmarkable) without a new history
+      // entry, so Back exits the reader rather than stepping through chapters (#221).
+      if (window.AppRouter) {
+        const w = (allWorks || []).find(x => x.id === workId);
+        AppRouter.syncReader(workId, bookId, index, w && w.display_text_id);
+      }
       // Reset synchronously so a stale ebook-karaoke flag from a previous
       // source can't suppress the transcript sync that loads after this
       // returns (#210b); setupReaderFollow re-sets it for word-anchor ebooks.
@@ -5859,7 +5980,7 @@
       const content = document.getElementById('np-toc-content');
       if (!content) return;
       if (!currentReaderWorkId) {
-        content.innerHTML = '<div class="np-toc-section">No work loaded</div>';
+        content.innerHTML = '<div class="np-toc-section">No book loaded</div>';
         return;
       }
       const work = allWorks.find(w => w.id === currentReaderWorkId);
@@ -6983,13 +7104,186 @@
       }
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Browser-history routing (#221). Every distinct view gets a real URL so the
+    // browser Back/Forward walk THROUGH in-app views instead of leaving the site,
+    // and a deep link / refresh restores the view. Views + overlays are singleton
+    // DOM elements toggled by class, so popstate can't duplicate them. We WRAP the
+    // existing open/close functions (they're globals, so onclick handlers pick up
+    // the wrappers): a user-initiated call pushes history + routes; a router-
+    // initiated call (applying=true) runs the original DOM body.
+    const AppRouter = (() => {
+      let applying = false;   // true while enter() is driving the DOM (suppress re-push)
+      let depth = 0;          // in-app history depth, so back() knows if it can pop
+
+      function parse(pathAndSearch) {
+        const u = new URL(pathAndSearch, location.origin);
+        const p = u.pathname, q = u.searchParams;
+        let m;
+        if (p === '/' || p === '') return { view: 'library', params: {} };
+        if ((m = p.match(/^\/work\/(\d+)\/read(?:\/(\d+)\/(\d+))?$/)))
+          return { view: 'reader', params: { workId: +m[1], bookId: m[2] ? +m[2] : null, ch: m[3] != null ? +m[3] : null, src: q.get('src') ? +q.get('src') : null } };
+        if ((m = p.match(/^\/work\/(\d+)\/compare$/))) return { view: 'compare', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)\/summary$/))) return { view: 'summary', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)\/qa$/)))      return { view: 'qa', params: { workId: +m[1] } };
+        if ((m = p.match(/^\/work\/(\d+)$/)))          return { view: 'work', params: { workId: +m[1] } };
+        if (p === '/settings') return { view: 'settings', params: {} };
+        if (p === '/console')  return { view: 'console', params: {} };
+        if (p === '/queue')    return { view: 'queue', params: {} };
+        return { view: 'library', params: {} }; // unknown → library (never dead-end)
+      }
+
+      function titleFor(view, p) {
+        const w = p.workId && (allWorks || []).find(x => x.id === p.workId);
+        const t = w ? w.title : '';
+        switch (view) {
+          case 'work': return t ? `${t} · Abookify` : 'Abookify';
+          case 'reader': return t ? `Reading — ${t}` : 'Reader · Abookify';
+          case 'compare': return t ? `Compare — ${t}` : 'Compare · Abookify';
+          case 'summary': return t ? `Summary — ${t}` : 'Summary · Abookify';
+          case 'qa': return t ? `Q&A — ${t}` : 'Q&A · Abookify';
+          case 'settings': return 'Settings · Abookify';
+          case 'console': return 'System Console · Abookify';
+          case 'queue': return 'Processing Queue · Abookify';
+          default: return 'Abookify';
+        }
+      }
+
+      // DOM-only close of every routable overlay except `keep` (safe under
+      // applying — the wrapped close fns run their original body).
+      function closeOverlays(keep) {
+        const ov = document.getElementById('np-overlay');
+        if (keep !== 'reader' && ov && ov.classList.contains('visible')) closeNpOverlay();
+        if (keep !== 'settings') { const s = document.getElementById('settings-overlay'); if (s && s.classList.contains('visible')) closeSettings(); }
+        if (keep !== 'console') { if (document.getElementById('logs-modal-host')) closeSystemConsole(); }
+        if (keep !== 'meld') { if (document.getElementById('abook-summary-host')) closeAbookSummary(); }
+      }
+
+      function setBase(workId) {
+        if (workId) { if (currentDetailWorkId !== workId) openWorkDetail(workId); }
+        else if (currentDetailWorkId) closeWorkDetail();
+      }
+
+      async function enter(view, p) {
+        switch (view) {
+          case 'library': setBase(null); closeOverlays(null); window.scrollTo(0, 0); break;
+          case 'work':    setBase(p.workId); closeOverlays(null); break;
+          case 'reader':  setBase(p.workId); closeOverlays('reader'); await enterReader(p); break;
+          case 'settings': closeOverlays('settings'); openSettings(); break;
+          case 'compare': setBase(p.workId); closeOverlays('meld'); openMeldModal(p.workId); break;
+          case 'summary': setBase(p.workId); closeOverlays('meld'); openAbookSummary(p.workId); break;
+          case 'qa':      setBase(p.workId); closeOverlays('reader'); openAITools(p.workId); break;
+          case 'console': closeOverlays('console'); openSystemConsole(); break;
+          case 'queue':   setBase(null); closeOverlays(null); { const q = document.getElementById('queue-section'); if (q) q.scrollIntoView({ behavior: 'smooth' }); } break;
+        }
+      }
+
+      async function enterReader(p) {
+        await openOverlayFromWork(p.workId);
+        if (p.src) {
+          const w = (allWorks || []).find(x => x.id === p.workId);
+          if (w && w.display_text_id !== p.src) { try { await switchTextEdition(p.workId, p.src); } catch {} }
+        }
+        if (p.bookId && p.ch != null) { try { await loadChapter(p.bookId, p.ch, p.workId, {}); } catch {} }
+      }
+
+      async function render(pathAndSearch) {
+        applying = true;
+        try {
+          const { view, params } = parse(pathAndSearch);
+          await enter(view, params);
+          document.title = titleFor(view, params);
+        } finally { applying = false; }
+      }
+
+      function navigate(path, opts) {
+        const cur = location.pathname + location.search;
+        const replace = opts && opts.replace;
+        if (path === cur && !replace) return; // no dupe entry for a re-click
+        if (replace) { history.replaceState({ appDepth: depth }, '', path); }
+        else { depth++; history.pushState({ appDepth: depth }, '', path); }
+        render(path);
+      }
+
+      // Pop one in-app entry if we have one; otherwise (deep-linked straight in)
+      // replace with a sensible parent so Back never leaves the site.
+      function back(fallback) {
+        if (depth > 0) history.back();
+        else navigate(fallback || '/', { replace: true });
+      }
+
+      // Keep the reader URL pointed at the current chapter (bookmarkable) WITHOUT
+      // a new history entry, so Back exits the reader instead of stepping chapters.
+      function syncReader(workId, bookId, index, srcId) {
+        if (applying) return;
+        const { view, params } = parse(location.pathname + location.search);
+        if (view !== 'reader' || params.workId !== workId) return;
+        let url = `/work/${workId}/read/${bookId}/${index}`;
+        if (srcId) url += `?src=${srcId}`;
+        history.replaceState({ appDepth: depth }, '', url);
+        document.title = titleFor('reader', { workId });
+      }
+
+      window.addEventListener('popstate', (e) => {
+        depth = (e.state && e.state.appDepth) || 0;
+        render(location.pathname + location.search);
+      });
+
+      // Wrap a user-facing open: push history + route unless the router is driving.
+      function wrapOpen(name, urlFn) {
+        const orig = window[name];
+        if (typeof orig !== 'function') { console.warn('router: no fn', name); return; }
+        window[name] = function (...args) {
+          if (!applying) { navigate(urlFn(...args)); return; }
+          return orig.apply(this, args);
+        };
+      }
+      // Wrap a user-facing close: go Back (walk history) unless the router is driving.
+      function wrapClose(name, fallbackFn) {
+        const orig = window[name];
+        if (typeof orig !== 'function') { console.warn('router: no fn', name); return; }
+        window[name] = function (...args) {
+          if (!applying) { back(fallbackFn ? fallbackFn() : '/'); return; }
+          return orig.apply(this, args);
+        };
+      }
+
+      function wire() {
+        wrapOpen('openWorkDetail', id => `/work/${id}`);
+        wrapOpen('openOverlayFromWork', id => `/work/${id}/read`);
+        wrapOpen('openSettings', () => '/settings');
+        wrapOpen('openMeldModal', id => `/work/${id}/compare`);
+        wrapOpen('openAbookSummary', id => `/work/${id}/summary`);
+        wrapOpen('openAITools', id => `/work/${id}/qa`);
+        wrapOpen('openSystemConsole', () => '/console');
+        wrapClose('closeWorkDetail', () => '/');
+        wrapClose('closeSettings', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+        wrapClose('closeSystemConsole', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+        wrapClose('closeAbookSummary', () => currentDetailWorkId ? `/work/${currentDetailWorkId}` : '/');
+      }
+
+      function start() {
+        wire();
+        depth = 0;
+        history.replaceState({ appDepth: 0 }, '', location.pathname + location.search);
+        render(location.pathname + location.search);
+      }
+
+      return { start, navigate, back, syncReader, applying: () => applying };
+    })();
+    // Reader ✕ button + minimize call this; ✕ should walk Back, not just hide.
+    function readerCloseBtn() { AppRouter.back(currentReaderWorkId ? `/work/${currentReaderWorkId}` : '/'); }
+    window.AppRouter = AppRouter;
+
     // Auth gate (#197). Check status first; if a password is set and we
     // aren't authenticated, show the login overlay. The rest of the SPA
     // still boots underneath but is covered until login succeeds.
     enforceAuthGate();
     { const ss = document.getElementById('sort-select'); if (ss) ss.value = activeSort; } // restore saved sort
     { const gs = document.getElementById('group-select'); if (gs) gs.value = activeGroup; } // restore saved grouping
-    loadWorks();
+    // Start the router AFTER works load — work/reader views read from allWorks.
+    Promise.resolve(loadWorks()).then(() => AppRouter.start());
+    loadExtractOnlyGlobal(); // the one global spoiler-safe answer-mode setting (#130)
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
     applyWaveformVisibility();
@@ -7229,8 +7523,8 @@
     async function executeMerge() {
       const targetId = document.getElementById('merge-target').value;
       const sourceId = document.getElementById('merge-source').value;
-      if (!targetId || !sourceId) { alert('Select both works.'); return; }
-      if (targetId === sourceId) { alert('Cannot merge a work into itself.'); return; }
+      if (!targetId || !sourceId) { alert('Select both books.'); return; }
+      if (targetId === sourceId) { alert('Cannot merge a book into itself.'); return; }
       const source = allWorks.find(w => w.id === parseInt(sourceId));
       if (!confirm(`Move all files from "${source?.title}" into the other work? "${source?.title}" will be deleted.`)) return;
       const res = await fetch(`/api/works/${targetId}/merge`, {
@@ -7407,6 +7701,49 @@
     // active session's stored scope: 'reading' (answer only up to where the
     // reader is — spoiler-safe, the default) or 'book' (whole book, opt-in).
     const activeChatScope = {};
+    // ONE global answer-mode setting (#130): false = the AI writes answers
+    // (default); true = answer only from the book's own text — no generation, so a
+    // memorized classic can't reveal anything the book itself hasn't said yet.
+    // A single control governs EVERY Q&A path (chat, single-shot, voice, recap,
+    // chapter summary), so spoiler-safety is turned on in one place, not three.
+    let extractOnlyGlobal = false;
+
+    async function loadExtractOnlyGlobal() {
+      try {
+        const s = await fetch('/api/settings').then(r => r.json());
+        const v = s.qa_extract_only;
+        extractOnlyGlobal = (v === true || v === 'true' || v === '1');
+      } catch {}
+      refreshAllAnswerChips();
+    }
+    function refreshAllAnswerChips() {
+      document.querySelectorAll('[id^="qa-answer-chip-"]').forEach(chip => {
+        if (extractOnlyGlobal) { chip.innerHTML = '📖 From the book text'; chip.classList.add('book'); }
+        else { chip.innerHTML = '✦ AI answer'; chip.classList.remove('book'); }
+      });
+    }
+    // Refresh a single answer-mode chip. Benefit-first labels: what it does for
+    // the reader, not the mechanism.
+    function refreshAnswerModeUI(workId) {
+      const chip = document.getElementById('qa-answer-chip-' + workId);
+      if (!chip) return;
+      if (extractOnlyGlobal) { chip.innerHTML = '📖 From the book text'; chip.classList.add('book'); }
+      else { chip.innerHTML = '✦ AI answer'; chip.classList.remove('book'); }
+    }
+
+    // Toggle the ONE global setting (persisted server-side), so it applies to
+    // every Q&A path everywhere — not just this chat.
+    async function toggleAnswerMode(workId) {
+      extractOnlyGlobal = !extractOnlyGlobal;
+      refreshAllAnswerChips();
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ qa_extract_only: extractOnlyGlobal ? 'true' : 'false' }),
+        });
+        showToast(extractOnlyGlobal ? 'Answers now come only from the book text' : 'AI answers re-enabled');
+      } catch { /* best-effort — the UI already reflects the choice */ }
+    }
 
     // Refresh the chat-scope chip + its context hint. Called when the chip,
     // the active chat, the reader chapter, or a paragraph anchor changes.
@@ -7414,6 +7751,7 @@
       const chip = document.getElementById('qa-scope-chip-' + workId);
       const hint = document.getElementById('qa-scope-hint-' + workId);
       const mode = activeChatScope[workId] || 'reading';
+      refreshAnswerModeUI(workId);
       const cur = currentReaderChapter[workId];
       const para = currentReaderParagraph[workId];
       if (chip) {
@@ -7605,7 +7943,8 @@
 
     async function selectChatSession(workId, sessionId) {
       activeChatSessionId[workId] = sessionId;
-      // Adopt this chat's spoiler scope (#130) so the chip + sent bound match.
+      // Adopt this chat's spoiler scope (#130) so the chip matches. The answer
+      // mode is a single global setting, refreshed by refreshScopeUI → refreshAnswerModeUI.
       const sess = (chatSessionsCache[workId] || []).find(s => s.id === sessionId);
       activeChatScope[workId] = (sess && sess.scope) || 'reading';
       refreshScopeUI(workId);
@@ -7932,6 +8271,12 @@
             handleJobUpdate(event.data);
           } else if (event.type === 'queue_updated') {
             loadQueue();
+          } else if (event.type === 'stt_device_downgrade') {
+            // Mid-run GPU→CPU downgrade caught by the server's device monitor.
+            // Sticky — the run stays ~10× slower until the GPU is restored.
+            showToast('⚠ Transcription dropped to CPU — much slower now. Restore the GPU (make whisper), then check it reports device=cuda.', 'err', true);
+          } else if (event.type === 'stt_device_restored') {
+            showToast('Transcription is back on the GPU (CUDA).', 'ok');
           }
         } catch {}
       };

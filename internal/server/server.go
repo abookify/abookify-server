@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,7 +41,19 @@ type Server struct {
 	Generator  *library.Generator
 	rag        atomic.Pointer[llm.RAG]
 	Ingest     *library.IngestQueue
-	LibraryDir   string
+	LibraryDir string
+	// LibraryHostPath is the HOST side of the library bind mount when the server
+	// runs in a container (#220 finding 2 / item 2). Docker hides the real path
+	// behind the container mount (/library), so compose passes the host path in
+	// and the roots UI shows it instead of the meaningless container path. Empty
+	// on native/desktop installs, where LibraryDir is already the real host path.
+	LibraryHostPath string
+	// DevAuthToken is a LOCAL-DEVELOPMENT-ONLY auth bypass token (empty = off). A
+	// request bearing it (cookie / Bearer / ?access_token=) skips the login gate,
+	// so a local test agent (e.g. mobile screenshot capture) can reach gated
+	// surfaces. main.go refuses to activate it on a network-exposed (relay)
+	// install, so it can't weaken a real deployment. See auth.go devAuthOK.
+	DevAuthToken string
 	GeneratedDir string
 	// Version is the build version (stamped via -ldflags), surfaced on
 	// /api/info + /api/ready so the desktop shell can show + update-check.
@@ -67,7 +80,7 @@ type Server struct {
 	// embedding dedupe — guards against re-entry when multiple STT jobs
 	// finish back-to-back for the same work, or when ReloadLLM kicks off
 	// a backfill while a per-work embed is already running.
-	embedMu      sync.Mutex
+	embedMu       sync.Mutex
 	embedInFlight map[int64]bool
 
 	// embed-all single-flight (#159b): library-change triggers (import/scan,
@@ -87,11 +100,11 @@ type Server struct {
 
 	// serializes on-demand voice-preview generation (see voice_preview.go).
 	voicePreviewMu sync.Mutex
-	embedAllDirty   bool
+	embedAllDirty  bool
 
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
-	alignMu      sync.Mutex
+	alignMu       sync.Mutex
 	alignInFlight map[int64]bool
 }
 
@@ -117,6 +130,15 @@ func (s *Server) ReloadLLM() {
 
 	provider := settings["llm_provider"]
 	apiKey := settings["llm_api_key"]
+
+	// Prefer the credentials vault for the selected provider — a key added once
+	// in the Keys section serves every lane it's verified for — falling back to
+	// the legacy inline llm_api_key when no vault credential exists.
+	if provider != "" && provider != "ollama" {
+		if k := s.store.CredentialAPIKey(provider); k != "" {
+			apiKey = k
+		}
+	}
 
 	if provider == "" {
 		if os.Getenv("ANTHROPIC_API_KEY") != "" {
@@ -333,6 +355,32 @@ func (s *Server) EmbedNewWorks() {
 	}()
 }
 
+// spaFallback serves embedded static assets, falling back to index.html for any
+// GET path that isn't a real asset — the SPA shell for a client-side route
+// (#221). Real files (index.html, settings.html, css/js/fonts) are served as-is;
+// unknown paths like /work/48 or /settings get the shell so a deep link or
+// refresh lands in the app instead of 404ing. API + /samples are registered as
+// more-specific mux patterns and never reach this handler.
+func spaFallback(staticFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(staticFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if clean == "" || clean == "." {
+			fileServer.ServeHTTP(w, r) // "/" → index.html
+			return
+		}
+		if f, err := staticFS.Open(clean); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r) // a real embedded asset
+			return
+		}
+		// Client-side route → serve the shell; the app routes from location.pathname.
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		fileServer.ServeHTTP(w, r2)
+	})
+}
+
 func New(store *db.Store, port string) *Server {
 	s := &Server{
 		store:         store,
@@ -431,6 +479,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
 	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
+	// Shared cause→presentation contract both web + mobile render from (gap_status.go).
+	mux.HandleFunc("GET /api/transcription-gaps/legend", s.handleGapStatusLegend)
 	mux.HandleFunc("POST /api/works/{id}/scan-sources", s.handleScanSources)
 	mux.HandleFunc("POST /api/works/{id}/retry-stt", s.handleRetryTranscription)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
@@ -440,10 +490,27 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/settings/schema", s.handleSettingsSchema)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	// BYOK credentials (Keys section). Vendor catalog + saved keys (masked).
+	mux.HandleFunc("GET /api/credentials", s.handleListCredentials)
+	mux.HandleFunc("POST /api/credentials", s.handleSaveCredential)
+	mux.HandleFunc("DELETE /api/credentials/{id}", s.handleDeleteCredential)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
+	mux.HandleFunc("GET /api/stt/models", s.handleListSTTModels)
+	mux.HandleFunc("GET /api/tts/voices", s.handleListTTSVoices)
+	// Realtime voice conversation (speech-to-speech) — its own lane, mints an
+	// ephemeral token so the browser never sees the real key (voice_session.go).
+	mux.HandleFunc("POST /api/voice/session", s.handleVoiceSession)
+	mux.HandleFunc("GET /api/voice/available", s.handleVoiceAvailable)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
+	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
+	mux.HandleFunc("POST /api/stt/test", s.handleTestSTT)
 	mux.HandleFunc("GET /api/disk", s.handleDiskUsage)
 	mux.HandleFunc("POST /api/library/rescan", s.handleLibraryRescan)
+	mux.HandleFunc("GET /api/library/roots", s.handleListRoots)
+	mux.HandleFunc("POST /api/library/roots", s.handleAddRoot)
+	mux.HandleFunc("POST /api/library/roots/reorder", s.handleReorderRoots)
+	mux.HandleFunc("DELETE /api/library/roots/{id}", s.handleDeleteRoot)
+	mux.HandleFunc("PATCH /api/library/roots/{id}", s.handlePatchRoot)
 	mux.HandleFunc("GET /api/embeddings/coverage", s.handleEmbeddingsCoverage)
 	mux.HandleFunc("POST /api/embeddings/refresh", s.handleEmbeddingsRefresh)
 	mux.HandleFunc("GET /api/works/{id}/bookmarks", s.handleListBookmarks)
@@ -465,12 +532,16 @@ func New(store *db.Store, port string) *Server {
 	mux.Handle("GET /samples/", http.StripPrefix("/samples/",
 		http.FileServer(http.Dir("/app/testdata/quality"))))
 
-	// Serve embedded web UI
+	// Serve embedded web UI, with an SPA fallback so deep links / refreshes on a
+	// client-side route (e.g. /work/48, /settings, /work/48/read/…) survive a cold
+	// load: an unknown non-asset path serves index.html, which then routes from
+	// location.pathname (#221). API + /samples are more-specific patterns, so they
+	// never reach here.
 	staticFS, _ := fs.Sub(staticFiles, "static")
-	mux.Handle("GET /", http.FileServer(http.FS(staticFS)))
+	mux.Handle("GET /", spaFallback(staticFS))
 
 	s.http = &http.Server{
-		Addr:    ":" + port,
+		Addr: ":" + port,
 		// auth is innermost so every request is still logged + CORS-
 		// decorated, and OPTIONS preflight is handled by cors before it
 		// reaches the gate (#197).
@@ -491,6 +562,8 @@ func (s *Server) SetReady(v bool) {
 	s.ready.Store(v)
 	if v {
 		go s.prewarmVoicePreviews()
+		s.startWhisperDeviceMonitor()   // watch for a mid-run cuda→cpu downgrade
+		go s.reprobeEmptyCredentials() // populate capabilities for migrated/older keys
 	}
 }
 
@@ -687,10 +760,20 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	// Enrich each work with its best alignment so the work-list UI can show
 	// a coverage pill without an N+1 fetch. One SQL query for the whole library.
 	best, _ := s.store.BestAlignmentByWork()
+	synced, _ := s.store.WorkIDsWithSyncData()
 	type workWithAlign struct {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
 		AlignmentMethod string   `json:"alignment_method,omitempty"`
+		// HasWordSync is true when the work has word-level sync_data (TTS→Whisper)
+		// but no cross-source alignment, so there's no coverage% to show. Lets the
+		// UI render a neutral "Word-level sync" chip — informational, NOT an error
+		// and NOT actionable — distinct from a coverage% pill and from a podcast
+		// (no coverage, no sync → render nothing). Coverage stays *float64+omitempty
+		// so a podcast has NO coverage (not 0); this field is orthogonal to it.
+		// (Discriminator per transcription: sync_data existence, not "has text" —
+		// a lone EPUB has text but no peer to align, so "not aligned" would mislead.)
+		HasWordSync bool `json:"has_word_sync"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -700,6 +783,7 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			out[i].Coverage = &cov
 			out[i].AlignmentMethod = ba.Method
 		}
+		out[i].HasWordSync = synced[wk.ID]
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -771,38 +855,45 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	synced, _ := s.store.WorkIDsWithSyncData()
 	type catalogEntry struct {
-		ID             int64    `json:"id"`
-		Title          string   `json:"title"`
-		Author         string   `json:"author"`
-		Language       string   `json:"language"`
-		CoverPath      string   `json:"cover_path"`
-		HasAudio       bool     `json:"has_audio"`
-		HasText        bool     `json:"has_text"`
-		SourceKind     string   `json:"source_kind"`
-		CoveragePct    *float64 `json:"coverage_pct"`
-		AlignMethod    *string  `json:"align_method"`
-		AlignUnit      *string  `json:"align_unit"`
-		ContentVersion string   `json:"content_version"`
-		SchemaVersion  int      `json:"schema_version"`
-		UpdatedAt      string   `json:"updated_at"`
+		ID          int64    `json:"id"`
+		Title       string   `json:"title"`
+		Author      string   `json:"author"`
+		Language    string   `json:"language"`
+		CoverPath   string   `json:"cover_path"`
+		HasAudio    bool     `json:"has_audio"`
+		HasText     bool     `json:"has_text"`
+		SourceKind  string   `json:"source_kind"`
+		CoveragePct *float64 `json:"coverage_pct"`
+		AlignMethod *string  `json:"align_method"`
+		AlignUnit   *string  `json:"align_unit"`
+		// See handleListWorks: word-level sync_data exists but no cross-source
+		// alignment (so no coverage%). Neutral "Word-level sync" chip; NOT an
+		// error, NOT actionable. CoveragePct stays a pointer so a podcast is
+		// null/absent, never 0.
+		HasWordSync    bool   `json:"has_word_sync"`
+		ContentVersion string `json:"content_version"`
+		SchemaVersion  int    `json:"schema_version"`
+		UpdatedAt      string `json:"updated_at"`
 	}
 	out := make([]catalogEntry, 0, len(works))
 	for i := range works {
 		wk := &works[i]
 		sum := abook.SummarizeWork(s.store, wk)
 		out = append(out, catalogEntry{
-			ID:             wk.ID,
-			Title:          wk.Title,
-			Author:         wk.Author,
-			Language:       "en",
-			CoverPath:      fmt.Sprintf("/api/works/%d/cover", wk.ID),
-			HasAudio:       wk.HasAudio,
-			HasText:        wk.HasText,
-			SourceKind:     sum.SourceKind,
-			CoveragePct:    sum.CoveragePct,
+			ID:               wk.ID,
+			Title:            wk.Title,
+			Author:           wk.Author,
+			Language:         "en",
+			CoverPath:        fmt.Sprintf("/api/works/%d/cover", wk.ID),
+			HasAudio:         wk.HasAudio,
+			HasText:          wk.HasText,
+			SourceKind:       sum.SourceKind,
+			CoveragePct:      sum.CoveragePct,
 			AlignMethod:    sum.AlignMethod,
 			AlignUnit:      sum.AlignUnit,
+			HasWordSync:    synced[wk.ID],
 			ContentVersion: wk.ContentVersion,
 			SchemaVersion:  wk.SchemaVersion,
 			UpdatedAt:      wk.UpdatedAt.UTC().Format(time.RFC3339),
@@ -1280,9 +1371,9 @@ func (s *Server) handleRegenerateChapter(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		BookID      int64  `json:"book_id"`
-		ChapterIdx  int    `json:"chapter_idx"`
-		Voice       string `json:"voice"`
+		BookID     int64  `json:"book_id"`
+		ChapterIdx int    `json:"chapter_idx"`
+		Voice      string `json:"voice"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -1335,6 +1426,10 @@ func (s *Server) handleWorkCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Always revalidate: a picked/uploaded cover overwrites this same path, and
+	// without this the browser heuristic-caches the image and won't re-fetch even
+	// on a hard refresh. Callers that want a cached copy use the ?v= cache-buster.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, coverPath)
 }
 
@@ -1413,7 +1508,7 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Question string              `json:"question"`
+		Question string             `json:"question"`
 		Scope    library.QueryScope `json:"scope,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Question == "" {
@@ -1433,8 +1528,9 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// New path: vector search + alignment-aware citations with audio times.
-	// Falls back gracefully when embeddings aren't populated.
-	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope)
+	// Falls back gracefully when embeddings aren't populated. Extract-only (the
+	// one global spoiler-safe setting) answers from the book text, no generation.
+	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope, s.extractOnlyEnabled())
 	if err != nil {
 		// Legacy fallback: keyword-only search on the first text file
 		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)
@@ -1826,7 +1922,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no files provided"})
 		return
 	}
-	importDir := filepath.Join(s.LibraryDir, "imports")
+	importDir := filepath.Join(s.importRoot(), "imports")
 	if err := os.MkdirAll(importDir, 0755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create imports dir: " + err.Error()})
 		return
@@ -2010,7 +2106,7 @@ func (s *Server) handleConverse(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(tmpPath)
 
-	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice)
+	resp, err := library.Converse(s.store, s.Generator.STTClient(), s.Generator.TTSClient(), rag, workID, tmpPath, voice, s.extractOnlyEnabled())
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -2569,7 +2665,7 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := abook.Import(s.store, tmpPath, s.LibraryDir); err != nil {
+	if err := abook.Import(s.store, tmpPath, s.importRoot()); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -2588,10 +2684,16 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 
 // handleSettingsSchema serves the backend-driven settings schema (#202) — the
 // single source of truth web + mobile render their settings UIs from, so they
-// stop drifting against the flat KV. Static + cacheable; values still come
-// from GET /api/settings.
+// stop drifting against the flat KV. Mostly static; the llm/stt/tts provider
+// option lists are injected per-request from the credentials vault (see
+// applyProviderEligibility), so it is NOT cacheable across credential changes.
+// Values still come from GET /api/settings.
 func (s *Server) handleSettingsSchema(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, SettingsSchema())
+	doc := SettingsSchema()
+	// Inject per-feature provider options gated to verified, integrated
+	// credentials (single source both web + mobile render from).
+	s.applyProviderEligibility(&doc)
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -2634,9 +2736,9 @@ func isSecretSettingKey(k string) bool {
 // last 4 makes "sk-proj-IsAbC…Xy9z" easy to recognize without
 // revealing the rotatable middle).
 //
-//   "sk-proj-IsAbCdEf...XyzXy9z" -> "sk-proj-…Xy9z"
-//   "sk-ant-IsAb...xyzXy9z"      -> "sk-ant-Is…Xy9z"
-//   "shortkey"                   -> "****"
+//	"sk-proj-IsAbCdEf...XyzXy9z" -> "sk-proj-…Xy9z"
+//	"sk-ant-IsAb...xyzXy9z"      -> "sk-ant-Is…Xy9z"
+//	"shortkey"                   -> "****"
 //
 // Format chosen so isMaskedSecret can detect the placeholder
 // unambiguously (presence of the unicode ellipsis '…' which a real
@@ -2684,6 +2786,13 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 			{ID: "o1", Label: "o1 — reasoning"},
 			{ID: "o1-mini", Label: "o1 mini — reasoning, cheaper"},
 			{ID: "gpt-3.5-turbo", Label: "GPT-3.5 Turbo — legacy"},
+		},
+		"google": {
+			{ID: "gemini-flash-latest", Label: "Gemini Flash (latest) — fast, cheap (default)"},
+			{ID: "gemini-pro-latest", Label: "Gemini Pro (latest) — most capable"},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash"},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro"},
+			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash"},
 		},
 		"openrouter": {
 			{ID: "anthropic/claude-3.5-sonnet", Label: "Claude 3.5 Sonnet"},
@@ -2783,7 +2892,9 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
 		return
 	}
-	result, err := Rescan(s.store, s.LibraryDir)
+	// #220: sweep every reachable library root (unreachable roots are skipped,
+	// their books kept). Falls back to the single dir pre-migration.
+	result, err := RescanAllRoots(s.store, s.LibraryDir)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -2873,9 +2984,17 @@ func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 		body.Provider = settings["llm_provider"]
 	}
 	// Masked secret in the body means "the UI didn't touch the key" —
-	// fall through to the stored value just like handleSaveSettings does.
+	// fall through to the stored value just like handleSaveSettings does:
+	// the vault credential for the provider first (Keys section), then the
+	// legacy inline key.
 	if body.APIKey == "" || isMaskedSecret(body.APIKey) {
-		body.APIKey = settings["llm_api_key"]
+		body.APIKey = ""
+		if body.Provider != "" && body.Provider != "ollama" {
+			body.APIKey = s.store.CredentialAPIKey(body.Provider)
+		}
+		if body.APIKey == "" {
+			body.APIKey = settings["llm_api_key"]
+		}
 	}
 	if body.Model == "" {
 		body.Model = settings["llm_model"]
@@ -3061,7 +3180,9 @@ func (s *Server) getBookByID(w http.ResponseWriter, r *http.Request) (*db.Book, 
 }
 
 // accessLogMiddleware prints one line per HTTP request:
-//   ACCESS 2026-05-21T20:14:01 ip=10.0.0.4 fwd=1.2.3.4 GET /api/works 200 1234b 12ms
+//
+//	ACCESS 2026-05-21T20:14:01 ip=10.0.0.4 fwd=1.2.3.4 GET /api/works 200 1234b 12ms
+//
 // `ip` is the immediate peer (the nullbore tunnel container when
 // served via the relay) and `fwd` is the original client IP from
 // X-Forwarded-For (or "-" when absent). Both must be examined to

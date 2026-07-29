@@ -134,8 +134,12 @@ func fetchChunksInScope(store *db.Store, scope QueryScope) []db.Chunk {
 //
 // scope narrows retrieval to a single chapter, "up to here" (spoiler
 // avoidance), or a paragraph. Pass the zero value for whole-work.
-func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string, scope QueryScope) (*llm.Answer, error) {
-	if rag == nil || rag.Client() == nil {
+// extractOnly (#130): answer only from the book's own text — return the
+// retrieved, position-bounded passages verbatim and never call the LLM, so a
+// memorized classic can't leak plot. Governed by the one global qa_extract_only
+// setting (same as the chat path). Works with no LLM key at all.
+func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question string, scope QueryScope, extractOnly bool) (*llm.Answer, error) {
+	if !extractOnly && (rag == nil || rag.Client() == nil) {
 		return nil, fmt.Errorf("LLM not configured")
 	}
 	work, err := store.GetWork(workID)
@@ -153,7 +157,7 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 	if err != nil {
 		return nil, err
 	}
-	if len(retrieved) == 0 {
+	if len(retrieved) == 0 && !extractOnly {
 		return &llm.Answer{
 			Text:   "I couldn't find any relevant passages in the book to answer that question.",
 			Chunks: 0,
@@ -181,7 +185,11 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 		return fmt.Sprintf("Chapter %d", ch+1)
 	}
 
-	// Build context string + citations.
+	// OUTBOUND-DATA BOUNDARY (privacy stance): everything sent to the LLM for a
+	// Q&A answer is built HERE, and ONLY from `retrieved` — the bounded set of
+	// passages retrieval returned (≤8, see retrievePassages) plus the question
+	// below. The full book never leaves the machine. Do not widen this to
+	// un-retrieved content; TestQAOutboundBoundary_MinimalSend enforces it.
 	var contextBuf strings.Builder
 	var citations []llm.Citation
 	for i, chunk := range retrieved {
@@ -209,6 +217,11 @@ func AskWithCitations(store *db.Store, rag *llm.RAG, workID int64, question stri
 			cit.AudioBookID = abkID
 		}
 		citations = append(citations, cit)
+	}
+
+	// Extract-only: hand back the passages themselves, no model generation.
+	if extractOnly {
+		return composeExtractAnswer(retrieved, citations, getTitle), nil
 	}
 
 	// Spoiler-safety (#130). The retrieval above is already bounded to what the
@@ -283,24 +296,30 @@ func retrievePassages(store *db.Store, rag *llm.RAG, work *db.Work, target *db.B
 	}
 
 	var retrieved []db.Chunk
-	hits, err := VectorSearchChunks(store, rag.Client(), work.ID, question, topK)
-	if err == nil && len(hits) > 0 {
-		for _, h := range hits {
-			retrieved = append(retrieved, h.Chunk)
+	// Vector search when an LLM client is available (embeddings). Extract-only
+	// mode can run with no client at all, so guard the call and fall through to
+	// keyword retrieval — embeddings only rank existing passages, never generate.
+	if rag != nil && rag.Client() != nil {
+		hits, err := VectorSearchChunks(store, rag.Client(), work.ID, question, topK)
+		if err == nil && len(hits) > 0 {
+			for _, h := range hits {
+				retrieved = append(retrieved, h.Chunk)
+			}
+			log.Printf("qa: vector search returned %d chunks for work %d (scope=%q)",
+				len(retrieved), work.ID, scope.Type)
 		}
-		log.Printf("qa: vector search returned %d chunks for work %d (scope=%q)",
-			len(retrieved), work.ID, scope.Type)
-	} else {
-		// Keyword fallback. When scope names a book, search that book
-		// instead of the auto-resolved target so a transcript-vs-EPUB
-		// pick can't override the user's explicit choice.
+	}
+	if len(retrieved) == 0 {
+		// Keyword fallback (also the no-LLM-client path). When scope names a book,
+		// search that book instead of the auto-resolved target so a
+		// transcript-vs-EPUB pick can't override the user's explicit choice.
 		searchBookID := target.ID
 		if scope.BookID > 0 {
 			searchBookID = scope.BookID
 		}
 		kw := extractKeyword(question)
 		retrieved, _ = store.SearchChunks(searchBookID, kw)
-		log.Printf("qa: keyword fallback returned %d chunks for work %d (scope=%q, query=%q)",
+		log.Printf("qa: keyword retrieval returned %d chunks for work %d (scope=%q, query=%q)",
 			len(retrieved), work.ID, scope.Type, kw)
 	}
 
@@ -348,8 +367,8 @@ func extractKeyword(question string) string {
 // alignmentContext caches parsed alignments + sync data so citation
 // enrichment doesn't re-parse per chunk.
 type alignmentContext struct {
-	store         *db.Store
-	workID        int64
+	store  *db.Store
+	workID int64
 	// byEbookBook: ebook_book_id → list of parsed alignment pairs, plus the
 	// transcript book id those pairs map to.
 	byEbookBook map[int64]*ebookAlignmentData
@@ -362,8 +381,8 @@ type alignmentContext struct {
 
 type ebookAlignmentData struct {
 	transcriptBookID int64
-	pairs            []db.AlignmentPair       // edit-distance method
-	anchor           *AnchorAlignmentPayload  // anchor/embedding (render-ready, preferred)
+	pairs            []db.AlignmentPair      // edit-distance method
+	anchor           *AnchorAlignmentPayload // anchor/embedding (render-ready, preferred)
 }
 
 func newAlignmentContext(store *db.Store, workID int64) *alignmentContext {

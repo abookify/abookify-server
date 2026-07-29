@@ -1,11 +1,11 @@
 // Voice conversation mode: speech-in → Q&A → speech-out.
 //
 // MVP flow (HTTP push-to-talk):
-//   1. Client records user question, POSTs audio to /api/works/{id}/converse
-//   2. Whisper transcribes the question to text
-//   3. AskWithCitations retrieves + answers via LLM
-//   4. Kokoro synthesizes the answer text
-//   5. Response: {question, answer, citations, audio_base64}
+//  1. Client records user question, POSTs audio to /api/works/{id}/converse
+//  2. Whisper transcribes the question to text
+//  3. AskWithCitations retrieves + answers via LLM
+//  4. Kokoro synthesizes the answer text
+//  5. Response: {question, answer, citations, audio_base64}
 //
 // Full duplex streaming (WebSocket) is a follow-on — this covers the
 // "cooking-and-asking" use case as a single round-trip.
@@ -46,11 +46,14 @@ func Converse(
 	workID int64,
 	questionAudioPath string,
 	voice string,
+	extractOnly bool,
 ) (*ConverseResponse, error) {
 	if sttClient == nil {
 		return nil, fmt.Errorf("STT service not available")
 	}
-	if rag == nil || rag.Client() == nil {
+	// Generated answers need the LLM; extract-only answers from the book text
+	// (no generation) so they only need retrieval.
+	if !extractOnly && (rag == nil || rag.Client() == nil) {
 		return nil, fmt.Errorf("LLM not configured")
 	}
 
@@ -66,7 +69,7 @@ func Converse(
 
 	// 2. Run RAG. Voice converse is always whole-book — there's no UI
 	// affordance for scope selection here.
-	answer, err := AskWithCitations(store, rag, workID, question, QueryScope{})
+	answer, err := AskWithCitations(store, rag, workID, question, QueryScope{}, extractOnly)
 	if err != nil {
 		return nil, fmt.Errorf("ask: %w", err)
 	}

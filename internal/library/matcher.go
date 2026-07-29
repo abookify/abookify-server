@@ -324,6 +324,14 @@ func MatchAndCreateWorks(store *db.Store) error {
 		log.Printf("created work (text only): %q by %q", title, te.book.Author)
 	}
 
+	// Sweep phantom works: reassigning a book to another work above can leave
+	// its origin work bookless. A work with no books is always junk.
+	if n, err := store.DeleteEmptyWorks(); err != nil {
+		log.Printf("matcher: empty-work sweep failed: %v", err)
+	} else if n > 0 {
+		log.Printf("matcher: removed %d empty work(s) left by reassignment", n)
+	}
+
 	return nil
 }
 

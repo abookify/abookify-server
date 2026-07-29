@@ -1,6 +1,10 @@
 package llm
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +62,55 @@ func TestNewClient(t *testing.T) {
 	}
 	if c.baseURL != "https://custom.proxy.com" {
 		t.Errorf("custom url = %q", c.baseURL)
+	}
+
+	// Google (Gemini) defaults: OpenAI-compat base + a Gemini model.
+	c = NewClient(ProviderGoogle, "key", "", "")
+	if c.baseURL != "https://generativelanguage.googleapis.com/v1beta/openai" {
+		t.Errorf("google base url = %q", c.baseURL)
+	}
+	if !strings.HasPrefix(c.Model(), "gemini-") {
+		t.Errorf("google default model = %q, want a gemini-* model", c.Model())
+	}
+}
+
+// TestGoogleChatCompletionsPath proves the Gemini path (its compat surface has
+// no /v1 prefix) and that Complete drives the OpenAI-compatible request/response
+// shape against a mock, so a Google credential genuinely serves LLM rather than
+// being an offer that fails at use.
+func TestGoogleChatCompletionsPath(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["model"] != "gemini-flash-latest" {
+			t.Errorf("model in body = %v", req["model"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model":   "gemini-flash-latest",
+			"choices": []map[string]any{{"message": map[string]string{"content": "hello from gemini"}}},
+			"usage":   map[string]int{"prompt_tokens": 3, "completion_tokens": 4},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(ProviderGoogle, "test-key", "", srv.URL+"/v1beta/openai")
+	resp, err := c.Complete(CompletionRequest{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotPath != "/v1beta/openai/chat/completions" {
+		t.Errorf("path = %q, want the compat /chat/completions (no /v1 prefix)", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("auth = %q, want Bearer test-key", gotAuth)
+	}
+	if resp.Content != "hello from gemini" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	if resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 4 {
+		t.Errorf("usage = %+v", resp.Usage)
 	}
 }

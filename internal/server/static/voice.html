@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Abookify — Voice (preview)</title>
+<style>
+  :root { --bg:#FBF8F3; --ink:#2b2622; --muted:#6b625a; --accent:#9a3b26; --line:#e7ddd0;
+          --live:#0F766E; --warn:#9a3b26; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--ink); min-height:100vh; display:flex; }
+  .wrap { max-width:640px; margin:auto; padding:40px 24px; width:100%; }
+  h1 { font-size:1.6rem; margin:0 0 4px; font-weight:650; }
+  .badge { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.08em; background:var(--accent);
+           color:#fff; padding:2px 7px; border-radius:999px; vertical-align:middle; margin-left:8px; }
+  .sub { color:var(--muted); margin:0 0 24px; line-height:1.5; }
+  .status { padding:10px 14px; border:1px solid var(--line); border-radius:10px; background:#fff;
+            font-size:0.95rem; margin-bottom:16px; }
+  .status.live { border-color:var(--live); color:var(--live); font-weight:600; }
+  .status.warn { border-color:var(--warn); color:var(--warn); }
+  button { font-size:1rem; padding:12px 22px; border-radius:10px; border:none; cursor:pointer;
+           background:var(--accent); color:#fff; font-weight:600; }
+  button:disabled { opacity:0.5; cursor:default; }
+  button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); margin-left:10px; }
+  .log { margin-top:24px; display:flex; flex-direction:column; gap:10px; }
+  .line { padding:10px 14px; border-radius:10px; max-width:85%; line-height:1.45; }
+  .line.you { background:#efe7db; align-self:flex-end; }
+  .line.ai { background:#fff; border:1px solid var(--line); align-self:flex-start; }
+  .who { font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); display:block; margin-bottom:2px; }
+  .foot { margin-top:28px; color:var(--muted); font-size:0.8rem; line-height:1.5; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Voice conversation <span class="badge">preview</span></h1>
+  <p class="sub">Talk out loud and hear a reply, in real time. This early preview is a general
+    conversation — it isn't grounded in a specific book yet. Uses your saved OpenAI key.</p>
+
+  <div id="status" class="status">Ready.</div>
+  <button id="startBtn">Start talking</button>
+  <button id="stopBtn" class="secondary" hidden>Stop</button>
+
+  <audio id="remoteAudio" autoplay></audio>
+  <div id="log" class="log"></div>
+
+  <div id="diag-wrap" style="display:none; margin-top:22px;">
+    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:6px;">
+      Connection details
+      <button id="copyDiag" class="secondary" style="font-size:0.7rem; padding:3px 10px; margin-left:8px;">Copy</button>
+    </div>
+    <pre id="diag" style="background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:0.78rem; line-height:1.55; white-space:pre-wrap; word-break:break-word; margin:0;"></pre>
+    <div style="color:var(--muted); font-size:0.72rem; margin-top:6px;">If voice didn't work over the tunnel, tap Copy and send this — one attempt tells us everything.</div>
+  </div>
+
+  <div class="foot">
+    Your microphone audio streams directly from this browser to OpenAI over an encrypted
+    peer connection — it does not pass through the Abookify server. The server only mints a
+    short-lived access token from your saved key; the key itself never leaves the server.
+    OpenAI's own <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noopener">privacy policy</a> governs the audio.
+  </div>
+</div>
+
+<script>
+  let pc = null, micStream = null, dc = null;
+  let connected = false, iceWatchdog = null;
+  const $ = id => document.getElementById(id);
+  function setStatus(s, cls) { const el = $('status'); el.textContent = s; el.className = 'status ' + (cls || ''); }
+  function clearWatchdog() { if (iceWatchdog) { clearTimeout(iceWatchdog); iceWatchdog = null; } }
+
+  // The failure PJ is most likely to hit — especially over the NullBore tunnel
+  // from his phone: the browser reaches OpenAI to negotiate, but the actual
+  // audio needs a direct UDP path that a tunnel / mobile data / VPN often blocks.
+  // Say THAT, not a generic error, so we don't chase the wrong thing.
+  async function networkFail() {
+    clearWatchdog();
+    await finishDiag('could not connect'); // capture stats BEFORE teardown nulls pc
+    setStatus("Couldn't open the live audio connection. The network is blocking BOTH the direct UDP path and the TCP/443 fallback to OpenAI — unusual, but it can happen over some corporate or carrier networks. Try again on the same Wi-Fi as the server, or a different network.", 'warn');
+    cleanup();
+    $('stopBtn').hidden = true;
+    $('startBtn').disabled = false;
+  }
+
+  // One-shot connection diagnostics — enough that a SINGLE attempt from PJ's
+  // phone answers definitively: which candidate type was selected, whether media
+  // actually flowed (byte counts), and if it failed, why. Rendered on-screen with
+  // a Copy button, so one attempt settles the tunnel question with no debugger.
+  let diag = null;
+  function resetDiag() { diag = { ice: [], gathered: [] }; }
+  function noteIce(st) { if (diag && diag.ice[diag.ice.length - 1] !== st) diag.ice.push(st); }
+  function kb(n) { return (n / 1024).toFixed(1) + ' KB'; }
+
+  async function collectStats() {
+    const out = { pair: null, recv: 0, sent: 0 };
+    if (!pc) return out;
+    try {
+      const stats = await pc.getStats();
+      let pair = null;
+      stats.forEach(r => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || !pair)) pair = r; });
+      if (pair && stats.get) {
+        const L = stats.get(pair.localCandidateId), R = stats.get(pair.remoteCandidateId);
+        out.pair = {
+          lType: L && L.candidateType, lProto: L && L.protocol,
+          rType: R && R.candidateType, rProto: R && R.protocol,
+          rAddr: R && (R.address || R.ip), rPort: R && R.port
+        };
+      }
+      stats.forEach(r => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') out.recv = r.bytesReceived || 0;
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') out.sent = r.bytesSent || 0;
+      });
+    } catch (e) { /* best-effort */ }
+    return out;
+  }
+
+  async function finishDiag(outcome) {
+    if (!diag) return;
+    const s = await collectStats();
+    const lines = ['Voice diagnostics — ' + outcome];
+    if (s.pair) {
+      const proto = (s.pair.rProto || s.pair.lProto || '?').toUpperCase();
+      lines.push('Transport: ' + proto + '  (remote ' + (s.pair.rAddr || '?') + ':' + (s.pair.rPort || '?') + ', ' + (s.pair.lType || '?') + '→' + (s.pair.rType || '?') + ')');
+      lines.push('Media: received ' + kb(s.recv) + ', sent ' + kb(s.sent) + (s.recv > 0 ? '  → audio is flowing' : '  → no audio received yet'));
+    } else {
+      lines.push('Transport: none selected (no candidate pair succeeded)');
+      lines.push('Candidates the browser gathered: ' + (diag.gathered.length ? [...new Set(diag.gathered)].join(', ') : 'none'));
+      lines.push('Likely cause: the network blocked both UDP and OpenAI’s TCP/443 fallback (some carriers/VPNs do). Try same Wi-Fi as the server, or another network.');
+    }
+    lines.push('ICE path: ' + (diag.ice.join(' → ') || 'n/a'));
+    const text = lines.join('\n');
+    $('diag').textContent = text;
+    $('diag').dataset.copy = text;
+    $('diag-wrap').style.display = '';
+  }
+
+  // Report which media path actually connected — UDP (direct) or TCP (OpenAI's
+  // :443 fallback, the one that survives restrictive networks like the tunnel).
+  // Diagnostic so a tunnel success/failure is legible instead of a mystery.
+  async function showTransport() {
+    for (let i = 0; i < 8 && pc; i++) {
+      try {
+        const stats = await pc.getStats();
+        let proto = '', best = null;
+        stats.forEach(r => {
+          if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || !best)) best = r;
+        });
+        if (best && stats.get) {
+          const local = stats.get(best.localCandidateId);
+          if (local && local.protocol) proto = String(local.protocol).toUpperCase();
+        }
+        if (proto) { setStatus('Live — connected over ' + proto + '. Just start talking.', 'live'); return; }
+      } catch (e) { /* best-effort */ }
+      await new Promise(r => setTimeout(r, 400));
+    }
+  }
+  function logLine(who, text) {
+    if (!text) return;
+    const d = document.createElement('div');
+    d.className = 'line ' + (who === 'You' ? 'you' : 'ai');
+    d.innerHTML = '<span class="who"></span>';
+    d.querySelector('.who').textContent = who;
+    d.appendChild(document.createTextNode(text));
+    $('log').appendChild(d);
+    d.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  }
+
+  function cleanup() {
+    clearWatchdog();
+    connected = false;
+    try { if (dc) dc.close(); } catch (e) {}
+    try { if (pc) pc.close(); } catch (e) {}
+    try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    pc = dc = micStream = null;
+  }
+
+  function onEvent(ev) {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    // The assistant's spoken reply, as text.
+    if (m.type === 'response.audio_transcript.done' && m.transcript) logLine('AI', m.transcript.trim());
+    // What the user said (requires input transcription, requested below).
+    else if (m.type === 'conversation.item.input_audio_transcription.completed' && m.transcript) logLine('You', m.transcript.trim());
+    else if (m.type === 'error' && m.error) console.warn('realtime event error:', m.error);
+  }
+
+  async function start() {
+    $('startBtn').disabled = true;
+    connected = false;
+    resetDiag();
+    $('diag-wrap').style.display = 'none';
+    try {
+      setStatus('Requesting microphone…');
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      setStatus('Getting a session…');
+      const res = await fetch('/api/voice/session', { method: 'POST' });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || ('session HTTP ' + res.status));
+      }
+      const sess = await res.json(); // { token (ephemeral), model, ... } — never the real key
+
+      pc = new RTCPeerConnection();
+      pc.ontrack = e => { $('remoteAudio').srcObject = e.streams[0]; };
+      pc.onicecandidate = e => { if (e.candidate && diag) diag.gathered.push((e.candidate.type || '?') + '/' + (e.candidate.protocol || '?')); };
+      pc.oniceconnectionstatechange = () => {
+        const st = pc ? pc.iceConnectionState : '';
+        noteIce(st);
+        if (st === 'connected' || st === 'completed') {
+          connected = true; clearWatchdog();
+          setStatus('Live — just start talking.', 'live');
+          $('stopBtn').hidden = false;
+          showTransport(); // which path won — UDP or the TCP/443 fallback
+          // Give media ~3s to flow, then record the definitive diagnostics.
+          setTimeout(() => finishDiag('connected'), 3000);
+        } else if (st === 'failed') {
+          networkFail();
+        } else if (st === 'disconnected' && connected) {
+          setStatus('Connection dropped — check your network and start again.', 'warn');
+        }
+      };
+      pc.addTrack(micStream.getAudioTracks()[0], micStream);
+
+      dc = pc.createDataChannel('oai-events');
+      dc.onopen = () => {
+        // Generic persona + turn on input transcription for the on-screen log.
+        // NO book or library text is ever sent (privacy stance).
+        dc.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            instructions: 'You are a warm, friendly conversation partner for someone who loves books. Keep replies concise and natural.',
+            input_audio_transcription: { model: 'whisper-1' }
+          }
+        }));
+      };
+      dc.onmessage = onEvent;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      setStatus('Connecting to OpenAI…');
+      const sdpRes = await fetch('https://api.openai.com/v1/realtime/calls?model=' + encodeURIComponent(sess.model), {
+        method: 'POST',
+        body: offer.sdp,
+        headers: { 'Authorization': 'Bearer ' + sess.token, 'Content-Type': 'application/sdp' }
+      });
+      if (!sdpRes.ok) throw new Error('OpenAI SDP exchange failed: HTTP ' + sdpRes.status);
+      await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
+
+      // "Live" is set from the ICE handler once the media path actually connects
+      // — not here, because a successful SDP exchange doesn't mean audio flows.
+      setStatus('Connecting the audio…');
+      $('stopBtn').hidden = false;
+      // TCP-ICE (the tunnel-surviving path) is slower to establish than UDP —
+      // give it room before declaring the network unreachable.
+      clearWatchdog();
+      iceWatchdog = setTimeout(() => { if (!connected) networkFail(); }, 20000);
+    } catch (e) {
+      const name = e && e.name;
+      if (name === 'NotAllowedError' || name === 'NotFoundError' || name === 'SecurityError')
+        setStatus('Microphone access is needed — allow it in your browser and try again.', 'warn');
+      else
+        setStatus('Error: ' + (e && e.message ? e.message : e), 'warn');
+      cleanup();
+      $('startBtn').disabled = false;
+    }
+  }
+
+  function stop() {
+    cleanup();
+    setStatus('Stopped.');
+    $('stopBtn').hidden = true;
+    $('startBtn').disabled = false;
+  }
+
+  $('startBtn').onclick = start;
+  $('stopBtn').onclick = stop;
+  $('copyDiag').onclick = () => {
+    const t = $('diag').dataset.copy || $('diag').textContent;
+    const done = () => { $('copyDiag').textContent = 'Copied'; setTimeout(() => { $('copyDiag').textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done).catch(done);
+    else done();
+  };
+</script>
+</body>
+</html>

@@ -222,9 +222,13 @@
   </header>
   <script>
     // When embedded as the in-page Settings overlay (index.html opens this in an
-    // iframe so audio keeps playing), the "← Library" link closes the overlay
-    // instead of loading index.html inside the frame.
+    // iframe so audio keeps playing), the overlay already provides its own back
+    // bar + "Settings" title — so hide THIS page's header to avoid two stacked
+    // back controls and the word "Settings" twice. Standalone /settings.html
+    // keeps its header. The link still closes the overlay if it's ever reached.
     if (window.parent !== window) {
+      const h = document.querySelector('header');
+      if (h) h.style.display = 'none';
       document.getElementById('back-library').addEventListener('click', (e) => {
         e.preventDefault();
         window.parent.postMessage('close-settings', location.origin);
@@ -253,7 +257,7 @@
             </button>
             <div class="hint" style="margin-top:6px;">
               Mints a new public hostname. Existing paired devices will need to re-scan the QR code,
-              and you'll need to restart the relay container so it advertises the new slug.
+              and you'll need to restart the relay container so it advertises the new address.
             </div>
             <div id="rotate-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
           </div>
@@ -285,6 +289,18 @@
     </div>
 
     <div class="section">
+      <h2>Library locations</h2>
+      <div class="hint" style="margin-bottom:12px;">The folders Abookify scans for books. Add external drives or network shares here. An unplugged/unmounted drive shows as <strong>offline</strong> — its books are kept and marked stale, <strong>never deleted</strong>.</div>
+      <div id="roots-list"></div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <input id="root-add-path" type="text" placeholder="/absolute/path/to/library" style="flex:1; min-width:220px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+        <input id="root-add-label" type="text" placeholder="Name (e.g. Audiobooks)" title="A friendly name so you can tell your locations apart at a glance" style="flex:0 0 180px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+        <button type="button" onclick="addRoot()" style="flex:0 0 auto; padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Add location</button>
+      </div>
+      <div id="roots-status" class="hint" style="margin-top:8px; min-height:1em;"></div>
+    </div>
+
+    <div class="section">
       <h2>Local Services</h2>
       <div class="hint" style="margin-bottom:12px;">These run locally on your server. No API keys needed, no data leaves your machine.</div>
       <div class="status-row">
@@ -295,6 +311,12 @@
         <span class="status-dot" id="stt-dot"></span>
         <span>Speech-to-Text (Whisper): <span id="stt-status">checking...</span></span>
       </div>
+    </div>
+
+    <div class="section">
+      <h2>Keys</h2>
+      <div class="hint" style="margin-bottom:12px;">Add a key once per service — it can be added before anything uses it. We only send the minimum a feature needs, and only when you use that feature.</div>
+      <div id="credentials-list">Loading…</div>
     </div>
 
         <!-- Config sections rendered from /api/settings/schema (#202) -->
@@ -311,16 +333,16 @@
         <div id="disk-stats" style="font-size:0.85rem; color:var(--text-muted);">Loading…</div>
       </div>
       <div class="field">
-        <label>RAG embeddings</label>
+        <label>Q&amp;A search index</label>
         <div id="embed-coverage" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:6px;">Loading…</div>
         <button type="button" id="embed-refresh-btn" onclick="refreshEmbeddings()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
-          Refresh embeddings
+          Rebuild search index
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Backfills the vector index for any chunk missing an embedding.
-          Without embeddings, Q&amp;A falls back to keyword search.
-          Requires an LLM provider with embedding support (OpenAI or Ollama).
+          Lets Book Q&amp;A find relevant passages by meaning, not just matching keywords.
+          Without it, Q&amp;A falls back to keyword search.
+          Requires an AI provider that supports it (OpenAI or Ollama).
         </div>
         <div id="embed-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -332,20 +354,20 @@
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
           Sweeps the library directory and ingests anything the file watcher missed.
-          Safe to re-run (idempotent). Files unchanged since the last scan are skipped,
+          Safe to re-run. Files unchanged since the last scan are skipped,
           so a repeat rescan finishes in under a second.
         </div>
         <div id="rescan-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
       <div class="field">
-        <label>Anchor alignment</label>
+        <label>Audio–text alignment</label>
         <button type="button" id="align-all-btn" onclick="alignAll()"
           style="background:transparent; color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; cursor:pointer;">
-          Re-align all works
+          Re-align all books
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Backfills the audio↔ebook anchor alignment for every work that has both a transcript and an ebook.
-          Safe to re-run (idempotent). Progress lands in the System Console.
+          Re-syncs each audiobook to its ebook — for every book that has both — so the reader can follow along word by word.
+          Safe to re-run. Progress lands in the System Console.
         </div>
         <div id="align-all-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -360,12 +382,12 @@
           <input type="checkbox" id="export-lite"> Text-only (lite, no audio)
         </label>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Writes a self-contained <code>.abook</code> per aligned work to
-          <code>library/exports/</code> — the offline bundles mobile sideloads. By default each
+          Writes a self-contained <code>.abook</code> per aligned book to your library's
+          exports folder — the offline bundles mobile sideloads. By default each
           bundles the <b>audiobook + original ebook + alignment</b>: the alignment is
           edition-locked to that exact recording, so a bundle without its audio isn't portable.
           The full set is therefore large (multi-GB). Tick <b>Text-only</b> for a small,
-          book.db-only set (audio then streams from the server). Runs in the background; safe
+          text-only set (audio then streams from the server). Runs in the background; safe
           to re-run.
         </div>
         <div id="exports-list" style="display:none; margin-top:8px; font-size:0.8rem; max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;"></div>
@@ -378,8 +400,8 @@
           Fetch missing covers
         </button>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
-          Looks up cover art on OpenLibrary for any work that has none. Best-effort —
-          works with a junk title or no author may not resolve. Safe to re-run.
+          Looks up cover art on OpenLibrary for any book that has none. Best-effort —
+          books with a junk title or no author may not resolve. Safe to re-run.
         </div>
         <div id="fetch-covers-msg" style="display:none; margin-top:10px; padding:8px 10px; background:var(--bg); border-left:3px solid var(--accent); font-size:0.8rem;"></div>
       </div>
@@ -387,21 +409,28 @@
     </div>
 
     <div style="display:flex; align-items:center;">
-      <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+      <button class="save-btn" onclick="saveSettings()">Save settings</button>
       <span class="save-msg" id="save-msg">Saved!</span>
     </div>
   </div>
 
   <button type="button" class="floating-save" id="floating-save" onclick="saveSettings()"
-    title="Save all settings">&#128190; Save Settings</button>
+    title="Save all settings">Save settings</button>
 
   <script>
-    let allModels = {}; // { provider → [{id, label}, ...] }
+    // Dynamic (endpoint-driven) option fields — the ONE mechanism all three
+    // per-feature model/voice dropdowns render from, keyed by field so the lanes
+    // can't drift into three parallel implementations.
+    // { fieldKey: {endpoint, dependsOn, allowCustom, options:{provider:[{id,label,group?}]}} }
+    const DYNAMIC = {};
+    // { providerFieldKey: [dependent dynamic fieldKey, …] } — which model fields
+    // to refresh when a provider dropdown changes.
+    const DEPENDENTS = {};
 
     // Render the config sections from the backend settings schema (#202) — the
     // single source of truth web + mobile share. The markup deliberately emits
     // the SAME element ids the rest of this page's logic (loadSettings,
-    // saveSettings, onProviderChange, previewVoice, testLLM, clearSavedKey…)
+    // saveSettings, onSelectChange, previewVoice, testLLM, clearSavedKey…)
     // already targets, so only the markup is schema-driven; the behavior is
     // unchanged. Security stays a hand-built section (its auth flow has its own
     // save/disable/sign-out semantics); the schema still describes it for mobile.
@@ -412,6 +441,14 @@
       let schema;
       try { schema = await fetch('/api/settings/schema').then(r => r.json()); }
       catch { return; }
+      // Discover the dynamic option fields + their provider dependencies from the
+      // schema itself, so adding another lane needs no JS change.
+      for (const g of (schema.groups || [])) for (const f of (g.fields || [])) {
+        if (f.options_endpoint && f.depends_on) {
+          DYNAMIC[f.key] = { endpoint: f.options_endpoint, dependsOn: f.depends_on, allowCustom: !!f.allow_custom, options: {} };
+          (DEPENDENTS[f.depends_on] = DEPENDENTS[f.depends_on] || []).push(f.key);
+        }
+      }
       host.innerHTML = (schema.groups || [])
         .filter(g => SCHEMA_RENDER_GROUPS.includes(g.key))
         .map(renderSchemaGroup).join('');
@@ -439,7 +476,10 @@
           const opts = f.option_groups
             ? f.option_groups.map(og => `<optgroup label="${schemaEscAttr(og.label)}">${og.options.map(o => schemaOpt(o, f.default)).join('')}</optgroup>`).join('')
             : (f.options || []).map(o => schemaOpt(o, f.default)).join('');
-          const onchange = f.key === 'llm_provider' ? ' onchange="onProviderChange()"' : '';
+          // Every select notifies onSelectChange: it refreshes any dependent
+          // dynamic model dropdown (llm/stt/tts) and runs the llm_provider side
+          // effects. Inert for selects nothing depends on.
+          const onchange = ` onchange="onSelectChange('${f.key}')"`;
           // Live readout of the device transcription is ACTUALLY running on
           // (probed from the engine via /api/info), distinct from the saved
           // preference above it.
@@ -447,18 +487,19 @@
             ? `<div class="hint" id="stt-device-readout" style="margin-top:6px;">Checking current device…</div>` : '';
           return `<div class="field">${label}<select id="${id}"${onchange}>${opts}</select>${previewAddon}${help}${deviceReadout}</div>`;
         }
-        case 'select_or_custom': // llm_model: curated select + custom free-text
+        case 'select_or_custom': // dynamic per-provider dropdown (+ optional custom): llm/stt/tts
           return `<div class="field">${label}
-            <select id="${id}-select" onchange="onModelSelectChange()"><option value="">Default for this provider</option></select>
-            <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${help}</div>`;
+            <select id="${id}-select" onchange="onDynamicSelect('${f.key}')"><option value="">Default for this engine</option></select>
+            <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${previewAddon}${help}</div>`;
         case 'secret': {
           const clear = (f.addons || []).includes('clear')
-            ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear</button>` : '';
+            ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear saved key</button>` : '';
+          const engine = f.key.replace(/_api_key$/, ''); // llm | tts | stt — one test id set per engine
           const test = (f.addons || []).includes('test')
-            ? `<div class="key-test-row"><button type="button" class="test-btn" id="llm-test-btn" onclick="testLLM()">Test connection</button><span class="key-test-result" id="llm-test-result"></span></div>` : '';
+            ? `<div class="key-test-row"><button type="button" class="test-btn" id="${engine}-test-btn" onclick="testConnection('${f.key}')">Test connection</button><span class="key-test-result" id="${engine}-test-result"></span></div>` : '';
           return `<div class="field">${label}
             <input type="password" id="${id}" autocomplete="off" placeholder="${schemaEscAttr(f.placeholder)}">
-            <div class="saved-key" id="${id}-saved" style="display:none;">Saved key: <code id="${id}-mask"></code> ${clear}</div>
+            <div class="saved-key" id="${id}-saved" style="display:none;"><span id="${id}-saved-label">Saved key:</span> <code id="${id}-mask"></code> ${clear}</div>
             ${test}${help}</div>`;
         }
         case 'bool':
@@ -469,59 +510,146 @@
       }
     }
 
-    async function loadModels() {
-      try {
-        const res = await fetch('/api/llm/models');
-        if (res.ok) allModels = await res.json();
-      } catch {}
+    // Fetch every dynamic field's option map once ({provider:[{id,label,group?}]}).
+    async function loadDynamicOptions() {
+      await Promise.all(Object.values(DYNAMIC).map(async d => {
+        try { const res = await fetch(d.endpoint); if (res.ok) d.options = await res.json(); } catch {}
+      }));
     }
 
-    // Re-populate the model <select> when the provider changes. Adds a
-    // "Custom…" option that reveals the free-text input for any model
-    // not in the curated list.
-    function onProviderChange() {
-      const provider = document.getElementById('llm-provider').value;
-      const sel = document.getElementById('llm-model-select');
-      const txt = document.getElementById('llm-model');
-      const hint = document.getElementById('llm-model-hint');
-      sel.innerHTML = '<option value="">Default for this provider</option>';
-      if (provider && allModels[provider]) {
-        for (const m of allModels[provider]) {
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = m.label + ' — ' + m.id;
-          sel.appendChild(opt);
+    // Refresh dependent model dropdowns when a provider changes.
+    function refreshDependents(providerKey) {
+      for (const dep of (DEPENDENTS[providerKey] || [])) refreshDynamic(dep);
+    }
+
+    // LLM provider detection from an API-key prefix — the prefixes are
+    // unambiguous: sk-ant-… = Anthropic, sk-or-… = OpenRouter, and sk-proj-… or
+    // a plain sk-… = OpenAI. Used to recover the provider on load when a key was
+    // saved without one, to label the saved-key row, and to auto-switch when a
+    // NEW key is pasted. Ollama has no key, so it never matches (stays manual).
+    const LLM_PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', ollama: 'Ollama' };
+    function detectKeyProvider(key) {
+      const k = (key || '').trim();
+      if (/^sk-ant-/i.test(k)) return 'anthropic';
+      if (/^sk-or-/i.test(k))  return 'openrouter';
+      if (/^sk-/i.test(k))     return 'openai'; // sk-proj-… or a plain sk-…
+      return '';
+    }
+
+    // Auto-detection must never override an explicit choice: set only via
+    // onSelectChange('llm_provider') when the user changes the dropdown.
+    // loadSettings and the key auto-switch call refreshDependents directly (not
+    // onSelectChange), so this stays false on load and after an auto-switch.
+    let llmProviderUserSet = false;
+
+    // When a NEW key is pasted/typed, detect its provider from the prefix and
+    // switch the dropdown to match — visibly. If the user has explicitly chosen a
+    // provider we DON'T override it; we warn about the mismatch instead.
+    function onLLMKeyInput() {
+      const input = document.getElementById('llm-api-key');
+      const sel = document.getElementById('llm-provider');
+      const note = document.getElementById('llm-key-note');
+      if (!input || !sel) return;
+      const detected = detectKeyProvider(input.value);
+      const clearNote = () => { if (note) { note.style.display = 'none'; note.textContent = ''; } };
+      if (!detected || detected === sel.value) { clearNote(); return; }
+      const dName = LLM_PROVIDER_LABELS[detected] || detected;
+      const art = /^[aeiou]/i.test(dName) ? 'an' : 'a'; // "an OpenAI", "a Deepgram"
+      if (llmProviderUserSet) {
+        if (note) {
+          note.textContent = `⚠ This looks like ${art} ${dName} key, but the provider is set to ${LLM_PROVIDER_LABELS[sel.value] || 'none'}. Change it above if that's not what you want.`;
+          note.style.color = 'var(--danger)';
+          note.style.display = '';
         }
+        return;
       }
-      sel.appendChild(new Option('Custom…', '__custom__'));
-      // If the saved model isn't in the curated list, show it as Custom.
-      const saved = (txt.value || '').trim();
-      if (saved && [...sel.options].every(o => o.value !== saved)) {
-        sel.value = '__custom__';
-        txt.style.display = '';
-      } else if (saved) {
-        sel.value = saved;
-        txt.style.display = 'none';
+      sel.value = detected;
+      refreshDependents('llm_provider'); // repopulate models; keeps the flag false — this is auto, not a user choice
+      if (note) {
+        note.textContent = `Detected ${art} ${dName} key — switched the provider to ${dName}.`;
+        note.style.color = 'var(--accent)';
+        note.style.display = '';
+      }
+    }
+
+    // A provider dropdown changed: run llm_provider's side effects, then refresh
+    // every model dropdown that depends on it. Generic across all three lanes.
+    function onSelectChange(fieldKey) {
+      if (fieldKey === 'llm_provider') {
+        llmProviderUserSet = true;
+        // Keep the saved-key label in step with the selected provider.
+        if (_savedMasks['llm-api-key']) updateSavedKeyLabel('llm-api-key', _savedMasks['llm-api-key']);
+      }
+      refreshDependents(fieldKey);
+    }
+
+    // Re-populate one dynamic model/voice dropdown from its provider's option
+    // list. Builds <optgroup>s when items carry a group (voice catalog), appends
+    // a "Custom…" option only when the field allows it, and restores the saved
+    // value (matching an option, else Custom when allowed). ONE implementation
+    // for llm_model / stt_model / tts_voice.
+    function refreshDynamic(fieldKey) {
+      const d = DYNAMIC[fieldKey];
+      if (!d) return;
+      const id = schemaFieldId(fieldKey);
+      const sel = document.getElementById(id + '-select');
+      const txt = document.getElementById(id);
+      if (!sel || !txt) return;
+      const depEl = document.getElementById(schemaFieldId(d.dependsOn));
+      const provider = depEl ? depEl.value : '';
+      const items = (d.options && d.options[provider]) || [];
+      sel.innerHTML = '<option value="">Default for this engine</option>';
+      if (items.some(m => m.group)) {
+        const byGroup = {};
+        for (const m of items) (byGroup[m.group || ''] = byGroup[m.group || ''] || []).push(m);
+        for (const [g, arr] of Object.entries(byGroup)) {
+          const og = document.createElement('optgroup');
+          og.label = g;
+          for (const m of arr) og.appendChild(new Option(m.label, m.id));
+          sel.appendChild(og);
+        }
       } else {
-        txt.style.display = 'none';
+        for (const m of items) sel.appendChild(new Option(m.label + ' — ' + m.id, m.id));
       }
-      if (hint) {
-        hint.textContent = provider === 'openrouter'
+      if (d.allowCustom) sel.appendChild(new Option('Custom…', '__custom__'));
+      const saved = (txt.value || '').trim();
+      if (saved && [...sel.options].some(o => o.value === saved)) {
+        sel.value = saved; txt.style.display = 'none';
+      } else if (saved && d.allowCustom) {
+        sel.value = '__custom__'; txt.style.display = '';
+      } else {
+        sel.value = ''; txt.style.display = 'none';
+      }
+      // llm_model keeps its provider-specific hint.
+      if (fieldKey === 'llm_model') {
+        const hint = document.getElementById('llm-model-hint');
+        if (hint) hint.textContent = provider === 'openrouter'
           ? 'Models are namespaced like vendor/model (e.g. anthropic/claude-3.5-sonnet).'
           : 'Pick a model — switch to a more capable one for better answers.';
       }
     }
 
-    function onModelSelectChange() {
-      const sel = document.getElementById('llm-model-select');
-      const txt = document.getElementById('llm-model');
-      if (sel.value === '__custom__') {
-        txt.style.display = '';
-        txt.focus();
-      } else {
-        txt.style.display = 'none';
-        txt.value = sel.value;
-      }
+    // Dropdown → free-text sync for a dynamic field: reveal the custom input on
+    // "Custom…", else mirror the selection into it (the input is the saved value).
+    function onDynamicSelect(fieldKey) {
+      const id = schemaFieldId(fieldKey);
+      const sel = document.getElementById(id + '-select');
+      const txt = document.getElementById(id);
+      if (!sel || !txt) return;
+      if (sel.value === '__custom__') { txt.style.display = ''; txt.focus(); }
+      else { txt.style.display = 'none'; txt.value = sel.value; }
+    }
+
+    // Resolve a dynamic field's value to save: the dropdown unless it's empty or
+    // "Custom…", in which case the free-text input wins.
+    function dynamicValue(fieldKey) {
+      const id = schemaFieldId(fieldKey);
+      const selEl = document.getElementById(id + '-select');
+      const txtEl = document.getElementById(id);
+      const sel = selEl ? selEl.value : '';
+      const txt = txtEl ? (txtEl.value || '').trim() : '';
+      if (sel && sel !== '__custom__') return sel;
+      return txt;
     }
 
     // Track which secret fields were populated at load time so saveSettings
@@ -533,10 +661,28 @@
       _savedMasks[inputId] = mask;
       const row = document.getElementById(inputId + '-saved');
       const codeEl = document.getElementById(inputId + '-mask');
+      updateSavedKeyLabel(inputId, mask);
       if (row && codeEl) {
         codeEl.textContent = mask;
         row.style.display = '';
       }
+    }
+
+    // Name the provider on the masked saved-key row ("Saved OpenAI key:") so an
+    // unlabelled secret can't sit next to a mismatched provider dropdown — which
+    // is what made a wrong-provider Test failure look like a bad key. Falls back
+    // to a plain "Saved key:" when the provider is unknown.
+    function updateSavedKeyLabel(inputId, mask) {
+      const labelEl = document.getElementById(inputId + '-saved-label');
+      if (!labelEl) return;
+      let provKey = '';
+      if (inputId === 'llm-api-key') {
+        provKey = (document.getElementById('llm-provider') || {}).value || detectKeyProvider(mask);
+      } else if (inputId === 'voice-api-key') {
+        provKey = (document.getElementById('voice-provider') || {}).value;
+      }
+      const name = LLM_PROVIDER_LABELS[provKey] || '';
+      labelEl.textContent = name ? `Saved ${name} key:` : 'Saved key:';
     }
 
     // Return the value to send back for a masked-secret field:
@@ -585,93 +731,205 @@
     // pending form state (typed-but-not-saved) when present; otherwise
     // the server falls back to the stored key. Result lands inline next
     // to the button — never blocks anything.
-    async function testLLM() {
-      const btn = document.getElementById('llm-test-btn');
-      const resEl = document.getElementById('llm-test-result');
+    // Generic "Test connection" for any *_api_key field (llm / tts / stt). The
+    // engine is the key prefix; it POSTs to /api/{engine}/test with the current
+    // provider + (optional) key, and for LLM also the model + base URL.
+    async function testConnection(fieldKey) {
+      const engine = fieldKey.replace(/_api_key$/, '');
+      const btn = document.getElementById(engine + '-test-btn');
+      const resEl = document.getElementById(engine + '-test-result');
       resEl.className = 'key-test-result';
       resEl.textContent = 'Testing…';
-      btn.disabled = true;
+      if (btn) btn.disabled = true;
 
-      // Resolve the model the same way saveSettings does: dropdown wins
-      // unless it's __custom__ or empty, in which case fall to the
-      // free-text input.
-      const sel = document.getElementById('llm-model-select').value;
-      const txt = document.getElementById('llm-model').value.trim();
-      const model = (sel && sel !== '__custom__') ? sel : txt;
-
+      const providerEl = document.getElementById(engine + '-provider');
+      const keyEl = document.getElementById(schemaFieldId(fieldKey));
       const body = {
-        provider: document.getElementById('llm-provider').value,
-        api_key: document.getElementById('llm-api-key').value, // empty → server uses stored
-        model,
-        base_url: document.getElementById('llm-base-url').value,
+        provider: providerEl ? providerEl.value : '',
+        api_key: keyEl ? keyEl.value : '', // empty → server uses the stored key
       };
+      let okText = (j) => `✓ Connected · ${j.provider || ''} · ${j.latency_ms} ms`;
+      if (engine === 'llm') {
+        body.model = dynamicValue('llm_model');
+        const base = document.getElementById('llm-base-url');
+        body.base_url = base ? base.value : '';
+        okText = (j) => `✓ Connected · ${j.latency_ms} ms · ${j.model}`;
+      }
       try {
-        const r = await fetch('/api/llm/test', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body),
+        const r = await fetch(`/api/${engine}/test`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         const j = await r.json();
-        if (j.ok) {
-          resEl.className = 'key-test-result ok';
-          resEl.textContent = `✓ Connected · ${j.latency_ms} ms · ${j.model}`;
-        } else {
-          resEl.className = 'key-test-result err';
-          resEl.textContent = `✗ ${j.error || 'failed'}`;
-        }
+        if (j.ok) { resEl.className = 'key-test-result ok'; resEl.textContent = okText(j); }
+        else { resEl.className = 'key-test-result err'; resEl.textContent = `✗ ${j.error || 'failed'}`; }
       } catch (e) {
         resEl.className = 'key-test-result err';
         resEl.textContent = `✗ ${e.message}`;
       } finally {
-        btn.disabled = false;
+        if (btn) btn.disabled = false;
+      }
+    }
+    // Back-compat alias.
+    function testLLM() { return testConnection('llm_api_key'); }
+
+    // --- Keys section (BYOK credentials) ---
+    // Everything rendered here comes from GET /api/credentials — the vendor
+    // catalog (fields + policy URL) and the saved keys (masked). No provider
+    // list or policy text is hardcoded in the UI (single-sourced with mobile).
+    let _credCatalog = [];
+    async function loadCredentials() {
+      const host = document.getElementById('credentials-list');
+      if (!host) return;
+      let data;
+      try { data = await fetch('/api/credentials').then(r => r.json()); }
+      catch { host.textContent = 'Could not load keys.'; return; }
+      _credCatalog = data.providers || [];
+      const saved = {};
+      (data.credentials || []).forEach(c => { saved[c.provider] = c; });
+      host.innerHTML = _credCatalog.map(p => renderProviderCard(p, saved[p.id])).join('') ||
+        '<div class="hint">No services available.</div>';
+    }
+
+    function renderProviderCard(p, cred) {
+      const kinds = (p.kinds || []).join(' · ');
+      const fields = (p.credential_fields || []).map(f => {
+        const savedVal = cred && cred.fields ? (cred.fields[f.key] || '') : '';
+        const ph = (f.secret && savedVal) ? savedVal : (f.placeholder || '');
+        return `<div style="margin-top:8px;">
+          <label style="font-size:0.75rem; color:var(--text-muted);">${escapeHtmlAttr(f.label)}</label>
+          <input type="${f.secret ? 'password' : 'text'}" id="cred-${p.id}-${f.key}" autocomplete="off"
+            placeholder="${escapeHtmlAttr(ph)}"
+            style="width:100%; padding:8px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></div>`;
+      }).join('');
+      const savedLine = cred
+        ? `<div class="hint" style="margin-top:6px;">Saved${cred.capabilities && cred.capabilities.length ? ' · serves ' + escapeHtmlAttr(cred.capabilities.join(', ')) : ''}. Leave blank to keep it; retype to replace.</div>`
+        : '';
+      return `<div style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <strong>${escapeHtmlAttr(p.label)}</strong>
+          <span class="hint">${escapeHtmlAttr(kinds)}</span>
+        </div>
+        ${fields}
+        ${savedLine}
+        <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+          <button type="button" onclick="saveCredential('${p.id}')" style="background:var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer;">Save ${escapeHtmlAttr(p.label)} key</button>
+          ${cred ? `<button type="button" onclick="deleteCredential(${cred.id})" style="background:transparent; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer;">Remove</button>` : ''}
+          <span id="cred-msg-${p.id}" class="hint"></span>
+        </div>
+        <div class="hint" style="margin-top:8px;">
+          <a href="${escapeHtmlAttr(p.policy_url)}" target="_blank" rel="noopener noreferrer">${escapeHtmlAttr(p.label)} privacy policy ↗</a>
+          — once your data reaches ${escapeHtmlAttr(p.label)}, their terms govern.
+        </div>
+      </div>`;
+    }
+
+    async function saveCredential(providerId) {
+      const p = _credCatalog.find(x => x.id === providerId);
+      if (!p) return;
+      const fields = {};
+      (p.credential_fields || []).forEach(f => {
+        const el = document.getElementById(`cred-${providerId}-${f.key}`);
+        if (el) fields[f.key] = el.value;
+      });
+      const msg = document.getElementById('cred-msg-' + providerId);
+      try {
+        const res = await fetch('/api/credentials', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: providerId, fields }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+        if (msg) { msg.textContent = 'Saved'; msg.style.color = 'var(--success)'; }
+        loadCredentials();
+      } catch (e) {
+        if (msg) { msg.textContent = e.message; msg.style.color = 'var(--danger)'; }
       }
     }
 
+    async function deleteCredential(id) {
+      if (!confirm('Remove this key?')) return;
+      try { await fetch('/api/credentials/' + id, { method: 'DELETE' }); loadCredentials(); }
+      catch {}
+    }
+
+    // Set a select/input value only if the element exists (schema-driven markup).
+    function setVal(id, v) { const el = document.getElementById(id); if (el != null && v != null) el.value = v; }
+
     async function loadSettings() {
       try {
-        await loadModels();
+        await loadDynamicOptions();
         const res = await fetch('/api/settings');
         const settings = await res.json();
-        if (settings.tts_voice) document.getElementById('tts-voice').value = settings.tts_voice;
-        if (settings.stt_model) document.getElementById('stt-model').value = settings.stt_model;
-        if (settings.stt_idle_timeout) document.getElementById('stt-idle-timeout').value = settings.stt_idle_timeout;
+        // Provider selections FIRST — the dynamic model/voice dropdowns depend on
+        // them. (tts/stt providers are user-selectable now; they must round-trip.)
+        setVal('tts-provider', settings.tts_provider);
+        setVal('stt-provider', settings.stt_provider);
         if (settings.llm_provider) document.getElementById('llm-provider').value = settings.llm_provider;
+        // Persistence guard: if a key was saved but the provider wasn't (an older
+        // save, or a mismatch), recover it from the key's own prefix so the
+        // dropdown never sits on the wrong provider — that's the bug that let an
+        // OpenAI key get Test-connected against Anthropic and look broken. The
+        // masked value keeps its prefix (sk-proj-…), so detection still works.
+        if (settings.llm_api_key && !settings.llm_provider) {
+          const recovered = detectKeyProvider(settings.llm_api_key);
+          if (recovered) document.getElementById('llm-provider').value = recovered;
+        }
+        // Stash each saved model/voice into its dynamic field's free-text input;
+        // refreshDynamic reads it back to restore the dropdown selection.
+        setVal('tts-voice', settings.tts_voice);
+        setVal('stt-model', settings.stt_model);
+        setVal('llm-model', settings.llm_model);
+        setVal('stt-idle-timeout', settings.stt_idle_timeout);
         // Secrets arrive masked (e.g. "sk-proj-Is…Xy9z"). Don't put the
         // mask into the input — it'd look like a typed key. Show it
         // beneath the field instead, so the user can recognize which
         // key is installed and just leave the input empty to keep it.
         if (settings.llm_api_key) showSavedKey('llm-api-key', settings.llm_api_key);
-        if (settings.llm_model) document.getElementById('llm-model').value = settings.llm_model;
+        if (settings.tts_api_key) showSavedKey('tts-api-key', settings.tts_api_key);
+        if (settings.stt_api_key) showSavedKey('stt-api-key', settings.stt_api_key);
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
         if (settings.voice_api_key) showSavedKey('voice-api-key', settings.voice_api_key);
-        // Now that provider+model are loaded, populate the model <select>.
-        onProviderChange();
+        document.getElementById('booknlp-enabled').checked = settings.booknlp_enabled === 'true';
+        // Now that every provider + saved value is in place, populate all three
+        // dynamic model/voice dropdowns from the one mechanism.
+        for (const key of Object.keys(DYNAMIC)) refreshDynamic(key);
+        // Wire up new-key provider auto-detection (once). A note element under
+        // the key input reports an auto-switch, or a provider/key mismatch.
+        const _llmKeyInput = document.getElementById('llm-api-key');
+        if (_llmKeyInput && !_llmKeyInput._detectWired) {
+          _llmKeyInput._detectWired = true;
+          if (!document.getElementById('llm-key-note')) {
+            const n = document.createElement('div');
+            n.id = 'llm-key-note'; n.className = 'hint'; n.style.marginTop = '6px'; n.style.display = 'none';
+            _llmKeyInput.insertAdjacentElement('afterend', n);
+          }
+          _llmKeyInput.addEventListener('input', onLLMKeyInput);
+        }
       } catch {}
     }
 
     async function saveSettings() {
-      // Resolve the model: select wins unless it's empty/__custom__, in
-      // which case the free-text input is the source of truth. Saving
-      // an empty string explicitly clears the model so the LLM client
-      // falls back to its provider default on next start.
-      const sel = document.getElementById('llm-model-select').value;
-      const txt = document.getElementById('llm-model').value.trim();
-      let llmModel;
-      if (sel && sel !== '__custom__') llmModel = sel;
-      else llmModel = txt;
-
+      // Each lane's model/voice resolves via dynamicValue (dropdown unless empty/
+      // Custom…, else the free-text input). Provider selections for ALL three
+      // lanes round-trip now — tts/stt were previously never saved from this form.
+      const getVal = id => { const el = document.getElementById(id); return el ? el.value : ''; };
       const settings = {
-        tts_voice: document.getElementById('tts-voice').value,
-        stt_model: document.getElementById('stt-model').value,
-        stt_idle_timeout: document.getElementById('stt-idle-timeout').value,
-        llm_provider: document.getElementById('llm-provider').value,
+        tts_provider: getVal('tts-provider'),
+        tts_voice: dynamicValue('tts_voice'),
+        tts_api_key: keyFieldValue('tts-api-key'),
+        stt_provider: getVal('stt-provider'),
+        stt_model: dynamicValue('stt_model'),
+        stt_api_key: keyFieldValue('stt-api-key'),
+        stt_idle_timeout: getVal('stt-idle-timeout'),
+        llm_provider: getVal('llm-provider'),
         llm_api_key: keyFieldValue('llm-api-key'),
-        llm_model: llmModel,
-        llm_base_url: document.getElementById('llm-base-url').value,
-        voice_provider: document.getElementById('voice-provider').value,
+        llm_model: dynamicValue('llm_model'),
+        llm_base_url: getVal('llm-base-url'),
+        voice_provider: getVal('voice-provider'),
         voice_api_key: keyFieldValue('voice-api-key'),
-        auth_username: document.getElementById('auth-username').value.trim(),
+        auth_username: getVal('auth-username').trim(),
+        booknlp_enabled: document.getElementById('booknlp-enabled').checked ? 'true' : 'false',
       };
       // Only send auth_password when the user actually typed one. Blank
       // means "keep current" — sending "" would clear it and disable
@@ -693,7 +951,7 @@
         if (fab) {
           fab.classList.add('saved');
           fab.innerHTML = '✓ Saved';
-          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = '💾 Save Settings'; }, 2000);
+          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = 'Save settings'; }, 2000);
         }
         document.getElementById('auth-password').value = '';
         loadAuthState();
@@ -773,6 +1031,88 @@
       location.href = '/';
     }
 
+    // Library locations (#220) — per-root state: path, book count, online/offline.
+    let _libraryRoots = [];
+    async function moveRoot(id, dir) {
+      const ids = _libraryRoots.map(r => r.id);
+      const idx = ids.indexOf(id);
+      const swap = idx + dir;
+      if (idx < 0 || swap < 0 || swap >= ids.length) return;
+      [ids[idx], ids[swap]] = [ids[swap], ids[idx]];
+      const r = await fetch('/api/library/roots/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      if (!r.ok) { rootsStatus('✗ reorder failed', true); return; }
+      rootsStatus('Reordered.'); loadRoots();
+    }
+    async function loadRoots() {
+      const box = document.getElementById('roots-list');
+      if (!box) return;
+      try {
+        const data = await fetch('/api/library/roots').then(r => r.json());
+        const roots = data.roots || [];
+        _libraryRoots = roots;
+        if (!roots.length) { box.innerHTML = '<div class="hint">No library locations configured.</div>'; return; }
+        box.innerHTML = roots.map((r, i) => {
+          const badge = r.reachable
+            ? '<span style="color:#1e7a46; font-weight:600; white-space:nowrap;">● online</span>'
+            : '<span style="color:#b45309; font-weight:600; white-space:nowrap;">● offline</span>';
+          const stale = r.stale_count ? ` · <span style="color:#b45309;">${r.stale_count} stale</span>` : '';
+          // Reorder controls (spec #220: add/remove/reorder). Only shown with 2+
+          // roots; ends are disabled. Order sets scan order.
+          const reorder = roots.length > 1
+            ? `<button type="button" class="clear-key-btn" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="moveRoot(${r.id}, -1)" style="padding:2px 8px;">↑</button>
+               <button type="button" class="clear-key-btn" title="Move down" ${i === roots.length - 1 ? 'disabled' : ''} onclick="moveRoot(${r.id}, 1)" style="padding:2px 8px;">↓</button>` : '';
+          const del = roots.length > 1
+            ? `<button type="button" class="clear-key-btn" onclick='removeRoot(${r.id}, ${JSON.stringify(r.path)})'>Remove</button>` : '';
+          return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+            <input type="radio" name="root-default" ${r.is_default ? 'checked' : ''} title="Default destination for new imports" onclick="setDefaultRoot(${r.id})" style="width:auto; min-height:0;">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.host_path || r.path)}</div>
+              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.host_path || r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
+            </div>
+            ${reorder}
+            ${badge}
+            ${del}
+          </div>`;
+        }).join('');
+        // Generated/derived books (TTS output + transcripts) live under no root.
+        // Show them so the per-root counts reconcile to the whole library and no
+        // book is silently hidden (#220 FINDING 1).
+        if (data.unattributed_count > 0) {
+          box.innerHTML += `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; color:var(--text-muted);">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600;">Generated content</div>
+              <div class="hint">TTS narration + transcripts — not in a library location · ${data.unattributed_count} book${data.unattributed_count === 1 ? '' : 's'}</div>
+            </div>
+          </div>`;
+        }
+      } catch { box.innerHTML = '<div class="hint">Could not load library locations.</div>'; }
+    }
+    function rootsStatus(msg, isErr) { const el = document.getElementById('roots-status'); el.textContent = msg; el.style.color = isErr ? 'var(--danger, #E94560)' : ''; }
+    async function addRoot() {
+      const path = document.getElementById('root-add-path').value.trim();
+      const label = document.getElementById('root-add-label').value.trim();
+      if (!path) { rootsStatus('Enter an absolute path.', true); return; }
+      rootsStatus('Adding…');
+      const r = await fetch('/api/library/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, label }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { rootsStatus('✗ ' + (j.error || 'failed'), true); return; }
+      document.getElementById('root-add-path').value = '';
+      document.getElementById('root-add-label').value = '';
+      rootsStatus('Added — scanning in the background.');
+      loadRoots();
+    }
+    async function removeRoot(id, path) {
+      if (!confirm(`Remove library location "${path}"?\nIts books are kept (unassigned), not deleted.`)) return;
+      const r = await fetch('/api/library/roots/' + id, { method: 'DELETE' });
+      if (!r.ok) { rootsStatus('✗ remove failed', true); return; }
+      rootsStatus('Removed.'); loadRoots();
+    }
+    async function setDefaultRoot(id) {
+      const r = await fetch('/api/library/roots/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) });
+      if (!r.ok) { rootsStatus('✗ set-default failed', true); return; }
+      rootsStatus('Default updated.'); loadRoots();
+    }
+
     async function checkServices() {
       // /api/health proxies the TTS + STT probes — going direct to a
       // service port breaks when this page is loaded from anything
@@ -817,7 +1157,7 @@
           ? (totalBytes / (1024*1024*1024)).toFixed(1) + ' GB'
           : (totalBytes / (1024*1024)).toFixed(0) + ' MB';
         document.getElementById('lib-stats').textContent =
-          `${works.length} works, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
+          `${works.length} books, ${totalFiles} files, ${paired} paired, ${sizeStr} on disk`;
       } catch {}
 
       // Disk-space readout. Renders used (library + generated) and free,
@@ -890,7 +1230,7 @@
         msg.style.display = 'block';
         msg.innerHTML =
           'New public URL: <code>' + data.public_url + '</code><br>' +
-          'Next: <code>' + data.command + '</code> (or restart the nullbore container manually).';
+          'Next: <code>' + data.command + '</code> (or restart the relay container manually).';
         await refreshPairing();
       } catch (e) {
         msg.style.display = 'block';
@@ -910,7 +1250,7 @@
         const btn = document.getElementById('embed-refresh-btn');
         const pct = j.percent.toFixed(1);
         const fmt = n => n.toLocaleString();
-        el.textContent = `${fmt(j.embedded)} of ${fmt(j.total)} chunks embedded (${pct}%)`;
+        el.textContent = `${fmt(j.embedded)} of ${fmt(j.total)} passages indexed (${pct}%)`;
         // Threshold colors: same scheme as disk + coverage pill.
         el.style.color = '';
         if (j.total > 0) {
@@ -950,8 +1290,8 @@
         const d = await res.json();
         msg.style.display = 'block';
         msg.innerHTML =
-          'Queued <b>' + d.works_queued + '</b> works for backfill. ' +
-          'Progress lands in the System Console (embed/rag).';
+          'Queued <b>' + d.works_queued + '</b> books to index. ' +
+          'Progress shows in the System Console.';
         // Coverage updates as embeds complete — poll a few times then back off.
         let attempts = 0;
         const tick = setInterval(() => {
@@ -964,7 +1304,7 @@
         msg.textContent = 'Refresh failed: ' + e.message;
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Refresh embeddings';
+        btn.textContent = 'Rebuild search index';
       }
     }
 
@@ -983,7 +1323,7 @@
         msg.innerHTML =
           '<b>' + d.scanned + ' new/changed</b> files · ' +
           'upserted ' + d.upserted + ' · ' +
-          'new works ' + d.new_works + ' · ' +
+          'new books ' + d.new_works + ' · ' +
           'chapters extracted ' + d.chapters_extracted;
         // Refresh the stats below so updated counts show without a reload.
         checkServices();
@@ -1011,7 +1351,7 @@
         msg.style.display = 'block';
         const pct = (d.average_coverage * 100).toFixed(1);
         msg.innerHTML =
-          '<b>Aligned ' + d.aligned + '</b> of ' + d.total + ' works · ' +
+          '<b>Aligned ' + d.aligned + '</b> of ' + d.total + ' books · ' +
           'skipped ' + d.skipped + ' (no transcript+ebook pair) · ' +
           'errored ' + d.errored + ' · ' +
           'avg coverage ' + pct + '%';
@@ -1021,7 +1361,7 @@
         msg.textContent = 'Align-all failed: ' + e.message;
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Re-align all works';
+        btn.textContent = 'Re-align all books';
       }
     }
 
@@ -1138,7 +1478,9 @@
     }
 
     async function previewVoice() {
-      const voice = document.getElementById('tts-voice').value;
+      // Resolve via the dynamic mechanism; fall back to the default voice when
+      // the dropdown sits on "Default for this engine" (empty value).
+      const voice = dynamicValue('tts_voice') || 'af_heart';
       const btn = document.getElementById('preview-btn');
       const audio = document.getElementById('preview-audio');
       btn.textContent = 'Loading…';
@@ -1176,7 +1518,9 @@
     // loadSettings targets elements the schema render creates (#202).
     renderSchemaForm().then(loadSettings).then(updateSTTDeviceReadout);
     checkServices();
+    loadRoots();
     loadAuthState();
+    loadCredentials();
   </script>
 </body>
 </html>

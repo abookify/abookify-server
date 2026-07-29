@@ -85,6 +85,11 @@ func main() {
 	applog.Init(store)
 	applog.Info("system", "abookify server starting")
 
+	// #220: migrate the single -library path in as library root #1 (idempotent).
+	if err := library.EnsureRoots(store, *libraryPath); err != nil {
+		log.Printf("warning: library-root migration failed: %v", err)
+	}
+
 	// MOBI/AZW3/AZW → sibling .epub via calibre's ebook-convert (image
 	// dep). Idempotent — skips files that already have a sibling .epub.
 	// Lets the scanner + EPUB chapter extractor handle ebook formats
@@ -101,6 +106,31 @@ func main() {
 	for _, r := range results {
 		if err := store.UpsertBook(r); err != nil {
 			log.Printf("warning: failed to store %s: %v", r.Path, err)
+		}
+	}
+
+	// #220: also scan any ADDITIONAL reachable library roots (root #1 =
+	// *libraryPath was scanned above). Unreachable roots are skipped — their
+	// books stay in the DB and the reconcile marks them stale, never deleted.
+	if roots, _ := store.ListRoots(); len(roots) > 1 {
+		for _, rt := range roots {
+			if rt.Path == *libraryPath || !library.RootReachable(rt.Path) {
+				continue
+			}
+			library.ConvertMobiFilesInDir(rt.Path)
+			extra, err := scanner.Scan(rt.Path)
+			if err != nil {
+				log.Printf("#220: scan of root %q failed: %v", rt.Path, err)
+				continue
+			}
+			for _, b := range extra {
+				store.UpsertBook(b)
+			}
+			store.AssignBooksToRoot(rt.ID, rt.Path)
+			if len(extra) > 0 {
+				library.MarkRootReachable(rt.Path)
+			}
+			log.Printf("#220: scanned additional root %q (%d files)", rt.Path, len(extra))
 		}
 	}
 
@@ -265,20 +295,60 @@ func main() {
 		}
 	}
 
-	// Clean up orphaned DB entries (files that no longer exist on disk)
-	if removed, err := store.CleanupOrphanedBooks(); err == nil && removed > 0 {
-		log.Printf("cleaned up %d orphaned book entries", removed)
+	// Reconcile books against their library roots (#220). REPLACES the old
+	// delete-any-missing-file cleanup: an unreachable (unplugged) root marks its
+	// books stale instead of deleting them — only a reachable root's genuinely
+	// missing files are removed. Books with no root (root_id=0, incl. generated)
+	// are left alone.
+	if staleRoots, removed := library.ReconcileLibraryRoots(store); staleRoots > 0 || removed > 0 {
+		log.Printf("library reconcile: %d root(s) stale/offline, %d missing book(s) removed", staleRoots, removed)
 	}
-	// Sweep content rows whose owning book is gone (debris from book
-	// deletions that predate the cascade fix in CleanupOrphanedBooks).
+	// Sweep content rows whose owning book is gone (debris from book deletions).
 	if removed, err := store.CleanupOrphanedRows(); err == nil && removed > 0 {
 		log.Printf("cleaned up %d orphaned content rows (chunks/paragraphs/chapters)", removed)
+	}
+
+	// Surface any existing per-feature BYOK keys in the new Keys section without
+	// the user re-entering them. Non-destructive: the legacy settings still drive
+	// features until provider-resolution switches over.
+	if created, err := server.MigrateLegacyCredentials(store); err != nil {
+		log.Printf("credential migration: %v", err)
+	} else if len(created) > 0 {
+		log.Printf("migrated %d legacy key(s) into the Keys section: %v", len(created), created)
 	}
 
 	// Set up HTTP server
 	srv := server.New(store, *port)
 	srv.Version = version
 	srv.LibraryDir = *libraryPath
+	// Host path of the library mount when containerized (#220): compose passes
+	// ABOOKIFY_LIBRARY_HOST_PATH so the roots UI shows the real host path, not
+	// the container mount point. Empty on native/desktop (LibraryDir is real).
+	srv.LibraryHostPath = os.Getenv("ABOOKIFY_LIBRARY_HOST_PATH")
+	// Local-dev auth bypass (mobile screenshot capture etc.): activate ONLY when
+	// the operator set ABOOKIFY_DEV_AUTH_TOKEN AND the instance isn't exposed via
+	// the relay (ABOOKIFY_PUBLIC_URL). This makes it impossible to enable on a real
+	// (network-facing) install — see engineering/server/docs/dev-auth.md.
+	// DURABLE across container recreates: the token is persisted in the settings
+	// DB (which lives in the data-dir volume), NOT in container env — a routine
+	// `docker compose up` recreate no longer wipes it. Set ABOOKIFY_DEV_AUTH_TOKEN
+	// ONCE (env/.env) → it's saved; thereafter it loads from the DB even without
+	// the env. Same gate as before: NEVER honored on a relay-exposed install
+	// (masked in GET /api/settings via the `_token` suffix). See docs/dev-auth.md.
+	relayExposed := os.Getenv("ABOOKIFY_PUBLIC_URL") != ""
+	if envTok := os.Getenv("ABOOKIFY_DEV_AUTH_TOKEN"); envTok != "" && !relayExposed {
+		if err := store.SetSetting("dev_auth_token", envTok); err != nil {
+			log.Printf("dev-auth: could not persist token: %v", err)
+		}
+	}
+	if tok, _ := store.GetSetting("dev_auth_token"); tok != "" {
+		if relayExposed {
+			log.Printf("SECURITY: a stored dev-auth token is IGNORED — this instance is relay-exposed (ABOOKIFY_PUBLIC_URL=%s). Never honored on a real install.", os.Getenv("ABOOKIFY_PUBLIC_URL"))
+		} else {
+			srv.DevAuthToken = tok
+			log.Printf("⚠ DEV AUTH BYPASS ACTIVE (persisted) — requests bearing the dev token skip login. LOCAL DEVELOPMENT ONLY; never enable on a real install.")
+		}
+	}
 	srv.GeneratedDir = *generatedPath
 	srv.DataDir = *dataDir
 	srv.ModelsDir = modelsDir
@@ -325,19 +395,42 @@ func main() {
 	// hermetic engine picks the right device on its next (re)start (bundle path).
 	srv.SyncEngineDeviceHint()
 
-	// Start file watcher for live library updates
-	watcher, err := library.NewWatcher(store, *libraryPath, func() {
+	// Start a file watcher per REACHABLE library root (#220) for live updates.
+	// Unreachable (unplugged) roots aren't watched — a remount is picked up on
+	// the next boot/rescan. The onChange callback is shared across roots.
+	onLibraryChange := func() {
 		srv.Events.Broadcast(server.Event{Type: "library_updated"})
 		// #159b: a newly-imported/scanned book gets embedded without a restart
 		// (no-op when no LLM; idempotent + single-flight, so cheap on every tick).
 		srv.EmbedNewWorks()
-	})
-	if err != nil {
-		log.Printf("warning: file watcher failed to start: %v", err)
-	} else {
-		watcher.Start()
-		defer watcher.Close()
 	}
+	var watchPaths []string
+	if roots, _ := store.ListRoots(); len(roots) > 0 {
+		for _, rt := range roots {
+			watchPaths = append(watchPaths, rt.Path)
+		}
+	} else if *libraryPath != "" {
+		watchPaths = append(watchPaths, *libraryPath)
+	}
+	var watchers []*library.Watcher
+	for _, wp := range watchPaths {
+		if !library.RootReachable(wp) {
+			log.Printf("#220: not watching unreachable root %q", wp)
+			continue
+		}
+		wch, err := library.NewWatcher(store, wp, onLibraryChange)
+		if err != nil {
+			log.Printf("warning: file watcher for %q failed to start: %v", wp, err)
+			continue
+		}
+		wch.Start()
+		watchers = append(watchers, wch)
+	}
+	defer func() {
+		for _, wch := range watchers {
+			wch.Close()
+		}
+	}()
 
 	// Start ingest queue: file-based drop-zone at <library>/incoming/.
 	// Users put audiobooks/ebooks there; the queue copies them into the

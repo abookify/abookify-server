@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -103,6 +104,12 @@ func writeFileAtomic(path string, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
+	// os.CreateTemp makes the file 0600; match the extract path's 0644 so every
+	// cover has consistent, world-readable perms regardless of how it was set.
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
 	return os.Rename(tmpName, path)
 }
 
@@ -164,21 +171,45 @@ func SearchOpenLibraryCovers(title, author string, limit int) ([]CoverCandidate,
 	return runOLCoverSearch(q, limit)
 }
 
+// solrOperators are the Lucene/Solr query syntax characters. OpenLibrary's
+// search is Solr-backed, so an unescaped one changes the QUERY rather than
+// matching literally — most damagingly a '-' means NOT, so "Atwood - Handmaid's"
+// EXCLUDES "Handmaid's" and returns zero results (the exact bug PJ hit). We
+// strip them: a cover search wants a plain title/author, never query operators.
+var solrOperators = strings.NewReplacer(
+	"-", " ", "+", " ", "&&", " ", "||", " ", "!", " ", "(", " ", ")", " ",
+	"{", " ", "}", " ", "[", " ", "]", " ", "^", " ", "\"", " ", "~", " ",
+	"*", " ", "?", " ", ":", " ", "\\", " ", "/", " ",
+)
+
+var multiSpace = regexp.MustCompile(`\s+`)
+
+// sanitizeCoverQuery strips Solr/Lucene operators and collapses whitespace so a
+// free-text cover query matches literally. Apostrophes are KEPT (not an operator
+// — "Handmaid's" is fine).
+func sanitizeCoverQuery(s string) string {
+	return strings.TrimSpace(multiSpace.ReplaceAllString(solrOperators.Replace(s), " "))
+}
+
 // SearchOpenLibraryCoversFreeText runs a general free-text OpenLibrary search
 // (the metadata editor's editable cover box) — more forgiving than the strict
 // title/author fields when a work's metadata is wrong (e.g. author="Chapter 7").
 func SearchOpenLibraryCoversFreeText(query string, limit int) ([]CoverCandidate, error) {
-	if strings.TrimSpace(query) == "" {
+	clean := sanitizeCoverQuery(query)
+	if clean == "" {
 		return nil, fmt.Errorf("query required")
 	}
 	q := url.Values{}
-	q.Set("q", strings.TrimSpace(query))
+	q.Set("q", clean)
 	return runOLCoverSearch(q, limit)
 }
 
 func runOLCoverSearch(q url.Values, limit int) ([]CoverCandidate, error) {
-	if limit <= 0 || limit > 20 {
+	if limit <= 0 {
 		limit = 12
+	}
+	if limit > 50 {
+		limit = 50
 	}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("fields", "title,author_name,cover_i")

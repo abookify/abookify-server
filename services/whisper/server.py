@@ -1,5 +1,7 @@
 """Faster-whisper STT HTTP service."""
+import gc
 import os
+import threading
 import tempfile
 import json
 from flask import Flask, request, jsonify
@@ -49,8 +51,33 @@ def _load_model():
         raise
 
 
+# RLock, not Lock: _run_transcribe holds it across the whole decode and calls
+# _get_model() inside, which re-acquires. A plain Lock deadlocks there.
+#
+# Held across the ENTIRE transcribe, including the lazy-generator
+# materialization — not merely around fetching the model. That is what makes
+# /unload safe: an unload cannot free the weights out from under a decode in
+# progress, and concurrent decodes through the single WhisperModel are
+# serialized. This restores protection that server-web had built (MODEL_LOCK)
+# and that I destroyed in 9316e34 by writing this file from a tree state that
+# predated their work.
+_model_lock = threading.RLock()
 model, DEVICE, COMPUTE_TYPE = _load_model()
 print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
+
+
+def _get_model():
+    """Return the loaded model, reloading transparently after an unload.
+
+    Callers never see the difference: an unloaded service reloads on the next
+    transcribe, costing roughly two seconds on this hardware.
+    """
+    global model, DEVICE, COMPUTE_TYPE
+    with _model_lock:
+        if model is None:
+            print("Model not resident; reloading on demand...", flush=True)
+            model, DEVICE, COMPUTE_TYPE = _load_model()
+        return model
 
 
 @app.route("/health")
@@ -61,6 +88,41 @@ def health():
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
         "gpu_available": DEVICE == "cuda",
+        # Whether the weights are actually resident. The idle-unload setting is
+        # meaningless without this: a caller cannot otherwise tell whether the
+        # memory it thinks it freed is really free.
+        "model_loaded": model is not None,
+    })
+
+
+@app.route("/unload", methods=["POST"])
+def unload():
+    """Drop the model and release its memory (~3 GB, VRAM on GPU).
+
+    Exists because the product exposes an "Unload from memory after idle"
+    setting that, on the Docker stack, had nothing to call — the endpoint was
+    documented as shipped but was never implemented, so the setting silently
+    reclaimed nothing. Reporting a freed 3 GB that is still allocated is worse
+    than not offering the option.
+
+    Idempotent: unloading an already-unloaded service is a no-op success. The
+    next transcribe reloads transparently.
+    """
+    global model
+    with _model_lock:
+        was_loaded = model is not None
+        if was_loaded:
+            model = None
+            # ctranslate2 frees its device memory when the last reference goes;
+            # the collection is what makes that happen promptly rather than at
+            # some arbitrary later point.
+            gc.collect()
+            print("Model unloaded on request; memory released.", flush=True)
+    return jsonify({
+        "status": "ok",
+        "was_loaded": was_loaded,
+        "model_loaded": False,
+        "device": DEVICE,
     })
 
 
@@ -71,7 +133,16 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
     faster-whisper returns a LAZY generator, so decode errors surface while
     iterating, not at the call — the list() is what makes a failure catchable.
     """
-    segments, info = model.transcribe(
+    with _model_lock:
+        return _transcribe_locked(path, language, word_timestamps, initial_prompt,
+                                  vad_filter, condition_on_previous_text)
+
+
+def _transcribe_locked(path, language, word_timestamps, initial_prompt, vad_filter,
+                       condition_on_previous_text=True):
+    """The decode itself. _model_lock MUST be held for the whole call, so an
+    /unload cannot free the model mid-decode."""
+    segments, info = _get_model().transcribe(
         path,
         language=language if language else None,
         word_timestamps=word_timestamps,
@@ -102,6 +173,103 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
         full_text_parts.append(segment.text.strip())
 
     return info, result_segments, full_text_parts
+
+
+def _looks_looped(segments):
+    """True when the output shows Whisper's repetition-loop signature.
+
+    Conditioning on previously generated text can trap the decoder: it emits the
+    same short phrase over and over instead of transcribing, and because it
+    RETURNS NORMALLY nothing downstream notices. Pride and Prejudice lost ~550
+    words of one chunk to 8 repetitions of "CHAPTER VII." spread over 210
+    seconds, with confidence collapsing 0.98 -> 0.02 as it went. Re-running
+    reproduced it exactly, because the failure is deterministic.
+
+    Keyed on the TIME the repetition spans, not on its share of the segments.
+    That distinction is the whole detector: P&P's loop is 8 segments out of
+    roughly 100 — under 10% — because 210 seconds of looping is followed by 390
+    seconds of ordinary narration in the same chunk. A share-based threshold
+    misses it completely, which is exactly what a first attempt keyed on share
+    did. What makes it pathological is that one short phrase covers 200 seconds
+    of audio, and nothing legitimate does that.
+
+    Requires the phrase to be short, since loops latch onto fragments rather than
+    sentences, and requires several repetitions so an incidental echo is ignored.
+    A false positive costs one extra pass and cannot lose words, because the
+    caller keeps whichever pass transcribed more.
+    """
+    spans = {}
+    for s in segments:
+        t = s.get("text", "").strip()
+        if not t or len(t) > 60:
+            continue
+        first, last, n = spans.get(t, (s["start"], s["end"], 0))
+        spans[t] = (min(first, s["start"]), max(last, s["end"]), n + 1)
+
+    for t, (first, last, n) in spans.items():
+        if n >= 4 and (last - first) >= 60.0:
+            return True
+    return _looks_stuttered(segments)
+
+
+def _looks_stuttered(segments):
+    """True when a segment simply repeats what it just said.
+
+    The sustained loop above is one scale of the same defect; this is the other.
+    Frankenstein's fresh transcription produced "I am not a man, and I am not a
+    woman. I am not a man, and I am not a woman." where the audio says
+    "temperature of this place is not fitting to your fine sensations" — a clause
+    emitted twice back to back, over ~20 seconds. Two repetitions inside 20s clear
+    neither the >=4-times nor the >=60s bar, so the sustained-loop detector never
+    fires, and the result is fabricated text with collapsed word timings that
+    reads as a successful transcription.
+
+    Detected two ways, because the stutter shows up at both granularities:
+
+      - a segment whose text exactly repeats the previous segment's;
+      - a segment that says the same phrase twice within itself.
+
+    The second is checked as a repeated n-gram rather than an even split, because
+    the repeat is often TRUNCATED or has stray words wedged between the copies:
+
+        "I looked on the valley before me, and saw that there was nothing there.
+         I looked on the valley before me, and saw that there was"
+
+    An even-split test misses that; a repeated 6-word sequence catches it. Six is
+    long enough that ordinary prose does not repeat one by accident inside a
+    single ~25-word segment, so a refrain, a repeated name or "No, no." cannot
+    trip it.
+    """
+    MIN_WORDS = 6
+
+    prev = ""
+    for s in segments:
+        t = " ".join(s.get("text", "").strip().lower().split())
+        if not t:
+            continue
+        words = t.split()
+
+        # Consecutive segments carrying the same sentence.
+        if t == prev and len(words) >= MIN_WORDS:
+            return True
+        prev = t
+
+        # The same run of words said twice inside one segment.
+        if len(words) >= MIN_WORDS * 2:
+            seen = set()
+            for i in range(len(words) - MIN_WORDS + 1):
+                gram = tuple(words[i:i + MIN_WORDS])
+                if gram in seen:
+                    return True
+                seen.add(gram)
+    return False
+
+
+def _span_seconds(segments):
+    """Audio actually covered by the returned segments."""
+    if not segments:
+        return 0.0
+    return max(s["end"] for s in segments) - min(s["start"] for s in segments)
 
 
 def _transcribe_degrading(path, language, word_timestamps, initial_prompt, vad_filter=True,
@@ -135,6 +303,40 @@ def _transcribe_degrading(path, language, word_timestamps, initial_prompt, vad_f
         try:
             info, segs, parts = _run_transcribe(
                 path, language, words, initial_prompt, vad, condition_prev)
+
+            # A repetition loop is not an exception — the call SUCCEEDS and
+            # returns a plausible-looking result that is mostly one repeated
+            # phrase. Retry once without conditioning, which is what traps the
+            # decoder, and keep whichever pass transcribed more of the audio.
+            if condition_prev and _looks_looped(segs):
+                print(f"transcribe: repetition loop detected "
+                      f"({len(segs)} segments); retrying without "
+                      f"condition_on_previous_text", flush=True)
+                try:
+                    info2, segs2, parts2 = _run_transcribe(
+                        path, language, words, initial_prompt, vad, False)
+                    n1 = len(" ".join(parts).split())
+                    n2 = len(" ".join(parts2).split())
+                    # Prefer the pass that is CLEAN over the pass that is LONGER.
+                    # Selecting on word count alone is how a bad retry shipped:
+                    # Heart Goes Last's chunk came back with more words that were
+                    # fabricated, and every number read as a successful recovery.
+                    # A higher word count is not evidence of correctness.
+                    retry_clean = not _looks_looped(segs2)
+                    if retry_clean or n2 > n1:
+                        why = "clean" if retry_clean else "longer but still looped"
+                        print(f"transcribe: recovered from loop "
+                              f"({n1} -> {n2} words, {why})", flush=True)
+                        tag = "no_condition_prev"
+                        if degraded:
+                            tag = degraded + "+no_condition_prev"
+                        return info2, segs2, parts2, tag
+                    print("transcribe: retry did not improve; keeping first pass",
+                          flush=True)
+                except Exception as e:
+                    print(f"transcribe: loop retry failed ({e}); keeping first pass",
+                          flush=True)
+
             if degraded:
                 print(f"transcribe: recovered via {degraded} "
                       f"(after: {last_err})", flush=True)

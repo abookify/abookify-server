@@ -35,7 +35,9 @@ func firstNonEmpty(vals ...string) string {
 func CreateTTSProvider(store *db.Store, fallbackURL string) tts.Provider {
 	settings, _ := store.GetAllSettings()
 	if settings["tts_provider"] == "openai" {
-		if key := firstNonEmpty(settings["tts_api_key"], settings["openai_api_key"]); key != "" {
+		// Prefer the credentials vault (a key added once in the Keys section),
+		// then the legacy per-feature / shared settings keys.
+		if key := firstNonEmpty(store.CredentialAPIKey("openai"), settings["tts_api_key"], settings["openai_api_key"]); key != "" {
 			return tts.NewOpenAIClient(key)
 		}
 	}
@@ -54,7 +56,7 @@ func CreateTTSProvider(store *db.Store, fallbackURL string) tts.Provider {
 func CreateSTTProvider(store *db.Store, fallbackURL string) stt.Provider {
 	settings, _ := store.GetAllSettings()
 	if settings["stt_provider"] == "openai" {
-		if key := firstNonEmpty(settings["stt_api_key"], settings["openai_api_key"]); key != "" {
+		if key := firstNonEmpty(store.CredentialAPIKey("openai"), settings["stt_api_key"], settings["openai_api_key"]); key != "" {
 			return stt.NewOpenAIClient(key)
 		}
 	}

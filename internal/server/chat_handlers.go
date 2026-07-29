@@ -1,12 +1,13 @@
 // HTTP handlers for chat sessions.
 //
 // API surface:
-//   GET    /api/works/{id}/sessions          — list sessions for a work
-//   POST   /api/works/{id}/sessions          — create a new session
-//   GET    /api/sessions/{id}/messages       — list messages in a session
-//   POST   /api/sessions/{id}/messages       — append a user msg + return assistant
-//   PUT    /api/sessions/{id}                — rename a session
-//   DELETE /api/sessions/{id}                — delete a session
+//
+//	GET    /api/works/{id}/sessions          — list sessions for a work
+//	POST   /api/works/{id}/sessions          — create a new session
+//	GET    /api/sessions/{id}/messages       — list messages in a session
+//	POST   /api/sessions/{id}/messages       — append a user msg + return assistant
+//	PUT    /api/sessions/{id}                — rename a session
+//	DELETE /api/sessions/{id}                — delete a session
 package server
 
 import (
@@ -19,6 +20,17 @@ import (
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
 )
+
+// extractOnlyEnabled reports the ONE global "answer from the book text" setting
+// (#130). A single control governs every path that generates an answer from book
+// content — chat, single-shot Q&A, voice, recap, chapter summary — so a reader
+// turns spoiler-safety on in one place and it holds everywhere. When on, those
+// paths return the book's own text (or, for summaries, decline) and never let the
+// model generate, closing the memorized-classic leak.
+func (s *Server) extractOnlyEnabled() bool {
+	v, _ := s.store.GetSetting("qa_extract_only")
+	return v == "1" || v == "true"
+}
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	workID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
@@ -168,13 +180,6 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 // stores the assistant reply, and returns the assistant's chatMessage so
 // the client can append it to the visible thread.
 func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
-	rag := s.RAG()
-	if rag == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings.",
-		})
-		return
-	}
 	sessionID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
@@ -183,6 +188,17 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.store.GetSession(sessionID)
 	if err != nil || sess == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	// Extract-only answers from the book's own text, so it needs NO LLM. Only the
+	// generated mode requires a configured model. ONE global setting governs
+	// every generate-from-book path (chat, single-shot Q&A, voice, recap, summary).
+	extractOnly := s.extractOnlyEnabled()
+	rag := s.RAG()
+	if rag == nil && !extractOnly {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "No LLM configured. Add an API key in Settings, or turn on 'answer from the book text'.",
+		})
 		return
 	}
 
@@ -243,7 +259,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope)
+	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope, extractOnly)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.

@@ -12,22 +12,26 @@ type QASession struct {
 	Title  string `json:"title"`
 	// Scope is the per-chat spoiler policy (#130): "reading" (spoiler-safe,
 	// up to the reader's position) or "book" (whole book).
-	Scope     string    `json:"scope"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Scope string `json:"scope"`
+	// AnswerMode is the per-chat answer policy (#130): "generated" (AI writes the
+	// answer, default) or "extract" (answer only from the book's own text — no
+	// generation, so a memorized classic can't leak ahead of the reader).
+	AnswerMode string    `json:"answer_mode"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type QAMessage struct {
-	ID            int64     `json:"id"`
-	SessionID     int64     `json:"session_id"`
-	Role          string    `json:"role"` // "user" | "assistant"
-	Content       string    `json:"content"`
-	CitationsJSON string    `json:"-"`
+	ID            int64  `json:"id"`
+	SessionID     int64  `json:"session_id"`
+	Role          string `json:"role"` // "user" | "assistant"
+	Content       string `json:"content"`
+	CitationsJSON string `json:"-"`
 	// ScopeJSON is the marshalled library.QueryScope that produced
 	// this turn (user messages only). Empty = whole book / default.
 	// Stored as opaque JSON so db package needn't import library.
-	ScopeJSON     string    `json:"-"`
-	CreatedAt     time.Time `json:"created_at"`
+	ScopeJSON string    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // normalizeScope clamps a chat scope to the known values; unknown/empty →
@@ -62,9 +66,26 @@ func (s *Store) SetSessionScope(id int64, scope string) error {
 	return err
 }
 
+// normalizeAnswerMode clamps a chat answer mode; unknown/empty → "generated".
+func normalizeAnswerMode(mode string) string {
+	if mode == "extract" {
+		return "extract"
+	}
+	return "generated"
+}
+
+// SetSessionAnswerMode updates a chat's answer mode ("generated" | "extract").
+func (s *Store) SetSessionAnswerMode(id int64, mode string) error {
+	_, err := s.db.Exec(
+		`UPDATE qa_sessions SET answer_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		normalizeAnswerMode(mode), id,
+	)
+	return err
+}
+
 func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 	rows, err := s.db.Query(
-		`SELECT id, work_id, title, scope, created_at, updated_at
+		`SELECT id, work_id, title, scope, answer_mode, created_at, updated_at
 		   FROM qa_sessions WHERE work_id = ? ORDER BY updated_at DESC, id DESC`,
 		workID,
 	)
@@ -75,7 +96,7 @@ func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 	var out []QASession
 	for rows.Next() {
 		var ss QASession
-		if err := rows.Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.CreatedAt, &ss.UpdatedAt); err != nil {
+		if err := rows.Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.AnswerMode, &ss.CreatedAt, &ss.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, ss)
@@ -86,9 +107,9 @@ func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 func (s *Store) GetSession(id int64) (*QASession, error) {
 	var ss QASession
 	err := s.db.QueryRow(
-		`SELECT id, work_id, title, scope, created_at, updated_at
+		`SELECT id, work_id, title, scope, answer_mode, created_at, updated_at
 		   FROM qa_sessions WHERE id = ?`, id,
-	).Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.CreatedAt, &ss.UpdatedAt)
+	).Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.AnswerMode, &ss.CreatedAt, &ss.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

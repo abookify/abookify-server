@@ -7,7 +7,7 @@ import "testing"
 // server's actual masking (isSecretSettingKey) so a "secret" field is really
 // masked on the wire.
 func TestSettingsSchemaConsistency(t *testing.T) {
-	validTypes := map[string]bool{"text": true, "secret": true, "bool": true, "select": true, "select_or_custom": true}
+	validTypes := map[string]bool{"text": true, "secret": true, "bool": true, "select": true, "select_or_custom": true, "library_roots": true}
 	seen := map[string]bool{}
 	doc := SettingsSchema()
 	if doc.Version != SettingsSchemaVersion {

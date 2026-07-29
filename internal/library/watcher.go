@@ -29,6 +29,11 @@ var audioExts = map[string]bool{
 	".opus": true, ".ogg": true,
 }
 
+// maxSettleAttempts bounds how many debounce ticks we'll wait for a file to
+// stop growing before ingesting it as-is — a safety valve so a truly abandoned
+// partial write doesn't re-queue forever.
+const maxSettleAttempts = 15
+
 // Watcher monitors the library directory for file changes.
 type Watcher struct {
 	store    *db.Store
@@ -36,10 +41,33 @@ type Watcher struct {
 	watcher  *fsnotify.Watcher
 	onChange func() // callback when library changes
 
+	// settle is the gap between the two size samples fileSettled takes to decide
+	// a file has finished being written (#219 debounce-on-write).
+	settle time.Duration
+
 	// Debounce: collect events and process in batch
 	mu       sync.Mutex
 	pending  map[string]bool
+	attempts map[string]int // per-path deferral count while a file is still growing
 	timer    *time.Timer
+}
+
+// fileSettled reports whether a file has finished being written: two size
+// samples taken `settle` apart are equal and non-zero. A file still being
+// copied or transcoded keeps growing, so its samples differ — the watcher
+// defers ingest (and the ffprobe duration read) to a later tick rather than
+// recording a half-written file with duration 0 (#219).
+func fileSettled(path string, settle time.Duration) bool {
+	a, err := os.Stat(path)
+	if err != nil || a.IsDir() || a.Size() == 0 {
+		return false
+	}
+	time.Sleep(settle)
+	b, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return b.Size() == a.Size() && b.Size() > 0
 }
 
 func NewWatcher(store *db.Store, root string, onChange func()) (*Watcher, error) {
@@ -53,7 +81,9 @@ func NewWatcher(store *db.Store, root string, onChange func()) (*Watcher, error)
 		root:     root,
 		watcher:  fsw,
 		onChange: onChange,
+		settle:   time.Second,
 		pending:  make(map[string]bool),
+		attempts: make(map[string]int),
 	}
 
 	// Watch root and all subdirectories EXCEPT the ingest queue's working
@@ -167,6 +197,7 @@ func (w *Watcher) processPending() {
 	log.Printf("watcher: processing %d file changes", len(paths))
 
 	changed := false
+	var requeue []string // files still being written — retried on the next tick
 	for _, path := range paths {
 		lower := strings.ToLower(path)
 
@@ -192,7 +223,15 @@ func (w *Watcher) processPending() {
 
 		info, err := os.Stat(path)
 		if err != nil {
-			// File was removed — could handle deletion here later
+			w.mu.Lock()
+			delete(w.attempts, path)
+			w.mu.Unlock()
+			// File is gone: remove its book — but ONLY if the root is still
+			// reachable (a genuine single-file delete). A whole vanished root is
+			// handled separately by handleRemoved (marked stale, never deleted).
+			if os.IsNotExist(err) && w.handleRemoved(path) {
+				changed = true
+			}
 			continue
 		}
 		if info.IsDir() {
@@ -203,6 +242,32 @@ func (w *Watcher) processPending() {
 		format, ok := supportedExts[ext]
 		if !ok {
 			continue
+		}
+
+		// #219 debounce-on-write: a file still being copied or transcoded keeps
+		// growing; ingesting now reads a partial file and records duration 0.
+		// Defer to a later tick until the size settles — bounded so a
+		// never-completing partial write doesn't re-queue forever.
+		if !fileSettled(path, w.settle) {
+			w.mu.Lock()
+			w.attempts[path]++
+			n := w.attempts[path]
+			w.mu.Unlock()
+			if n <= maxSettleAttempts {
+				log.Printf("watcher: %s still being written (attempt %d) — deferring", filepath.Base(path), n)
+				requeue = append(requeue, path)
+				continue
+			}
+			log.Printf("watcher: %s never settled after %d tries — ingesting as-is", filepath.Base(path), n)
+		}
+		w.mu.Lock()
+		delete(w.attempts, path)
+		w.mu.Unlock()
+
+		// Refresh the stat after settling — the file may have grown since the
+		// first sample, so SizeBytes reflects the finished file.
+		if fi, serr := os.Stat(path); serr == nil {
+			info = fi
 		}
 
 		mediaType := "text"
@@ -229,6 +294,11 @@ func (w *Watcher) processPending() {
 				book.Author = meta.Author
 			}
 			book.Album = meta.Album
+			// Mirror the scanner: record the probed duration so a
+			// watcher-ingested audiobook isn't stuck at 0 until the next rescan.
+			if meta.Duration > 0 {
+				book.Duration = meta.Duration
+			}
 		}
 
 		if err := w.store.UpsertBook(book); err != nil {
@@ -269,6 +339,20 @@ func (w *Watcher) processPending() {
 		}
 	}
 
+	// Re-arm the debounce for any files that weren't done being written, so
+	// they get another settle check on the next tick.
+	if len(requeue) > 0 {
+		w.mu.Lock()
+		for _, p := range requeue {
+			w.pending[p] = true
+		}
+		if w.timer != nil {
+			w.timer.Stop()
+		}
+		w.timer = time.AfterFunc(2*time.Second, w.processPending)
+		w.mu.Unlock()
+	}
+
 	if changed {
 		// Re-run matching for unassigned books
 		if err := MatchAndCreateWorks(w.store); err != nil {
@@ -278,6 +362,45 @@ func (w *Watcher) processPending() {
 			w.onChange()
 		}
 	}
+}
+
+// handleRemoved decides what to do when a watched path no longer exists.
+//
+// THE #220 SAFETY DISTINCTION between a vanished FILE and a vanished ROOT: if
+// the whole root is unreachable (an unmounted/unplugged drive — the sentinel is
+// gone), delete NOTHING. Those books are marked stale by the boot reconcile,
+// never dropped: losing an external drive's metadata is the worst-case failure.
+// Only when the root is still reachable is a missing file a genuine deletion.
+// Returns true iff a book row was actually deleted.
+func (w *Watcher) handleRemoved(path string) bool {
+	if !RootReachable(w.root) {
+		log.Printf("watcher: %s vanished but root %q is unreachable (unmounted?) — NOT deleting; leaving for the stale-reconcile", filepath.Base(path), w.root)
+		return false
+	}
+	return w.removeBook(path)
+}
+
+// removeBook deletes the book whose file is gone, and its work too if that was
+// the work's last book. The caller (handleRemoved) has confirmed the root is
+// reachable, so this is a real user deletion — not an unplugged drive.
+func (w *Watcher) removeBook(path string) bool {
+	workID, deleted, err := w.store.DeleteBookByPath(path)
+	if err != nil {
+		log.Printf("watcher: delete removed book %s: %v", filepath.Base(path), err)
+		return false
+	}
+	if !deleted {
+		return false // path wasn't a tracked book (or already gone)
+	}
+	log.Printf("watcher: removed book (file deleted): %s", filepath.Base(path))
+	if workID != 0 {
+		if n, _ := w.store.CountBooksInWork(workID); n == 0 {
+			if err := w.store.DeleteWork(workID); err == nil {
+				log.Printf("watcher: removed now-empty work %d", workID)
+			}
+		}
+	}
+	return true
 }
 
 func titleFromPath(path string) string {
@@ -415,12 +538,12 @@ func (w *Watcher) reimportFromRedo(redoPath string) bool {
 // the same body so behavior matches across triggers.
 //
 // Steps:
-//   1. Find the sidecar next to the work's first audio book
-//   2. Run importOneSidecar — overwrites sync_data + chapter rows in
-//      place, rebuilds the transcript book, repopulates paragraphs
-//   3. Clear stale RAG chunks (gated on count>0 inside ChunkBook, so
-//      they wouldn't refresh otherwise) and rebuild for text books
-//   4. Re-link audio↔text chapters against the fresh chapter rows
+//  1. Find the sidecar next to the work's first audio book
+//  2. Run importOneSidecar — overwrites sync_data + chapter rows in
+//     place, rebuilds the transcript book, repopulates paragraphs
+//  3. Clear stale RAG chunks (gated on count>0 inside ChunkBook, so
+//     they wouldn't refresh otherwise) and rebuild for text books
+//  4. Re-link audio↔text chapters against the fresh chapter rows
 //
 // Caller responsibility: broadcast WS events / return HTTP status.
 func ReimportWork(store *db.Store, workID int64, libraryRoot string) error {

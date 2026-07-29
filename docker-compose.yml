@@ -1,6 +1,10 @@
 services:
   server:
     build: .
+    # Come back after a host reboot or docker daemon restart — a self-hoster's
+    # library should still be serving in the morning, not silently down. (The GPU
+    # overlay merges onto this and doesn't set restart, so it's preserved.)
+    restart: unless-stopped
     ports:
       - "7654:7654"
     volumes:
@@ -11,6 +15,10 @@ services:
       - generated-audio:/generated
     environment:
       - ABOOKIFY_LIBRARY_PATH=/library
+      # HOST side of the library bind mount below, shown in the roots UI instead
+      # of the container path /library (#220). Set it in .env to your real host
+      # path (e.g. /mnt/media/audiobooks); defaults to the compose bind source.
+      - ABOOKIFY_LIBRARY_HOST_PATH=${ABOOKIFY_LIBRARY_HOST_PATH:-./testdata/library}
       - ABOOKIFY_DB_PATH=/app/data/abookify.db
       - ABOOKIFY_PORT=7654
       - ABOOKIFY_TTS_URL=http://kokoro:8880
@@ -18,6 +26,14 @@ services:
       - ABOOKIFY_GENERATED_PATH=/generated
       - NULLBORE_BASE_DOMAIN=abookify.nullbore.com
       - ABOOKIFY_PUBLIC_URL=${ABOOKIFY_PUBLIC_URL:-}
+      # LOCAL-DEV auth bypass token (screenshots/test agents). Defaults empty, so
+      # it's a no-op on any host without it in .env — and main.go IGNORES it when
+      # ABOOKIFY_PUBLIC_URL is set (relay-exposed), so it can't become a prod
+      # backdoor. Plumbed here (not via docker-compose.override.yml) so a plain
+      # `make server` seeds it; the server then PERSISTS it to the settings DB, so
+      # later container recreates keep the bypass without re-supplying the env.
+      # See docs/dev-auth.md.
+      - ABOOKIFY_DEV_AUTH_TOKEN=${ABOOKIFY_DEV_AUTH_TOKEN:-}
     depends_on:
       kokoro:
         condition: service_started
@@ -26,6 +42,7 @@ services:
 
   kokoro:
     build: ./services/kokoro
+    restart: unless-stopped
     ports:
       - "8880:8880"
     volumes:
@@ -33,6 +50,7 @@ services:
 
   whisper:
     build: ./services/whisper
+    restart: unless-stopped
     volumes:
       - whisper-models:/root/.cache
     environment:

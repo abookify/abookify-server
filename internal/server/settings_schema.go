@@ -39,6 +39,8 @@ type SettingsOptionGroup struct {
 //	bool             checkbox ("true"/"false" string in the KV)
 //	select           dropdown from Options or OptionGroups
 //	select_or_custom dropdown (OptionsEndpoint) with a free-text fallback
+//	library_roots    marker: client renders the library-roots widget from
+//	                 /api/library/roots (no flat KV value) (#220)
 //
 // Addons name client-known adjunct controls for the field ("preview" a TTS
 // voice, "test" an LLM connection). Clients that don't implement an addon
@@ -137,9 +139,10 @@ func SettingsSchema() SettingsSchemaDoc {
 						Addons:      []string{"test", "clear"},
 					},
 					{
-						Key: "tts_voice", Label: "Voice", Type: "select", Default: "af_heart",
-						OptionGroups: kokoroVoiceGroups, Addons: []string{"preview"},
-						Help: "Generates a short sample with the selected voice. Requires Kokoro to be running.",
+						Key: "tts_voice", Label: "Voice", Type: "select_or_custom", Default: "af_heart",
+						OptionsEndpoint: "/api/tts/voices", DependsOn: "tts_provider", AllowCustom: false,
+						Addons: []string{"preview"},
+						Help:   "Voice choices depend on the engine above. Preview generates a short sample (local Kokoro only).",
 					}},
 			},
 			{
@@ -161,13 +164,9 @@ func SettingsSchema() SettingsSchemaDoc {
 						Addons:      []string{"test", "clear"},
 					},
 					{
-						Key: "stt_model", Label: "Model", Type: "select", Default: "large-v3",
-						Options: []SettingsOption{
-							{"large-v3", "Large V3 (best quality, slowest)"},
-							{"medium", "Medium (good quality, moderate speed)"},
-							{"small", "Small (decent quality, fast)"},
-							{"base", "Base (basic quality, fastest)"},
-						},
+						Key: "stt_model", Label: "Model", Type: "select_or_custom", Default: "large-v3",
+						OptionsEndpoint: "/api/stt/models", DependsOn: "stt_provider", AllowCustom: false,
+						Help: "Model choices depend on the engine above. OpenAI offers only Whisper v2, the model whose word-level timestamps are verified for sync.",
 					},
 					{
 						Key: "stt_compute_mode", Label: "Compute device", Type: "select", Default: "auto",
@@ -217,12 +216,25 @@ func SettingsSchema() SettingsSchemaDoc {
 						Key: "llm_base_url", Label: "Base URL (optional, for proxies or self-hosted)", Type: "text",
 						Placeholder: "Leave blank for default",
 					},
+					{
+						Key: "qa_extract_only", Label: "Answer only from the book text (spoiler-safe)", Type: "bool", Default: "false",
+						Help: "Answers quote the book's own words up to where you're reading, instead of the AI writing them — so a famous book the AI already knows can't reveal what's coming. Also turns off AI chapter summaries and recaps (those are written by the AI). One switch; it governs Q&A everywhere.",
+					},
 				},
 			},
 			{
-				Key:         "voice",
-				Title:       "Voice Chat",
-				Description: "Talk to your books using real-time voice conversation. Requires a speech-to-speech API key. This feature sends audio to an external service.",
+				Key:   "voice",
+				Title: "Voice Chat",
+				// HONEST STATE (verified 2026-07-29): real-time speech-to-speech
+				// (Gemini Live / OpenAI Realtime) is NOT wired up. A provider/key
+				// saved here is stored but nothing consumes it for a conversation —
+				// no server code reads voice_provider/voice_api_key for speech. (A
+				// separate, working push-to-talk round-trip exists at
+				// POST /api/works/{id}/converse using the local Whisper+Kokoro
+				// engines, but it is not this feature and has no web/mobile client.)
+				// Do not restore a "this works" description until the realtime path
+				// is actually built.
+				Description: "Coming soon — real-time voice conversation (Gemini Live / OpenAI Realtime) is not wired up yet. A provider and key saved here are stored but not yet used for a conversation.",
 				Fields: []SettingsField{
 					{
 						Key: "voice_provider", Label: "Provider", Type: "select", Default: "",
@@ -256,6 +268,16 @@ func SettingsSchema() SettingsSchemaDoc {
 				Title:        "Cast of Characters",
 				Experimental: true,
 				Description:  "Detects a named cast of characters from a work's EPUB. Extract it from the cast panel on any ebook — it runs in-process in under a second, with nothing to install. Places and allusions can still surface, and aliases that share no tokens (Rodya / Raskolnikov) split into separate rows — hence the experimental label.",
+			},
+			{
+				Key:         "library",
+				Title:       "Library locations",
+				Description: "The folders scanned for books (#220). Manage them via GET/POST/DELETE/PATCH /api/library/roots — the list carries per-root path, book count, and reachable/offline state. An unplugged drive is shown offline; its books are kept (stale), never deleted.",
+				// A marker field: clients render the roots-management widget from the
+				// roots API rather than a flat KV value (the schema has no list type).
+				Fields: []SettingsField{{
+					Key: "library_roots", Label: "Library folders", Type: "library_roots",
+				}},
 			},
 		},
 	}

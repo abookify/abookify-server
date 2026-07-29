@@ -22,8 +22,14 @@ import (
 //
 // Returns the assistant's reply augmented with citations. Caller is
 // responsible for persisting the user message + this reply to qa_messages.
-func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string, scope QueryScope) (*llm.Answer, error) {
-	if rag == nil || rag.Client() == nil {
+// extractOnly (#130 belt-and-braces): answer ONLY from the book's own text —
+// return the retrieved, position-bounded passages verbatim and never let the
+// model generate. Sidesteps the memorized-classic leak entirely (the retrieval
+// bound already caps citations at the reader's position; extract-only makes the
+// ANSWER itself be those passages, so there's nothing for the model to leak).
+// Works even with no LLM key (keyword retrieval), so it's fully hermetic.
+func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string, scope QueryScope, extractOnly bool) (*llm.Answer, error) {
+	if !extractOnly && (rag == nil || rag.Client() == nil) {
 		return nil, fmt.Errorf("LLM not configured")
 	}
 	work, err := store.GetWork(workID)
@@ -114,19 +120,38 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 		citations = append(citations, cit)
 	}
 
-	systemPrompt := fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
+	// Extract-only: hand back the passages themselves, no model generation.
+	if extractOnly {
+		return composeExtractAnswer(retrieved, citations, getTitle), nil
+	}
+
+	// Shared citation guidance for both prompts.
+	citationStyle := `Citation style: NEVER mention "Passage N", "passages 3-5", or any reference to internal passage numbers — the reader sees your prose plus a separate Sources panel that names the chapters. Cite by chapter name or a short inline quote (e.g., 'In Chapter 5, the narrator describes…'). The passage-N labels in your context are an internal hint for you only.`
+
+	var systemPrompt string
+	if scope.isWholeBook() {
+		systemPrompt = fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
 Answer questions based on the provided passages and the prior conversation.
 
-IMPORTANT — citation style: NEVER mention "Passage N", "passages 3-5", or
-any reference to internal passage numbers. The user does NOT see passage
-numbers; they see your prose answer plus a separate Sources panel below it
-that names the chapters. Cite by chapter name or quote a short phrase
-inline (e.g., 'In Chapter 5, Norm describes…' or 'as the narrator says,
-"…"'). The passage-N labels in your context are an internal hint for you
-only.
+%s
 
 If the passages don't contain enough information to answer, say so honestly.
-Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
+Keep answers concise but thorough — 2-4 paragraphs.`, work.Title, citationStyle)
+	} else {
+		// Bounded (spoiler-safe) scope — the reader is somewhere mid-book. Mirror the
+		// strict single-shot guard: OMIT the book title (its name alone primes a model
+		// that has the book memorised), forbid outside knowledge, and require an EXACT
+		// decline when the passages don't contain the answer — so a memorised classic
+		// can't leak plot the reader hasn't reached, even in generated mode. (#130)
+		systemPrompt = fmt.Sprintf(`You answer a reader's question using ONLY the passages provided and the earlier conversation — the only part of the book they have read so far. You do NOT know this book; ignore anything you might recall about it from elsewhere and rely solely on these passages.
+
+Hard rules:
+- Use ONLY facts explicitly stated in the passages (or established earlier in this conversation). No outside knowledge, no guessing, no recognising the book.
+- If the passages do not clearly contain the answer, reply with EXACTLY this and nothing more: "That hasn't come up yet in what you've read."
+- Never name or describe a character, event, death, twist, or ending that is not present in the passages — that would spoil the story for the reader.
+
+%s`, citationStyle)
+	}
 
 	// Build the message list: prior turns verbatim, then a final user
 	// turn containing both the new passages and the new question.
@@ -161,6 +186,43 @@ Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
 		Model:     resp.Model,
 		Chunks:    len(retrieved),
 	}, nil
+}
+
+// composeExtractAnswer builds a book-text-only answer from the ALREADY-retrieved,
+// position-bounded passages — verbatim, grouped by chapter, with NO model
+// generation. Because the text is exactly the retrieved passages (which the
+// scope has already capped at the reader's position), it cannot surface anything
+// ahead of where they are — the whole point of extract-only mode. Pure function
+// of its inputs, so it's directly testable.
+func composeExtractAnswer(retrieved []db.Chunk, citations []llm.Citation, getTitle func(int64, int) string) *llm.Answer {
+	if len(retrieved) == 0 {
+		return &llm.Answer{
+			Text:   "That hasn't come up yet in what you've read.",
+			Model:  "extract-only",
+			Chunks: 0,
+		}
+	}
+	var b strings.Builder
+	b.WriteString("Straight from the book, up to where you're reading:\n\n")
+	lastKey := ""
+	for _, c := range retrieved {
+		key := fmt.Sprintf("%d:%d", c.BookID, c.ChapterIdx)
+		if key != lastKey {
+			if lastKey != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString("**" + getTitle(c.BookID, c.ChapterIdx) + "**\n")
+			lastKey = key
+		}
+		b.WriteString(strings.TrimSpace(c.Content))
+		b.WriteString("\n\n")
+	}
+	return &llm.Answer{
+		Text:      strings.TrimRight(b.String(), "\n"),
+		Citations: citations,
+		Model:     "extract-only",
+		Chunks:    len(retrieved),
+	}
 }
 
 // DeriveSessionTitle produces a short, human-friendly title for a chat

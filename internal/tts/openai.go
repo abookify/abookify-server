@@ -4,6 +4,7 @@ package tts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,11 +37,31 @@ func (c *OpenAIClient) Health() error {
 	if c.apiKey == "" {
 		return fmt.Errorf("OpenAI API key not configured")
 	}
-	return nil // No health endpoint; key validity checked on first use.
+	// Validate the key with a cheap GET /v1/models, bounded to 5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("OpenAI unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("invalid OpenAI API key")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OpenAI returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // Synthesize calls OpenAI's /v1/audio/speech endpoint.
 // Voice names: alloy, echo, fable, onyx, nova, shimmer.
+//
+// OUTBOUND-DATA BOUNDARY (privacy stance): the request carries EXACTLY the text
+// span to narrate plus the voice/model/format — never the work's title, author,
+// path, or other library metadata. The provider's own policy governs the text.
 func (c *OpenAIClient) Synthesize(text string, voice string) ([]byte, error) {
 	if voice == "" {
 		voice = "nova"

@@ -26,6 +26,14 @@ const chapterSummarySystem = "You are a precise literary assistant. Summarize ON
 
 const recapSystem = "You write a spoiler-free \"story so far\" recap. You are given numbered per-chapter summaries that END at the reader's current point. Using ONLY those summaries, write a concise recap (1–3 short paragraphs) of what has happened so far — characters, setting, and the main thread. Never reveal, foreshadow, or speculate about anything beyond the provided summaries. No preamble."
 
+// extractOnlyNotice is what the summary/recap paths return when the one global
+// "answer from the book text" setting is on. A summary is inherently generative
+// (it condenses), so unlike Q&A it can't be answered by extraction — and letting
+// the model generate is exactly what leaks a memorized classic. So in book-text-
+// only mode we decline honestly rather than pretend a generated summary is
+// spoiler-safe. NO LLM call is made on this path.
+const extractOnlyNotice = "Book-text-only mode is on. Summaries are written by the AI, which can draw on its own knowledge of the book beyond where you're reading — so they're turned off here to keep you spoiler-safe. Turn off “📖 From the book text” to use AI summaries."
+
 // llmClientOr503 returns the configured chat client, or writes a 503 and
 // returns nil when no LLM is set up (every summary route is key-gated).
 func (s *Server) llmClientOr503(w http.ResponseWriter) *llm.Client {
@@ -82,10 +90,6 @@ func (s *Server) ensureChapterSummary(client *llm.Client, bookID int64, idx int,
 
 // handleChapterSummary: GET /api/books/{bookId}/chapters/{idx}/summary[?refresh=1]
 func (s *Server) handleChapterSummary(w http.ResponseWriter, r *http.Request) {
-	client := s.llmClientOr503(w)
-	if client == nil {
-		return
-	}
 	bookID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("bookId")), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bookId"})
@@ -94,6 +98,18 @@ func (s *Server) handleChapterSummary(w http.ResponseWriter, r *http.Request) {
 	idx, err := strconv.Atoi(strings.TrimSpace(r.PathValue("idx")))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapter idx"})
+		return
+	}
+	// Book-text-only mode: decline (no generation, no leak) — see extractOnlyNotice.
+	if s.extractOnlyEnabled() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"book_id": bookID, "chapter_idx": idx, "summary": extractOnlyNotice,
+			"extract_only": true, "cached": false,
+		})
+		return
+	}
+	client := s.llmClientOr503(w)
+	if client == nil {
 		return
 	}
 	refresh := r.URL.Query().Get("refresh") == "1"
@@ -113,10 +129,6 @@ func (s *Server) handleChapterSummary(w http.ResponseWriter, r *http.Request) {
 // Spoiler-free recap of the story through chapter N (inclusive), synthesized
 // from the chapter summaries up to N.
 func (s *Server) handleBookRecap(w http.ResponseWriter, r *http.Request) {
-	client := s.llmClientOr503(w)
-	if client == nil {
-		return
-	}
 	bookID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("bookId")), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bookId"})
@@ -125,6 +137,18 @@ func (s *Server) handleBookRecap(w http.ResponseWriter, r *http.Request) {
 	upTo, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("up_to")))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid up_to"})
+		return
+	}
+	// Book-text-only mode: decline (no generation, no leak) — see extractOnlyNotice.
+	if s.extractOnlyEnabled() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"book_id": bookID, "up_to": upTo, "recap": extractOnlyNotice,
+			"extract_only": true, "cached": false,
+		})
+		return
+	}
+	client := s.llmClientOr503(w)
+	if client == nil {
 		return
 	}
 	refresh := r.URL.Query().Get("refresh") == "1"

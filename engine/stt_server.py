@@ -14,6 +14,8 @@ startup (CUDA -> float16, else CPU int8) unless overridden by env. Models live
 under ~/.abookify/models/whisper so the bundle never writes into site-packages.
 """
 import os
+import gc
+import time
 import tempfile
 from pathlib import Path
 
@@ -25,6 +27,13 @@ import ctranslate2
 from faster_whisper import WhisperModel
 
 app = Flask(__name__)
+
+# Idle unloading (parity with services/whisper/server.py): the ~3 GB model can be
+# freed when nothing is transcribing and reloaded transparently on the next
+# request. The Go server drives /unload via the same stt_idle_timeout setting, so
+# ONE control governs both the Docker and hermetic-engine paths. LAST_LOAD_SECS
+# records the reload (cold-start) cost for /health.
+LAST_LOAD_SECS = 0.0
 
 MODELS_DIR = Path(
     os.environ.get("ABOOKIFY_MODELS_DIR", Path.home() / ".abookify" / "models")
@@ -74,6 +83,21 @@ except Exception as e:  # noqa: BLE001 - GPU init can fail at runtime; degrade
 print(f"[stt] Model loaded on {DEVICE}.")
 
 
+def _load_if_needed_locked():
+    """Reload the model if it was idle-unloaded. The GPU lock MUST be held (the
+    caller already holds gpu_lock('stt')). Records the cold-start cost."""
+    global model, LAST_LOAD_SECS
+    if model is not None:
+        return
+    t = time.perf_counter()
+    print(f"[stt] reloading Whisper after idle unload (device={DEVICE}, compute={COMPUTE_TYPE})")
+    model = WhisperModel(
+        MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE, download_root=str(WHISPER_CACHE)
+    )
+    LAST_LOAD_SECS = time.perf_counter() - t
+    print(f"[stt] model reloaded in {LAST_LOAD_SECS:.2f}s")
+
+
 @app.route("/health")
 def health():
     return jsonify({
@@ -81,7 +105,25 @@ def health():
         "model": MODEL_SIZE,
         "device": DEVICE,
         "compute_type": COMPUTE_TYPE,
+        "loaded": model is not None,
+        "last_load_secs": round(LAST_LOAD_SECS, 2),
     })
+
+
+@app.route("/unload", methods=["POST"])
+def unload():
+    """Free the Whisper model from RAM/VRAM (idle unloading). The shared GPU lock
+    makes this wait for any in-flight STT/TTS inference, so it never interrupts a
+    running job; the Go server only calls it when no job is queued anyway. The
+    next /transcribe reloads transparently."""
+    global model
+    with gpu_lock("stt"):
+        was_loaded = model is not None
+        model = None
+        gc.collect()
+    if was_loaded:
+        print("[stt] model unloaded (idle).")
+    return jsonify({"unloaded": was_loaded})
 
 
 @app.route("/download", methods=["POST", "GET"])
@@ -113,6 +155,7 @@ def transcribe():
         # single GPU dispatcher. faster-whisper is lazy — the GPU work happens
         # while the generator is consumed — so we materialize it under the lock.
         with gpu_lock("stt"):
+            _load_if_needed_locked()  # transparent reload if idle-unloaded
             segments, info = model.transcribe(
                 tmp_path,
                 language=language if language else None,

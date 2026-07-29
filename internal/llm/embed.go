@@ -52,6 +52,12 @@ func (c *Client) Embed(req EmbedRequest) (*EmbedResponse, error) {
 }
 
 func (c *Client) embedOpenAI(req EmbedRequest) (*EmbedResponse, error) {
+	// OUTBOUND-DATA BOUNDARY (privacy stance): the request body is EXACTLY the
+	// chunk texts to embed plus the model id — never the work's title, author,
+	// file path, or any library metadata. Building the RAG index does send the
+	// book's text to the configured provider (that is inherent to vector search),
+	// but nothing beyond the text itself leaves. TestEmbedOutboundBoundary_TextOnly
+	// enforces it; the provider's own policy governs what happens to it.
 	body := map[string]any{
 		"input": req.Texts,
 		"model": OpenAIEmbedModel,

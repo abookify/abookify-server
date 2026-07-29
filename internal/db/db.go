@@ -19,11 +19,11 @@ type Store struct {
 }
 
 type Work struct {
-	ID          int64  `json:"id"`
-	Title       string `json:"title"`
-	Author      string `json:"author"`
-	HasAudio    bool   `json:"has_audio"`
-	HasText     bool   `json:"has_text"`
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+	HasAudio bool   `json:"has_audio"`
+	HasText  bool   `json:"has_text"`
 	// Series metadata — extracted from EPUB Calibre tags or title patterns.
 	// Empty series string = standalone work.
 	Series      string  `json:"series,omitempty"`
@@ -39,29 +39,29 @@ type Work struct {
 	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
 	// DisplayAudioBookID is the analogous per-work override for which audio
 	// edition plays. 0 = no override (resolver picks by OriginAuthority).
-	DisplayAudioBookID int64 `json:"display_audio_book_id,omitempty"`
-	AudioFiles   []Book         `json:"audio_files,omitempty"`
-	TextFiles    []Book         `json:"text_files,omitempty"`
-	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
-	TotalSize    int64          `json:"total_size"`
+	DisplayAudioBookID int64         `json:"display_audio_book_id,omitempty"`
+	AudioFiles         []Book        `json:"audio_files,omitempty"`
+	TextFiles          []Book        `json:"text_files,omitempty"`
+	ChapterLinks       []ChapterLink `json:"chapter_links,omitempty"`
+	TotalSize          int64         `json:"total_size"`
 	// Local-first sync stamps. SchemaVersion is the book.db shape this work
 	// would export under; ContentVersion is the RFC3339 UTC time of its last
 	// (re)process. See StampVersions and design/local-first-sync.md.
-	SchemaVersion  int    `json:"schema_version"`
-	ContentVersion string `json:"content_version"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	SchemaVersion  int       `json:"schema_version"`
+	ContentVersion string    `json:"content_version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type Chunk struct {
-	ID         int64   `json:"id"`
-	BookID     int64   `json:"book_id"`
-	ChapterIdx int     `json:"chapter_idx"`
-	ChunkIdx   int     `json:"chunk_idx"`
-	Content    string  `json:"content"`
-	StartWord  int     `json:"start_word"`
-	EndWord    int     `json:"end_word"`
-	Embedding  []byte  `json:"-"` // binary blob, not in JSON
+	ID         int64  `json:"id"`
+	BookID     int64  `json:"book_id"`
+	ChapterIdx int    `json:"chapter_idx"`
+	ChunkIdx   int    `json:"chunk_idx"`
+	Content    string `json:"content"`
+	StartWord  int    `json:"start_word"`
+	EndWord    int    `json:"end_word"`
+	Embedding  []byte `json:"-"` // binary blob, not in JSON
 }
 
 // AlignmentPair is one matched region between two sources. Stored as JSON
@@ -125,40 +125,45 @@ type Chapter struct {
 }
 
 type Book struct {
-	ID        int64     `json:"id"`
-	WorkID    int64     `json:"work_id"`
-	Path      string    `json:"path"`
-	Filename  string    `json:"filename"`
-	Format    string    `json:"format"`
-	MediaType string    `json:"media_type"` // "audio" or "text"
-	SizeBytes int64     `json:"size_bytes"`
-	Title     string    `json:"title,omitempty"`
-	Author    string    `json:"author,omitempty"`
-	Album     string    `json:"album,omitempty"`
-	Duration     float64   `json:"duration_secs,omitempty"`
+	ID        int64   `json:"id"`
+	WorkID    int64   `json:"work_id"`
+	Path      string  `json:"path"`
+	Filename  string  `json:"filename"`
+	Format    string  `json:"format"`
+	MediaType string  `json:"media_type"` // "audio" or "text"
+	SizeBytes int64   `json:"size_bytes"`
+	Title     string  `json:"title,omitempty"`
+	Author    string  `json:"author,omitempty"`
+	Album     string  `json:"album,omitempty"`
+	Duration  float64 `json:"duration_secs,omitempty"`
 	// StartSec is the file's start position on the concatenated book
 	// timeline (from the sidecar's sources[] when available). For
 	// single-file books this is always 0; for multi-file books it's
 	// the ground-truth offset Whisper used when transcribing, which
 	// avoids drift from summing metadata durations on the client.
-	StartSec     float64   `json:"start_sec,omitempty"`
-	ChapterCount int       `json:"chapter_count,omitempty"`
+	StartSec     float64 `json:"start_sec,omitempty"`
+	ChapterCount int     `json:"chapter_count,omitempty"`
 	// Origin describes how this source material was produced. Used by the
 	// display resolver to pick the highest-authority source for the reader.
 	// Values: publisher_epub, publisher_mobi, publisher_pdf, author_recording,
 	// narrator_recording, librivox, tts_kokoro, whisper_transcript,
 	// tts_preprocessed, user_upload (default).
-	Origin     string    `json:"origin,omitempty"`
+	Origin string `json:"origin,omitempty"`
 	// Visibility: "visible" (shown in UI, default) or "internal" (pipeline
 	// intermediates like TTS-preprocessed text that should never be shown).
-	Visibility string    `json:"visibility,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
 	// Edition labels a named variant within the same work. For audio:
 	// "LibriVox - Jane Doe", "Audible - John Smith". For text:
 	// "Original", "Annotated", "Spanish translation". Empty = default edition.
 	// Works with multiple editions expose an edition picker in the UI.
-	Edition    string    `json:"edition,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Edition string `json:"edition,omitempty"`
+	// RootID ties the book to its library_roots row (#220); 0 = unassigned or a
+	// virtual/generated path. Stale means the book's root is currently
+	// unreachable (e.g. an unplugged drive) — kept in the DB, shown as offline.
+	RootID    int64     `json:"root_id,omitempty"`
+	Stale     bool      `json:"stale,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // IsBusyErr reports whether err is a SQLite lock-contention error
@@ -456,6 +461,46 @@ func migrate(db *sql.DB) error {
 			value TEXT NOT NULL DEFAULT ''
 		);
 
+		-- Service credentials (BYOK). Modelled provider -> credentials as a
+		-- one-to-MANY relationship on purpose (NO UNIQUE(provider)): the UI
+		-- exposes exactly one key per provider today, but per-lane cost tracking
+		-- (multiple keys for one provider) can be added later with no migration.
+		-- The fields column is a JSON object so each provider declares its shape:
+		-- {"api_key":"…"} for OpenAI, {"api_key","region","deployment"} for Azure,
+		-- {"access_key_id","secret_access_key","region"} for AWS. Secret sub-keys
+		-- are masked on read. A credential may exist with no feature consuming it
+		-- (add-a-key-before-it's-used). See docs/settings-credentials-restructure.md.
+		CREATE TABLE IF NOT EXISTS credentials (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider     TEXT NOT NULL,
+			label        TEXT NOT NULL DEFAULT '',
+			fields       TEXT NOT NULL DEFAULT '{}',
+			-- capabilities: JSON array of the feature kinds this credential was
+			-- VERIFIED to satisfy (e.g. ["llm","voice"]). One vendor key can serve
+			-- several features, but NOT necessarily all a vendor sells — a Gemini
+			-- key reaches Gemini LLM/voice/TTS but not Google Cloud TTS (a separate
+			-- GCP product). Per-feature selectors gate on this; it is probed, never
+			-- assumed from the vendor.
+			capabilities TEXT NOT NULL DEFAULT '[]',
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider);
+
+		-- Library roots (#220): the N filesystem locations the scanner walks
+		-- (Jellyfin/Plex-style). The single -library path is migrated in as
+		-- root #1 on boot. is_default marks the write target for new imports;
+		-- position orders them. A book's root_id ties it to its root so an
+		-- unreachable (unplugged) root marks its books stale rather than
+		-- deleting them.
+		CREATE TABLE IF NOT EXISTS library_roots (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			path       TEXT NOT NULL UNIQUE,
+			label      TEXT NOT NULL DEFAULT '',
+			is_default INTEGER NOT NULL DEFAULT 0,
+			position   INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
 		-- Login sessions for optional username/password auth (#197).
 		-- Opaque random tokens minted at login (or embedded in a pairing
 		-- QR), validated per request. A DB table (not in-memory) so 30-day
@@ -570,6 +615,12 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE works ADD COLUMN description  TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN year         INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE works ADD COLUMN genre        TEXT NOT NULL DEFAULT ''`,
+		// #220 multiple library roots: which root a book lives under (0 =
+		// unassigned/virtual), and whether it's currently stale (its root is
+		// unreachable, e.g. an unplugged drive) so the UI shows it as offline
+		// instead of the library silently shrinking.
+		`ALTER TABLE books ADD COLUMN root_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE books ADD COLUMN stale   INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE books ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
@@ -609,6 +660,11 @@ func migrate(db *sql.DB) error {
 		// the whole book (opt-in, may reveal the ending). The reader's live
 		// position is supplied per turn; the server resolves the bound.
 		`ALTER TABLE qa_sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'reading'`,
+		// Per-CHAT answer mode (#130 belt-and-braces): "generated" = the AI writes
+		// the answer from the passages (default); "extract" = answer ONLY from the
+		// book's own text (verbatim passages, no generation), so a memorized classic
+		// can't leak plot the reader hasn't reached.
+		`ALTER TABLE qa_sessions ADD COLUMN answer_mode TEXT NOT NULL DEFAULT 'generated'`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -797,6 +853,153 @@ func (s *Store) GetAllSettings() (map[string]string, error) {
 	return m, rows.Err()
 }
 
+// Credential is one stored BYOK credential for a provider. Fields is the
+// provider-declared shape (e.g. {"api_key":…}, or {"api_key","region",
+// "deployment"} for Azure). provider→credentials is one-to-many at the DB level
+// (see the credentials table comment); the helpers below cover the
+// one-key-per-provider case the UI exposes today.
+type Credential struct {
+	ID           int64             `json:"id"`
+	Provider     string            `json:"provider"`
+	Label        string            `json:"label"`
+	Fields       map[string]string `json:"fields"`
+	Capabilities []string          `json:"capabilities"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
+func scanCredential(sc interface{ Scan(...any) error }) (Credential, error) {
+	var c Credential
+	var fieldsBlob, capsBlob string
+	if err := sc.Scan(&c.ID, &c.Provider, &c.Label, &fieldsBlob, &capsBlob, &c.CreatedAt); err != nil {
+		return c, err
+	}
+	if err := json.Unmarshal([]byte(fieldsBlob), &c.Fields); err != nil {
+		return c, err
+	}
+	if c.Fields == nil {
+		c.Fields = map[string]string{}
+	}
+	if capsBlob != "" {
+		if err := json.Unmarshal([]byte(capsBlob), &c.Capabilities); err != nil {
+			return c, err
+		}
+	}
+	if c.Capabilities == nil {
+		c.Capabilities = []string{}
+	}
+	return c, nil
+}
+
+func (s *Store) CreateCredential(provider, label string, fields map[string]string) (int64, error) {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	blob, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.Exec(`INSERT INTO credentials (provider, label, fields) VALUES (?, ?, ?)`,
+		provider, label, string(blob))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) GetCredential(id int64) (*Credential, error) {
+	row := s.db.QueryRow(`SELECT id, provider, label, fields, capabilities, created_at FROM credentials WHERE id = ?`, id)
+	c, err := scanCredential(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) ListCredentials() ([]Credential, error) {
+	rows, err := s.db.Query(`SELECT id, provider, label, fields, capabilities, created_at FROM credentials ORDER BY provider, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Credential
+	for rows.Next() {
+		c, err := scanCredential(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CredentialAPIKey returns the stored api_key for a vendor from the credentials
+// vault (the go-forward key store), or "" if none. Provider resolution prefers
+// this so a key saved once in the Keys section serves every lane it's verified
+// for, without re-entering it in each feature's legacy field. Uses the canonical
+// (lowest-id) row, matching UpsertProviderCredential.
+func (s *Store) CredentialAPIKey(provider string) string {
+	creds, err := s.ListCredentials()
+	if err != nil {
+		return ""
+	}
+	for _, c := range creds { // ListCredentials orders by provider, id
+		if c.Provider == provider {
+			return c.Fields["api_key"]
+		}
+	}
+	return ""
+}
+
+// UpsertProviderCredential maintains the one-key-per-provider case the UI
+// exposes today: update the canonical (lowest-id) row for the provider if one
+// exists, else insert. Returns the credential id. The table still permits
+// multiple rows per provider for a future multi-key UI — this helper just
+// doesn't create them.
+func (s *Store) UpsertProviderCredential(provider, label string, fields map[string]string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM credentials WHERE provider = ? ORDER BY id LIMIT 1`, provider).Scan(&id)
+	if err == sql.ErrNoRows {
+		return s.CreateCredential(provider, label, fields)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	blob, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	_, err = s.db.Exec(`UPDATE credentials SET label = ?, fields = ? WHERE id = ?`, label, string(blob), id)
+	return id, err
+}
+
+// SetCredentialCapabilities records which feature kinds this credential was
+// VERIFIED to satisfy (e.g. ["llm","voice"]). Per-feature selectors gate on this
+// so the UI never offers a feature a key can't actually serve — a Gemini key
+// lights up Gemini LLM + voice but not Google Cloud TTS unless that separate
+// product is verified reachable. Probed on save/test, never assumed.
+func (s *Store) SetCredentialCapabilities(id int64, caps []string) error {
+	if caps == nil {
+		caps = []string{}
+	}
+	blob, err := json.Marshal(caps)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE credentials SET capabilities = ? WHERE id = ?`, string(blob), id)
+	return err
+}
+
+func (s *Store) DeleteCredential(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM credentials WHERE id = ?`, id)
+	return err
+}
+
 type ChapterLink struct {
 	AudioBookID int64   `json:"audio_book_id"`
 	AudioIndex  int     `json:"audio_index"`
@@ -921,6 +1124,20 @@ func (s *Store) StampVersions(workID int64, schemaVersion int) error {
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, schemaVersion, workID)
+	return err
+}
+
+// BumpContentVersion stamps a fresh content_version (+ updated_at) WITHOUT
+// touching schema_version — used when an exportable-but-non-structural change
+// happens (a cover pick/upload), so the listing's cache-buster changes and
+// mobile's update-check re-syncs the new cover.
+func (s *Store) BumpContentVersion(workID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE works
+		SET content_version = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, workID)
 	return err
 }
 
@@ -2258,6 +2475,27 @@ func (s *Store) BestAlignmentByWork() (map[int64]BestAlignment, error) {
 	return out, rows.Err()
 }
 
+// WorkIDsWithSyncData returns the set of work IDs that have at least one
+// sync_data row (word-level timestamps from the TTS→Whisper path). Lets the work
+// list flag "word-level sync" for a single-source book that has no cross-source
+// alignment (hence no coverage%), without loading every work's rows. One query.
+func (s *Store) WorkIDsWithSyncData() (map[int64]bool, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT work_id FROM sync_data`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var wid int64
+		if err := rows.Scan(&wid); err != nil {
+			return nil, err
+		}
+		out[wid] = true
+	}
+	return out, rows.Err()
+}
+
 // ListAlignmentsForBook returns all alignments where the given book is either
 // the from or to side. Used by ResolvePath to build a composition chain.
 func (s *Store) ListAlignmentsForBook(bookID int64) ([]Alignment, error) {
@@ -2384,6 +2622,34 @@ func (s *Store) DeleteBook(bookID int64) error {
 	return tx.Commit()
 }
 
+// DeleteBookByPath removes the book whose file path matches exactly, returning
+// its former work_id (0 if none) and whether a row was deleted. Used by the
+// watcher's remove-on-delete path (#219): a file vanishing from a REACHABLE
+// root means the user deleted it, so the row should go too. (A whole unplugged
+// root is handled separately — those books are marked stale, never deleted.)
+func (s *Store) DeleteBookByPath(path string) (workID int64, deleted bool, err error) {
+	var bookID int64
+	err = s.db.QueryRow(`SELECT id, work_id FROM books WHERE path = ?`, path).Scan(&bookID, &workID)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if derr := s.DeleteBook(bookID); derr != nil {
+		return workID, false, derr
+	}
+	return workID, true, nil
+}
+
+// CountBooksInWork returns how many books remain assigned to a work — the
+// watcher uses it to remove a work once its last book file is deleted.
+func (s *Store) CountBooksInWork(workID int64) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM books WHERE work_id = ?`, workID).Scan(&n)
+	return n, err
+}
+
 // SetBookEdition relabels a set of books' edition name (metadata-editor edition
 // management). All ids must belong to workID — the caller enforces ownership.
 func (s *Store) SetBookEdition(workID int64, bookIDs []int64, edition string) error {
@@ -2442,4 +2708,39 @@ func (s *Store) DeleteWork(id int64) error {
 	tx.Exec(`DELETE FROM qa_sessions WHERE work_id = ?`, id)
 	tx.Exec(`DELETE FROM works WHERE id = ?`, id)
 	return tx.Commit()
+}
+
+// DeleteEmptyWorks removes "phantom" works that have no books left — the shells
+// left behind when a work's last book is reassigned to another work (the matcher
+// regrouping a multi-disc folder) or deleted (the #220 reconcile dropping a
+// vanished file). A work is defined entirely by its books, so a bookless work is
+// always junk. Returns how many were removed.
+//
+// Safe at the sweep points (end of MatchAndCreateWorks, end of the boot
+// reconcile): all book assignments are settled there, and a TTS/STT job always
+// operates on a work that already holds its source book, so this never races a
+// job into deletion.
+func (s *Store) DeleteEmptyWorks() (int, error) {
+	rows, err := s.db.Query(`
+		SELECT id FROM works
+		WHERE id NOT IN (SELECT work_id FROM books WHERE work_id != 0)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	n := 0
+	for _, id := range ids {
+		if err := s.DeleteWork(id); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }

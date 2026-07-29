@@ -40,3 +40,4 @@ Thumbs.db
 # Desktop-bundle server binaries (make build-server)
 dist/
 docker-compose.override.yml
+services/*/__pycache__/
