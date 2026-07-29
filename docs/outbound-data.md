@@ -49,8 +49,18 @@ We link each provider's own policy and do not characterize it. See
 
 Their terms govern what happens to anything sent above.
 
+## Voice conversation (`POST /api/works/{id}/converse`)
+
+Verified 2026-07-29: a working push-to-talk round-trip exists — it transcribes
+the uploaded question, answers via RAG, and synthesizes the answer. It does NOT
+introduce a new egress: it reuses the **Cloud STT** row (the question audio) and
+the **Cloud TTS** row (the answer text) above when those providers are cloud, or
+the local engines otherwise. Its LLM step is the **Book Q&A** row (whole-book
+scope). So the boundaries already enumerated cover it. No client calls it yet.
+
 ## Not yet built
 
-- **Voice conversation** (speech-to-speech; Gemini Live / OpenAI Realtime /
-  Deepgram) is not wired as an egress path yet. When it lands it must send **only
-  that turn's audio** and be added here with an enforcing test before shipping.
+- **Real-time speech-to-speech voice** (Gemini Live / OpenAI Realtime) is NOT
+  wired — `voice_provider`/`voice_api_key` are stored but nothing consumes them.
+  When it lands it must send **only that turn's audio** and be added here with an
+  **enforcing test** (not a comment) before shipping.
