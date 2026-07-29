@@ -322,6 +322,13 @@ func voiceSlug(v string) string {
 func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) {
 	job.startedAt = time.Now()
 
+	if g.tts() == nil {
+		job.Status = "failed"
+		job.Error = "no TTS provider configured — set a local engine URL or a cloud key in settings"
+		g.updateJob(job)
+		return
+	}
+
 	chapters, err := g.store.ListChapters(bookID)
 	if err != nil {
 		job.Status = "failed"
@@ -503,6 +510,12 @@ func (g *Generator) TranscribeAudio(workID int64) (string, bool) {
 
 func (g *Generator) runSTT(job *JobStatus, workID int64) {
 	job.startedAt = time.Now()
+	if g.stt() == nil {
+		job.Status = "failed"
+		job.Error = "no STT provider configured — set a local engine URL or a cloud key in settings"
+		g.updateJob(job)
+		return
+	}
 	work, err := g.store.GetWork(workID)
 	if err != nil || work == nil {
 		job.Status = "failed"

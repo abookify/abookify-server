@@ -17,8 +17,6 @@ import (
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/scanner"
 	"github.com/pj/abookify/internal/server"
-	"github.com/pj/abookify/internal/stt"
-	"github.com/pj/abookify/internal/tts"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -289,33 +287,30 @@ func main() {
 	srv.TTSURL = *ttsURL
 	srv.STTURL = *sttURL
 
-	// Set up TTS/STT clients and generator
-	var ttsClient *tts.Client
-	var sttClient *stt.Client
-
-	if *ttsURL != "" {
-		ttsClient = tts.NewClient(*ttsURL)
-		if err := ttsClient.Health(); err != nil {
-			log.Printf("warning: TTS service not ready: %v (will retry when needed)", err)
+	// Set up TTS/STT providers + generator. The provider factory picks a cloud
+	// (BYOK) provider when configured in settings, else the local engine at the
+	// -tts-url/-stt-url flag (falling through to nil when neither is set). The
+	// Generator is always built now — a cloud-only, no-local-engine install
+	// works — and ReloadSpeech swaps providers when settings change.
+	ttsProvider := library.CreateTTSProvider(store, *ttsURL)
+	sttProvider := library.CreateSTTProvider(store, *sttURL)
+	if ttsProvider != nil {
+		if err := ttsProvider.Health(); err != nil {
+			log.Printf("warning: TTS provider (%s) not ready: %v (will retry when needed)", ttsProvider.Name(), err)
 		} else {
-			log.Printf("TTS service connected: %s", *ttsURL)
+			log.Printf("TTS provider connected: %s", ttsProvider.Name())
 		}
 	}
-
-	if *sttURL != "" {
-		sttClient = stt.NewClient(*sttURL)
-		if err := sttClient.Health(); err != nil {
-			log.Printf("warning: STT service not ready: %v (will retry when needed)", err)
+	if sttProvider != nil {
+		if err := sttProvider.Health(); err != nil {
+			log.Printf("warning: STT provider (%s) not ready: %v (will retry when needed)", sttProvider.Name(), err)
 		} else {
-			log.Printf("STT service connected: %s", *sttURL)
+			log.Printf("STT provider connected: %s", sttProvider.Name())
 		}
 	}
-
-	if ttsClient != nil || sttClient != nil {
-		srv.Generator = library.NewGenerator(store, ttsClient, sttClient, *generatedPath, srv.OnJobUpdate)
-		srv.Generator.SetLibraryRoot(*libraryPath)
-		log.Printf("generation engine ready (TTS: %v, STT: %v)", ttsClient != nil, sttClient != nil)
-	}
+	srv.Generator = library.NewGenerator(store, ttsProvider, sttProvider, *generatedPath, srv.OnJobUpdate)
+	srv.Generator.SetLibraryRoot(*libraryPath)
+	log.Printf("generation engine ready (TTS: %v, STT: %v)", ttsProvider != nil, sttProvider != nil)
 
 	// Extract cover art
 	coversDir := *libraryPath + "/covers"

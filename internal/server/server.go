@@ -1131,7 +1131,7 @@ func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
-	if s.Generator == nil {
+	if s.Generator == nil || s.Generator.TTSClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "TTS service not configured"})
 		return
 	}
@@ -1191,7 +1191,7 @@ func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
-	if s.Generator == nil {
+	if s.Generator == nil || s.Generator.STTClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "STT service not configured"})
 		return
 	}

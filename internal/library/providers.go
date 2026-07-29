@@ -15,46 +15,43 @@ import (
 	"github.com/pj/abookify/internal/tts"
 )
 
-// CreateTTSProvider returns the configured TTS provider based on settings.
+// CreateTTSProvider returns the configured TTS provider, or nil if none is
+// configured. Cloud (BYOK) when tts_provider="openai" + a key; otherwise the
+// local Kokoro engine at the settings url, else the fallback (the -tts-url flag
+// / ABOOKIFY_TTS_URL env). nil when nothing is set — same as the pre-provider
+// behaviour where an empty URL meant "no TTS".
 func CreateTTSProvider(store *db.Store, fallbackURL string) tts.Provider {
 	settings, _ := store.GetAllSettings()
-	provider := settings["tts_provider"]
-	switch provider {
-	case "openai":
-		key := settings["openai_api_key"]
-		if key != "" {
+	if settings["tts_provider"] == "openai" {
+		if key := settings["openai_api_key"]; key != "" {
 			return tts.NewOpenAIClient(key)
 		}
 	}
-	// Default: local Kokoro
 	url := settings["kokoro_url"]
 	if url == "" {
 		url = fallbackURL
 	}
 	if url == "" {
-		url = "http://localhost:8880"
+		return nil
 	}
 	return tts.NewClient(url)
 }
 
-// CreateSTTProvider returns the configured STT provider based on settings.
+// CreateSTTProvider returns the configured STT provider, or nil if none is
+// configured (see CreateTTSProvider).
 func CreateSTTProvider(store *db.Store, fallbackURL string) stt.Provider {
 	settings, _ := store.GetAllSettings()
-	provider := settings["stt_provider"]
-	switch provider {
-	case "openai":
-		key := settings["openai_api_key"]
-		if key != "" {
+	if settings["stt_provider"] == "openai" {
+		if key := settings["openai_api_key"]; key != "" {
 			return stt.NewOpenAIClient(key)
 		}
 	}
-	// Default: local faster-whisper
 	url := settings["whisper_url"]
 	if url == "" {
 		url = fallbackURL
 	}
 	if url == "" {
-		url = "http://localhost:5200"
+		return nil
 	}
 	return stt.NewClient(url)
 }
