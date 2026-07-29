@@ -72,6 +72,12 @@ func openaiKeyCheck(client *http.Client, baseURL, apiKey string) error {
 
 // TranscribeFile calls OpenAI's /v1/audio/transcriptions endpoint.
 // Returns word-level timestamps via the "verbose_json" response format.
+//
+// OUTBOUND-DATA BOUNDARY (privacy stance): the multipart body carries EXACTLY
+// the audio file to transcribe plus the model/response-format/granularity flags
+// — never the work's title, author, path (only the bare basename as the form
+// filename), or other library metadata. The provider's own policy governs the
+// audio.
 func (c *OpenAIClient) TranscribeFile(audioPath string) (*TranscribeResult, error) {
 	f, err := os.Open(audioPath)
 	if err != nil {

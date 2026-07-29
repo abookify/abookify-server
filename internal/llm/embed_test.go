@@ -1,7 +1,12 @@
 package llm
 
 import (
+	"encoding/json"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +65,41 @@ func TestCosineSimilarity_DifferentLength(t *testing.T) {
 func TestCosineSimilarity_Empty(t *testing.T) {
 	if sim := CosineSimilarity(nil, nil); sim != 0 {
 		t.Errorf("empty: sim=%f, want 0", sim)
+	}
+}
+
+// TestEmbedOutboundBoundary_TextOnly enforces, in code, that building the RAG
+// index sends the configured provider EXACTLY the chunk texts + model id and
+// nothing else — no title, author, path, or library metadata. Captures the real
+// outbound body. If a future change widens the payload, this fails.
+func TestEmbedOutboundBoundary_TextOnly(t *testing.T) {
+	var captured string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		captured = string(b)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data":  []map[string]any{{"embedding": []float32{0.1, 0.2}, "index": 0}},
+			"model": "text-embedding-3-small",
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(ProviderOpenAI, "test-key", "", srv.URL)
+	if _, err := c.Embed(EmbedRequest{Texts: []string{"the zorblatt engine glows blue"}}); err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	// The chunk text is present (the minimum needed to embed it)...
+	if !strings.Contains(captured, "zorblatt engine glows blue") {
+		t.Fatalf("chunk text missing from outbound body:\n%s", captured)
+	}
+	// ...and the parsed body has ONLY input + model keys — no smuggled metadata.
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured), &body); err != nil {
+		t.Fatalf("parse captured body: %v", err)
+	}
+	for k := range body {
+		if k != "input" && k != "model" {
+			t.Fatalf("PRIVACY BOUNDARY: unexpected field %q in embeddings request (only input+model may leave): %s", k, captured)
+		}
 	}
 }

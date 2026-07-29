@@ -58,6 +58,10 @@ func (c *OpenAIClient) Health() error {
 
 // Synthesize calls OpenAI's /v1/audio/speech endpoint.
 // Voice names: alloy, echo, fable, onyx, nova, shimmer.
+//
+// OUTBOUND-DATA BOUNDARY (privacy stance): the request carries EXACTLY the text
+// span to narrate plus the voice/model/format — never the work's title, author,
+// path, or other library metadata. The provider's own policy governs the text.
 func (c *OpenAIClient) Synthesize(text string, voice string) ([]byte, error) {
 	if voice == "" {
 		voice = "nova"
