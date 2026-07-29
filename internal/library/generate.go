@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +22,8 @@ import (
 type JobStatus struct {
 	ID          string  `json:"id"`
 	WorkID      int64   `json:"work_id"`
-	Type        string  `json:"type"` // "tts" or "stt"
-	Status      string  `json:"status"` // "running", "completed", "failed", "interrupted"
+	Type        string  `json:"type"`     // "tts" or "stt"
+	Status      string  `json:"status"`   // "running", "completed", "failed", "interrupted"
 	Progress    float64 `json:"progress"` // 0.0 to 1.0
 	CurrentStep string  `json:"current_step"`
 	Error       string  `json:"error,omitempty"`
@@ -32,8 +33,8 @@ type JobStatus struct {
 
 // queuedJob represents a job waiting to run.
 type queuedJob struct {
-	job  *JobStatus
-	run  func()
+	job *JobStatus
+	run func()
 }
 
 // speechProviders bundles the active TTS + STT providers so they can be swapped
@@ -69,6 +70,89 @@ type Generator struct {
 	cancelled map[string]bool
 
 	queue chan queuedJob
+
+	// Idle STT unloading: lastActive is the unix-nano timestamp of the last job
+	// activity (the idle clock), unloaded is true once the STT model has been
+	// freed. The idleMonitor frees the ~3 GB model after stt_idle_timeout with no
+	// job running; the job queue holds the model, so an unload never races a job.
+	lastActive atomic.Int64
+	unloaded   atomic.Bool
+}
+
+// noteJobActivity resets the STT idle clock — called whenever a job starts or
+// finishes so the model stays loaded while (and just after) work is happening.
+func (g *Generator) noteJobActivity() {
+	g.lastActive.Store(time.Now().UnixNano())
+	g.unloaded.Store(false)
+}
+
+// anyJobActive reports whether a job is running or waiting — the model must stay
+// loaded in either case.
+func (g *Generator) anyJobActive() bool {
+	if len(g.queue) > 0 {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, on := range g.running {
+		if on {
+			return true
+		}
+	}
+	return false
+}
+
+// idleTimeout reads the stt_idle_timeout setting (in minutes; 0 = never). It's
+// read live each tick so a settings change takes effect without a restart.
+func (g *Generator) idleTimeout() time.Duration {
+	v, _ := g.store.GetSetting("stt_idle_timeout")
+	if strings.TrimSpace(v) == "" {
+		return time.Hour // default: 60 min
+	}
+	mins, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || mins < 0 {
+		return time.Hour
+	}
+	return time.Duration(mins) * time.Minute
+}
+
+// idleMonitor frees the STT model after stt_idle_timeout minutes with no job
+// active, reclaiming ~3 GB; the next transcription reloads it transparently. It
+// NEVER unloads while a job is running or queued (the job queue holds the
+// model), and skips any provider that isn't an stt.Unloader (cloud STT has no
+// local model to free).
+func (g *Generator) idleMonitor() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		timeout := g.idleTimeout()
+		if timeout <= 0 {
+			continue // "Never (always loaded)"
+		}
+		if g.anyJobActive() {
+			g.noteJobActivity() // work in progress — hold the model, reset the clock
+			continue
+		}
+		if g.unloaded.Load() {
+			continue // already freed; wait for the next job
+		}
+		if idle := time.Since(time.Unix(0, g.lastActive.Load())); idle < timeout {
+			continue
+		}
+		u, ok := g.stt().(stt.Unloader)
+		if !ok {
+			continue // cloud or unconfigured provider — nothing local to free
+		}
+		freed, err := u.Unload()
+		if err != nil {
+			applog.Warnf("system", "STT idle unload failed: %v", err)
+			continue
+		}
+		g.unloaded.Store(true)
+		if freed {
+			applog.Infof("system", "STT model unloaded after idle (freed ~3 GB; reloads on next transcription)")
+		}
+	}
 }
 
 // CancelJob marks a job for cancellation. A queued job is skipped when the
@@ -125,9 +209,13 @@ func NewGenerator(store *db.Store, ttsProvider tts.Provider, sttProvider stt.Pro
 		queue:        make(chan queuedJob, 50),
 	}
 	g.providers.Store(&speechProviders{tts: ttsProvider, stt: sttProvider})
+	g.lastActive.Store(time.Now().UnixNano())
 
 	// Single worker processes jobs sequentially
 	go g.worker()
+
+	// Free the idle STT model after the configured timeout (reclaims ~3 GB).
+	go g.idleMonitor()
 
 	// Auto-resume interrupted jobs from the previous run.
 	if len(resumable) > 0 {
@@ -160,6 +248,7 @@ func (g *Generator) worker() {
 			continue
 		}
 		g.setRunning(qj.job.ID, true)
+		g.noteJobActivity() // hold the STT model while this job runs
 		qj.job.Status = "running"
 		qj.job.CurrentStep = "Starting..."
 		g.updateJob(qj.job)
@@ -167,6 +256,7 @@ func (g *Generator) worker() {
 		qj.run()
 
 		g.setRunning(qj.job.ID, false)
+		g.noteJobActivity() // start the idle clock now the job is done
 		g.clearCancelled(qj.job.ID)
 	}
 }
@@ -456,11 +546,11 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 					job.CurrentStep = fmt.Sprintf("Aligning chapter %d/%d: %s", i+1, len(chapters), chMeta.Title)
 					g.updateJob(job)
 					// Pass original chapter text for alignment to original words
-				origText := ""
-				if origCh, err := g.store.GetChapterContent(bookID, chMeta.Index); err == nil && origCh != nil {
-					origText = origCh.Content
-				}
-				if err := AlignChapter(g.store, g.stt(), job.WorkID, b.ID, i, mp3Path, origText); err != nil {
+					origText := ""
+					if origCh, err := g.store.GetChapterContent(bookID, chMeta.Index); err == nil && origCh != nil {
+						origText = origCh.Content
+					}
+					if err := AlignChapter(g.store, g.stt(), job.WorkID, b.ID, i, mp3Path, origText); err != nil {
 						log.Printf("tts: alignment failed for chapter %d (non-fatal): %v", chMeta.Index, err)
 					}
 				}
@@ -985,4 +1075,3 @@ func (g *Generator) runRedoSTT(job *JobStatus, workID int64, filenames []string)
 	job.CurrentStep = fmt.Sprintf("Re-transcribed %d file(s); transcript updated", n)
 	g.updateJob(job)
 }
-
