@@ -285,6 +285,18 @@
     </div>
 
     <div class="section">
+      <h2>Library locations</h2>
+      <div class="hint" style="margin-bottom:12px;">The folders Abookify scans for books. Add external drives or network shares here. An unplugged/unmounted drive shows as <strong>offline</strong> — its books are kept and marked stale, <strong>never deleted</strong>.</div>
+      <div id="roots-list"></div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <input id="root-add-path" type="text" placeholder="/absolute/path/to/library" style="flex:1; min-width:220px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+        <input id="root-add-label" type="text" placeholder="Label (optional)" style="flex:0 0 160px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+        <button type="button" onclick="addRoot()" style="flex:0 0 auto; padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Add location</button>
+      </div>
+      <div id="roots-status" class="hint" style="margin-top:8px; min-height:1em;"></div>
+    </div>
+
+    <div class="section">
       <h2>Local Services</h2>
       <div class="hint" style="margin-bottom:12px;">These run locally on your server. No API keys needed, no data leaves your machine.</div>
       <div class="status-row">
@@ -778,6 +790,59 @@
       location.href = '/';
     }
 
+    // Library locations (#220) — per-root state: path, book count, online/offline.
+    async function loadRoots() {
+      const box = document.getElementById('roots-list');
+      if (!box) return;
+      try {
+        const data = await fetch('/api/library/roots').then(r => r.json());
+        const roots = data.roots || [];
+        if (!roots.length) { box.innerHTML = '<div class="hint">No library locations configured.</div>'; return; }
+        box.innerHTML = roots.map(r => {
+          const badge = r.reachable
+            ? '<span style="color:#1e7a46; font-weight:600; white-space:nowrap;">● online</span>'
+            : '<span style="color:#b45309; font-weight:600; white-space:nowrap;">● offline</span>';
+          const stale = r.stale_count ? ` · <span style="color:#b45309;">${r.stale_count} stale</span>` : '';
+          const del = roots.length > 1
+            ? `<button type="button" class="clear-key-btn" onclick='removeRoot(${r.id}, ${JSON.stringify(r.path)})'>Remove</button>` : '';
+          return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+            <input type="radio" name="root-default" ${r.is_default ? 'checked' : ''} title="Default destination for new imports" onclick="setDefaultRoot(${r.id})" style="width:auto; min-height:0;">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.path)}</div>
+              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
+            </div>
+            ${badge}
+            ${del}
+          </div>`;
+        }).join('');
+      } catch { box.innerHTML = '<div class="hint">Could not load library locations.</div>'; }
+    }
+    function rootsStatus(msg, isErr) { const el = document.getElementById('roots-status'); el.textContent = msg; el.style.color = isErr ? 'var(--danger, #E94560)' : ''; }
+    async function addRoot() {
+      const path = document.getElementById('root-add-path').value.trim();
+      const label = document.getElementById('root-add-label').value.trim();
+      if (!path) { rootsStatus('Enter an absolute path.', true); return; }
+      rootsStatus('Adding…');
+      const r = await fetch('/api/library/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, label }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { rootsStatus('✗ ' + (j.error || 'failed'), true); return; }
+      document.getElementById('root-add-path').value = '';
+      document.getElementById('root-add-label').value = '';
+      rootsStatus('Added — scanning in the background.');
+      loadRoots();
+    }
+    async function removeRoot(id, path) {
+      if (!confirm(`Remove library location "${path}"?\nIts books are kept (unassigned), not deleted.`)) return;
+      const r = await fetch('/api/library/roots/' + id, { method: 'DELETE' });
+      if (!r.ok) { rootsStatus('✗ remove failed', true); return; }
+      rootsStatus('Removed.'); loadRoots();
+    }
+    async function setDefaultRoot(id) {
+      const r = await fetch('/api/library/roots/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) });
+      if (!r.ok) { rootsStatus('✗ set-default failed', true); return; }
+      rootsStatus('Default updated.'); loadRoots();
+    }
+
     async function checkServices() {
       // /api/health proxies the TTS + STT probes — going direct to a
       // service port breaks when this page is loaded from anything
@@ -1181,6 +1246,7 @@
     // loadSettings targets elements the schema render creates (#202).
     renderSchemaForm().then(loadSettings).then(updateSTTDeviceReadout);
     checkServices();
+    loadRoots();
     loadAuthState();
   </script>
 </body>

@@ -260,6 +260,16 @@ func SettingsSchema() SettingsSchemaDoc {
 					Key: "booknlp_enabled", Label: "Enable BookNLP cast extraction", Type: "bool", Default: "false",
 				}},
 			},
+			{
+				Key:         "library",
+				Title:       "Library locations",
+				Description: "The folders scanned for books (#220). Manage them via GET/POST/DELETE/PATCH /api/library/roots — the list carries per-root path, book count, and reachable/offline state. An unplugged drive is shown offline; its books are kept (stale), never deleted.",
+				// A marker field: clients render the roots-management widget from the
+				// roots API rather than a flat KV value (the schema has no list type).
+				Fields: []SettingsField{{
+					Key: "library_roots", Label: "Library folders", Type: "library_roots",
+				}},
+			},
 		},
 	}
 }
