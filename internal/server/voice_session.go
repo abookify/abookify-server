@@ -108,6 +108,23 @@ func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleVoiceAvailable reports whether realtime voice can be offered — i.e. an
+// OpenAI credential resolves (vault, then the legacy setting). Cheap: no network
+// call, no token minted. The UI gates its voice entry point on this so PJ is
+// never invited to tap into a guaranteed failure.
+func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
+	key := s.store.CredentialAPIKey("openai")
+	if key == "" {
+		if settings, _ := s.store.GetAllSettings(); settings != nil {
+			key = firstNonEmptySetting(settings, "openai_api_key")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": key != "",
+		"provider":  "openai",
+	})
+}
+
 // firstNonEmptySetting returns the first non-empty value among the given keys.
 func firstNonEmptySetting(settings map[string]string, keys ...string) string {
 	for _, k := range keys {
