@@ -86,6 +86,12 @@ func (s *Store) RemoveRoot(id int64) error {
 	return tx.Commit()
 }
 
+// SetRootLabel renames a root.
+func (s *Store) SetRootLabel(id int64, label string) error {
+	_, err := s.db.Exec(`UPDATE library_roots SET label = ? WHERE id = ?`, label, id)
+	return err
+}
+
 // SetDefaultRoot makes one root the default import target (exactly one default).
 func (s *Store) SetDefaultRoot(id int64) error {
 	tx, err := s.db.Begin()
