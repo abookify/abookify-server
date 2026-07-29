@@ -506,6 +506,9 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("GET /api/stt/models", s.handleListSTTModels)
 	mux.HandleFunc("GET /api/tts/voices", s.handleListTTSVoices)
+	// Realtime voice conversation (speech-to-speech) — its own lane, mints an
+	// ephemeral token so the browser never sees the real key (voice_session.go).
+	mux.HandleFunc("POST /api/voice/session", s.handleVoiceSession)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
 	mux.HandleFunc("POST /api/stt/test", s.handleTestSTT)
