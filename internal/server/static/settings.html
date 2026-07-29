@@ -403,13 +403,13 @@
     </div>
 
     <div style="display:flex; align-items:center;">
-      <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+      <button class="save-btn" onclick="saveSettings()">Save settings</button>
       <span class="save-msg" id="save-msg">Saved!</span>
     </div>
   </div>
 
   <button type="button" class="floating-save" id="floating-save" onclick="saveSettings()"
-    title="Save all settings">Save Settings</button>
+    title="Save all settings">Save settings</button>
 
   <script>
     let allModels = {}; // { provider → [{id, label}, ...] }
@@ -714,7 +714,7 @@
         if (fab) {
           fab.classList.add('saved');
           fab.innerHTML = '✓ Saved';
-          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = 'Save Settings'; }, 2000);
+          setTimeout(() => { fab.classList.remove('saved'); fab.innerHTML = 'Save settings'; }, 2000);
         }
         document.getElementById('auth-password').value = '';
         loadAuthState();
