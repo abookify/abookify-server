@@ -763,6 +763,19 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 			}
 		}
 		if len(syncTimestamps) > 0 {
+			// Validate before this becomes the reader's karaoke, the search index
+			// and Q&A retrieval. The in-app job writes straight to the database
+			// with no sidecar, so the stt-cli write check and the import check
+			// both miss it — without this, a UI-started transcription got no
+			// integrity validation at all while the same work through stt-cli got
+			// two. Logged, not refused: the transcript is still mostly usable and
+			// discarding hours of GPU would be worse than flagging it.
+			iw := make([]sttWord, 0, len(syncTimestamps))
+			for _, t := range syncTimestamps {
+				iw = append(iw, sttWord{Word: t.Word, Start: t.Start, End: t.End})
+			}
+			LogTranscriptProblems(af.Filename, iw, nil, af.Duration)
+
 			data, err := json.Marshal(syncTimestamps)
 			if err == nil {
 				g.store.SaveSyncData(workID, af.ID, i, string(data))

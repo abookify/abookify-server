@@ -2,6 +2,7 @@ package library
 
 import (
 	"fmt"
+	"log"
 	"sort"
 )
 
@@ -128,6 +129,41 @@ func checkSidecarIntegrity(sc *sttSidecar) []SidecarProblem {
 		}
 	}
 	return out
+}
+
+// CheckTranscriptIntegrity validates a fresh transcription result before its
+// word timings are written to the database.
+//
+// The in-app Transcribe job never produces a sidecar file — it goes straight from
+// ChunkedTranscribe to SaveSyncData — so neither the write-time check in stt-cli
+// nor the import-time check above ever sees it. Until this existed, a
+// transcription started from the UI got NO integrity validation at all, while the
+// identical work run through stt-cli got two.
+//
+// duration is the audio's length; sources may be nil for a single-file work.
+func CheckTranscriptIntegrity(words []sttWord, sources []sttSource, duration float64) []SidecarProblem {
+	return checkSidecarIntegrity(&sttSidecar{
+		Duration: duration,
+		Words:    words,
+		Sources:  sources,
+	})
+}
+
+// LogTranscriptProblems reports integrity defects found in a fresh
+// transcription. Loud and specific, because the failure being guarded is a run
+// that LOOKS successful — fabricated text arrives with a HIGHER word count than
+// the truth, so every progress figure reads better rather than worse.
+func LogTranscriptProblems(label string, words []sttWord, sources []sttSource, duration float64) int {
+	problems := CheckTranscriptIntegrity(words, sources, duration)
+	if len(problems) == 0 {
+		return 0
+	}
+	log.Printf("stt: INTEGRITY — %s has %d structural problem(s); its word count is NOT trustworthy:",
+		label, len(problems))
+	for _, p := range problems {
+		log.Printf("stt: INTEGRITY   [%s] %s", p.Kind, p.Detail)
+	}
+	return len(problems)
 }
 
 // peakWordRate returns the highest words-per-minute over any window, and where.

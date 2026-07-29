@@ -110,3 +110,46 @@ func TestImportIntegrityEmptyIsNotAProblem(t *testing.T) {
 		t.Errorf("empty sidecar flagged: %s", kinds(p))
 	}
 }
+
+// The in-app Transcribe job writes word timings straight to the database with no
+// sidecar, so it was the one path with NO integrity validation while identical
+// work through stt-cli got two checks. This is that path's guard.
+func TestCheckTranscriptIntegrityCatchesFabricatedResult(t *testing.T) {
+	// A fresh result carrying the fabricated-text signature: many words claiming
+	// one instant, exactly as faster-whisper returns when its word-alignment pass
+	// collapses.
+	words := narrationWords(0, 600)
+	for i := 0; i < 25; i++ {
+		words = append(words, sttWord{Word: "x", Start: 120.0, End: 120.3})
+	}
+	p := CheckTranscriptIntegrity(words, nil, 600)
+	if len(p) == 0 {
+		t.Fatal("fabricated-result signature not detected on the server STT path")
+	}
+	if !strings.Contains(kinds(p), "synthesized_word_timings") {
+		t.Errorf("wrong kind: %s", kinds(p))
+	}
+}
+
+// A normal transcription must pass — this runs on every in-app job, so a false
+// alarm would cry wolf on every book PJ transcribes from the UI.
+func TestCheckTranscriptIntegrityPassesNormalResult(t *testing.T) {
+	if p := CheckTranscriptIntegrity(narrationWords(0, 1800), nil, 1800); len(p) != 0 {
+		t.Errorf("normal transcription flagged: %s", kinds(p))
+	}
+}
+
+// Reporting returns a count so a caller can act on it, and stays silent on a
+// clean result.
+func TestLogTranscriptProblemsCounts(t *testing.T) {
+	if n := LogTranscriptProblems("clean.mp3", narrationWords(0, 600), nil, 600); n != 0 {
+		t.Errorf("clean result reported %d problem(s)", n)
+	}
+	bad := narrationWords(0, 600)
+	for i := 0; i < 25; i++ {
+		bad = append(bad, sttWord{Word: "x", Start: 50.0, End: 50.2})
+	}
+	if n := LogTranscriptProblems("bad.mp3", bad, nil, 600); n == 0 {
+		t.Error("fabricated result reported no problems")
+	}
+}
