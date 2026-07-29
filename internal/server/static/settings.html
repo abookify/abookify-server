@@ -418,12 +418,19 @@
     title="Save all settings">Save settings</button>
 
   <script>
-    let allModels = {}; // { provider → [{id, label}, ...] }
+    // Dynamic (endpoint-driven) option fields — the ONE mechanism all three
+    // per-feature model/voice dropdowns render from, keyed by field so the lanes
+    // can't drift into three parallel implementations.
+    // { fieldKey: {endpoint, dependsOn, allowCustom, options:{provider:[{id,label,group?}]}} }
+    const DYNAMIC = {};
+    // { providerFieldKey: [dependent dynamic fieldKey, …] } — which model fields
+    // to refresh when a provider dropdown changes.
+    const DEPENDENTS = {};
 
     // Render the config sections from the backend settings schema (#202) — the
     // single source of truth web + mobile share. The markup deliberately emits
     // the SAME element ids the rest of this page's logic (loadSettings,
-    // saveSettings, onProviderChange, previewVoice, testLLM, clearSavedKey…)
+    // saveSettings, onSelectChange, previewVoice, testLLM, clearSavedKey…)
     // already targets, so only the markup is schema-driven; the behavior is
     // unchanged. Security stays a hand-built section (its auth flow has its own
     // save/disable/sign-out semantics); the schema still describes it for mobile.
@@ -434,6 +441,14 @@
       let schema;
       try { schema = await fetch('/api/settings/schema').then(r => r.json()); }
       catch { return; }
+      // Discover the dynamic option fields + their provider dependencies from the
+      // schema itself, so adding another lane needs no JS change.
+      for (const g of (schema.groups || [])) for (const f of (g.fields || [])) {
+        if (f.options_endpoint && f.depends_on) {
+          DYNAMIC[f.key] = { endpoint: f.options_endpoint, dependsOn: f.depends_on, allowCustom: !!f.allow_custom, options: {} };
+          (DEPENDENTS[f.depends_on] = DEPENDENTS[f.depends_on] || []).push(f.key);
+        }
+      }
       host.innerHTML = (schema.groups || [])
         .filter(g => SCHEMA_RENDER_GROUPS.includes(g.key))
         .map(renderSchemaGroup).join('');
@@ -461,7 +476,10 @@
           const opts = f.option_groups
             ? f.option_groups.map(og => `<optgroup label="${schemaEscAttr(og.label)}">${og.options.map(o => schemaOpt(o, f.default)).join('')}</optgroup>`).join('')
             : (f.options || []).map(o => schemaOpt(o, f.default)).join('');
-          const onchange = f.key === 'llm_provider' ? ' onchange="onLLMProviderChange()"' : '';
+          // Every select notifies onSelectChange: it refreshes any dependent
+          // dynamic model dropdown (llm/stt/tts) and runs the llm_provider side
+          // effects. Inert for selects nothing depends on.
+          const onchange = ` onchange="onSelectChange('${f.key}')"`;
           // Live readout of the device transcription is ACTUALLY running on
           // (probed from the engine via /api/info), distinct from the saved
           // preference above it.
@@ -469,10 +487,10 @@
             ? `<div class="hint" id="stt-device-readout" style="margin-top:6px;">Checking current device…</div>` : '';
           return `<div class="field">${label}<select id="${id}"${onchange}>${opts}</select>${previewAddon}${help}${deviceReadout}</div>`;
         }
-        case 'select_or_custom': // llm_model: curated select + custom free-text
+        case 'select_or_custom': // dynamic per-provider dropdown (+ optional custom): llm/stt/tts
           return `<div class="field">${label}
-            <select id="${id}-select" onchange="onModelSelectChange()"><option value="">Default for this provider</option></select>
-            <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${help}</div>`;
+            <select id="${id}-select" onchange="onDynamicSelect('${f.key}')"><option value="">Default for this engine</option></select>
+            <input type="text" id="${id}" placeholder="custom-model-id" style="margin-top:6px; display:none;">${previewAddon}${help}</div>`;
         case 'secret': {
           const clear = (f.addons || []).includes('clear')
             ? `<button type="button" class="clear-key-btn" onclick="clearSavedKey('${id}', '${f.key}')">Clear saved key</button>` : '';
@@ -492,11 +510,16 @@
       }
     }
 
-    async function loadModels() {
-      try {
-        const res = await fetch('/api/llm/models');
-        if (res.ok) allModels = await res.json();
-      } catch {}
+    // Fetch every dynamic field's option map once ({provider:[{id,label,group?}]}).
+    async function loadDynamicOptions() {
+      await Promise.all(Object.values(DYNAMIC).map(async d => {
+        try { const res = await fetch(d.endpoint); if (res.ok) d.options = await res.json(); } catch {}
+      }));
+    }
+
+    // Refresh dependent model dropdowns when a provider changes.
+    function refreshDependents(providerKey) {
+      for (const dep of (DEPENDENTS[providerKey] || [])) refreshDynamic(dep);
     }
 
     // LLM provider detection from an API-key prefix — the prefixes are
@@ -513,13 +536,11 @@
       return '';
     }
 
-    // Auto-detection must never override an explicit choice: set once the user
-    // manually changes the provider dropdown. loadSettings sets the value
-    // programmatically and calls onProviderChange() directly, so this stays
-    // false on load and after an auto-switch (which also calls onProviderChange
-    // directly, not this).
+    // Auto-detection must never override an explicit choice: set only via
+    // onSelectChange('llm_provider') when the user changes the dropdown.
+    // loadSettings and the key auto-switch call refreshDependents directly (not
+    // onSelectChange), so this stays false on load and after an auto-switch.
     let llmProviderUserSet = false;
-    function onLLMProviderChange() { llmProviderUserSet = true; onProviderChange(); }
 
     // When a NEW key is pasted/typed, detect its provider from the prefix and
     // switch the dropdown to match — visibly. If the user has explicitly chosen a
@@ -543,7 +564,7 @@
         return;
       }
       sel.value = detected;
-      onProviderChange(); // repopulate models; keeps the flag false — this is auto, not a user choice
+      refreshDependents('llm_provider'); // repopulate models; keeps the flag false — this is auto, not a user choice
       if (note) {
         note.textContent = `Detected ${art} ${dName} key — switched the provider to ${dName}.`;
         note.style.color = 'var(--accent)';
@@ -551,54 +572,84 @@
       }
     }
 
-    // Re-populate the model <select> when the provider changes. Adds a
-    // "Custom…" option that reveals the free-text input for any model
-    // not in the curated list.
-    function onProviderChange() {
-      const provider = document.getElementById('llm-provider').value;
-      const sel = document.getElementById('llm-model-select');
-      const txt = document.getElementById('llm-model');
-      const hint = document.getElementById('llm-model-hint');
-      sel.innerHTML = '<option value="">Default for this provider</option>';
-      if (provider && allModels[provider]) {
-        for (const m of allModels[provider]) {
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = m.label + ' — ' + m.id;
-          sel.appendChild(opt);
+    // A provider dropdown changed: run llm_provider's side effects, then refresh
+    // every model dropdown that depends on it. Generic across all three lanes.
+    function onSelectChange(fieldKey) {
+      if (fieldKey === 'llm_provider') {
+        llmProviderUserSet = true;
+        // Keep the saved-key label in step with the selected provider.
+        if (_savedMasks['llm-api-key']) updateSavedKeyLabel('llm-api-key', _savedMasks['llm-api-key']);
+      }
+      refreshDependents(fieldKey);
+    }
+
+    // Re-populate one dynamic model/voice dropdown from its provider's option
+    // list. Builds <optgroup>s when items carry a group (voice catalog), appends
+    // a "Custom…" option only when the field allows it, and restores the saved
+    // value (matching an option, else Custom when allowed). ONE implementation
+    // for llm_model / stt_model / tts_voice.
+    function refreshDynamic(fieldKey) {
+      const d = DYNAMIC[fieldKey];
+      if (!d) return;
+      const id = schemaFieldId(fieldKey);
+      const sel = document.getElementById(id + '-select');
+      const txt = document.getElementById(id);
+      if (!sel || !txt) return;
+      const depEl = document.getElementById(schemaFieldId(d.dependsOn));
+      const provider = depEl ? depEl.value : '';
+      const items = (d.options && d.options[provider]) || [];
+      sel.innerHTML = '<option value="">Default for this engine</option>';
+      if (items.some(m => m.group)) {
+        const byGroup = {};
+        for (const m of items) (byGroup[m.group || ''] = byGroup[m.group || ''] || []).push(m);
+        for (const [g, arr] of Object.entries(byGroup)) {
+          const og = document.createElement('optgroup');
+          og.label = g;
+          for (const m of arr) og.appendChild(new Option(m.label, m.id));
+          sel.appendChild(og);
         }
-      }
-      sel.appendChild(new Option('Custom…', '__custom__'));
-      // If the saved model isn't in the curated list, show it as Custom.
-      const saved = (txt.value || '').trim();
-      if (saved && [...sel.options].every(o => o.value !== saved)) {
-        sel.value = '__custom__';
-        txt.style.display = '';
-      } else if (saved) {
-        sel.value = saved;
-        txt.style.display = 'none';
       } else {
-        txt.style.display = 'none';
+        for (const m of items) sel.appendChild(new Option(m.label + ' — ' + m.id, m.id));
       }
-      if (hint) {
-        hint.textContent = provider === 'openrouter'
+      if (d.allowCustom) sel.appendChild(new Option('Custom…', '__custom__'));
+      const saved = (txt.value || '').trim();
+      if (saved && [...sel.options].some(o => o.value === saved)) {
+        sel.value = saved; txt.style.display = 'none';
+      } else if (saved && d.allowCustom) {
+        sel.value = '__custom__'; txt.style.display = '';
+      } else {
+        sel.value = ''; txt.style.display = 'none';
+      }
+      // llm_model keeps its provider-specific hint.
+      if (fieldKey === 'llm_model') {
+        const hint = document.getElementById('llm-model-hint');
+        if (hint) hint.textContent = provider === 'openrouter'
           ? 'Models are namespaced like vendor/model (e.g. anthropic/claude-3.5-sonnet).'
           : 'Pick a model — switch to a more capable one for better answers.';
       }
-      // Keep the saved-key label in step with the selected provider.
-      if (_savedMasks['llm-api-key']) updateSavedKeyLabel('llm-api-key', _savedMasks['llm-api-key']);
     }
 
-    function onModelSelectChange() {
-      const sel = document.getElementById('llm-model-select');
-      const txt = document.getElementById('llm-model');
-      if (sel.value === '__custom__') {
-        txt.style.display = '';
-        txt.focus();
-      } else {
-        txt.style.display = 'none';
-        txt.value = sel.value;
-      }
+    // Dropdown → free-text sync for a dynamic field: reveal the custom input on
+    // "Custom…", else mirror the selection into it (the input is the saved value).
+    function onDynamicSelect(fieldKey) {
+      const id = schemaFieldId(fieldKey);
+      const sel = document.getElementById(id + '-select');
+      const txt = document.getElementById(id);
+      if (!sel || !txt) return;
+      if (sel.value === '__custom__') { txt.style.display = ''; txt.focus(); }
+      else { txt.style.display = 'none'; txt.value = sel.value; }
+    }
+
+    // Resolve a dynamic field's value to save: the dropdown unless it's empty or
+    // "Custom…", in which case the free-text input wins.
+    function dynamicValue(fieldKey) {
+      const id = schemaFieldId(fieldKey);
+      const selEl = document.getElementById(id + '-select');
+      const txtEl = document.getElementById(id);
+      const sel = selEl ? selEl.value : '';
+      const txt = txtEl ? (txtEl.value || '').trim() : '';
+      if (sel && sel !== '__custom__') return sel;
+      return txt;
     }
 
     // Track which secret fields were populated at load time so saveSettings
@@ -699,10 +750,7 @@
       };
       let okText = (j) => `✓ Connected · ${j.provider || ''} · ${j.latency_ms} ms`;
       if (engine === 'llm') {
-        const sel = document.getElementById('llm-model-select');
-        const txt = document.getElementById('llm-model');
-        const selV = sel ? sel.value : '';
-        body.model = (selV && selV !== '__custom__') ? selV : (txt ? txt.value.trim() : '');
+        body.model = dynamicValue('llm_model');
         const base = document.getElementById('llm-base-url');
         body.base_url = base ? base.value : '';
         okText = (j) => `✓ Connected · ${j.latency_ms} ms · ${j.model}`;
@@ -804,14 +852,18 @@
       catch {}
     }
 
+    // Set a select/input value only if the element exists (schema-driven markup).
+    function setVal(id, v) { const el = document.getElementById(id); if (el != null && v != null) el.value = v; }
+
     async function loadSettings() {
       try {
-        await loadModels();
+        await loadDynamicOptions();
         const res = await fetch('/api/settings');
         const settings = await res.json();
-        if (settings.tts_voice) document.getElementById('tts-voice').value = settings.tts_voice;
-        if (settings.stt_model) document.getElementById('stt-model').value = settings.stt_model;
-        if (settings.stt_idle_timeout) document.getElementById('stt-idle-timeout').value = settings.stt_idle_timeout;
+        // Provider selections FIRST — the dynamic model/voice dropdowns depend on
+        // them. (tts/stt providers are user-selectable now; they must round-trip.)
+        setVal('tts-provider', settings.tts_provider);
+        setVal('stt-provider', settings.stt_provider);
         if (settings.llm_provider) document.getElementById('llm-provider').value = settings.llm_provider;
         // Persistence guard: if a key was saved but the provider wasn't (an older
         // save, or a mismatch), recover it from the key's own prefix so the
@@ -822,18 +874,26 @@
           const recovered = detectKeyProvider(settings.llm_api_key);
           if (recovered) document.getElementById('llm-provider').value = recovered;
         }
+        // Stash each saved model/voice into its dynamic field's free-text input;
+        // refreshDynamic reads it back to restore the dropdown selection.
+        setVal('tts-voice', settings.tts_voice);
+        setVal('stt-model', settings.stt_model);
+        setVal('llm-model', settings.llm_model);
+        setVal('stt-idle-timeout', settings.stt_idle_timeout);
         // Secrets arrive masked (e.g. "sk-proj-Is…Xy9z"). Don't put the
         // mask into the input — it'd look like a typed key. Show it
         // beneath the field instead, so the user can recognize which
         // key is installed and just leave the input empty to keep it.
         if (settings.llm_api_key) showSavedKey('llm-api-key', settings.llm_api_key);
-        if (settings.llm_model) document.getElementById('llm-model').value = settings.llm_model;
+        if (settings.tts_api_key) showSavedKey('tts-api-key', settings.tts_api_key);
+        if (settings.stt_api_key) showSavedKey('stt-api-key', settings.stt_api_key);
         if (settings.llm_base_url) document.getElementById('llm-base-url').value = settings.llm_base_url;
         if (settings.voice_provider) document.getElementById('voice-provider').value = settings.voice_provider;
         if (settings.voice_api_key) showSavedKey('voice-api-key', settings.voice_api_key);
         document.getElementById('booknlp-enabled').checked = settings.booknlp_enabled === 'true';
-        // Now that provider+model are loaded, populate the model <select>.
-        onProviderChange();
+        // Now that every provider + saved value is in place, populate all three
+        // dynamic model/voice dropdowns from the one mechanism.
+        for (const key of Object.keys(DYNAMIC)) refreshDynamic(key);
         // Wire up new-key provider auto-detection (once). A note element under
         // the key input reports an auto-switch, or a provider/key mismatch.
         const _llmKeyInput = document.getElementById('llm-api-key');
@@ -850,27 +910,25 @@
     }
 
     async function saveSettings() {
-      // Resolve the model: select wins unless it's empty/__custom__, in
-      // which case the free-text input is the source of truth. Saving
-      // an empty string explicitly clears the model so the LLM client
-      // falls back to its provider default on next start.
-      const sel = document.getElementById('llm-model-select').value;
-      const txt = document.getElementById('llm-model').value.trim();
-      let llmModel;
-      if (sel && sel !== '__custom__') llmModel = sel;
-      else llmModel = txt;
-
+      // Each lane's model/voice resolves via dynamicValue (dropdown unless empty/
+      // Custom…, else the free-text input). Provider selections for ALL three
+      // lanes round-trip now — tts/stt were previously never saved from this form.
+      const getVal = id => { const el = document.getElementById(id); return el ? el.value : ''; };
       const settings = {
-        tts_voice: document.getElementById('tts-voice').value,
-        stt_model: document.getElementById('stt-model').value,
-        stt_idle_timeout: document.getElementById('stt-idle-timeout').value,
-        llm_provider: document.getElementById('llm-provider').value,
+        tts_provider: getVal('tts-provider'),
+        tts_voice: dynamicValue('tts_voice'),
+        tts_api_key: keyFieldValue('tts-api-key'),
+        stt_provider: getVal('stt-provider'),
+        stt_model: dynamicValue('stt_model'),
+        stt_api_key: keyFieldValue('stt-api-key'),
+        stt_idle_timeout: getVal('stt-idle-timeout'),
+        llm_provider: getVal('llm-provider'),
         llm_api_key: keyFieldValue('llm-api-key'),
-        llm_model: llmModel,
-        llm_base_url: document.getElementById('llm-base-url').value,
-        voice_provider: document.getElementById('voice-provider').value,
+        llm_model: dynamicValue('llm_model'),
+        llm_base_url: getVal('llm-base-url'),
+        voice_provider: getVal('voice-provider'),
         voice_api_key: keyFieldValue('voice-api-key'),
-        auth_username: document.getElementById('auth-username').value.trim(),
+        auth_username: getVal('auth-username').trim(),
         booknlp_enabled: document.getElementById('booknlp-enabled').checked ? 'true' : 'false',
       };
       // Only send auth_password when the user actually typed one. Blank
@@ -1420,7 +1478,9 @@
     }
 
     async function previewVoice() {
-      const voice = document.getElementById('tts-voice').value;
+      // Resolve via the dynamic mechanism; fall back to the default voice when
+      // the dropdown sits on "Default for this engine" (empty value).
+      const voice = dynamicValue('tts_voice') || 'af_heart';
       const btn = document.getElementById('preview-btn');
       const audio = document.getElementById('preview-audio');
       btn.textContent = 'Loading…';
