@@ -22,8 +22,14 @@ import (
 //
 // Returns the assistant's reply augmented with citations. Caller is
 // responsible for persisting the user message + this reply to qa_messages.
-func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string, scope QueryScope) (*llm.Answer, error) {
-	if rag == nil || rag.Client() == nil {
+// extractOnly (#130 belt-and-braces): answer ONLY from the book's own text —
+// return the retrieved, position-bounded passages verbatim and never let the
+// model generate. Sidesteps the memorized-classic leak entirely (the retrieval
+// bound already caps citations at the reader's position; extract-only makes the
+// ANSWER itself be those passages, so there's nothing for the model to leak).
+// Works even with no LLM key (keyword retrieval), so it's fully hermetic.
+func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMessage, question string, scope QueryScope, extractOnly bool) (*llm.Answer, error) {
+	if !extractOnly && (rag == nil || rag.Client() == nil) {
 		return nil, fmt.Errorf("LLM not configured")
 	}
 	work, err := store.GetWork(workID)
@@ -114,6 +120,11 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 		citations = append(citations, cit)
 	}
 
+	// Extract-only: hand back the passages themselves, no model generation.
+	if extractOnly {
+		return composeExtractAnswer(retrieved, citations, getTitle), nil
+	}
+
 	systemPrompt := fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
 Answer questions based on the provided passages and the prior conversation.
 
@@ -161,6 +172,43 @@ Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
 		Model:     resp.Model,
 		Chunks:    len(retrieved),
 	}, nil
+}
+
+// composeExtractAnswer builds a book-text-only answer from the ALREADY-retrieved,
+// position-bounded passages — verbatim, grouped by chapter, with NO model
+// generation. Because the text is exactly the retrieved passages (which the
+// scope has already capped at the reader's position), it cannot surface anything
+// ahead of where they are — the whole point of extract-only mode. Pure function
+// of its inputs, so it's directly testable.
+func composeExtractAnswer(retrieved []db.Chunk, citations []llm.Citation, getTitle func(int64, int) string) *llm.Answer {
+	if len(retrieved) == 0 {
+		return &llm.Answer{
+			Text:   "That hasn't come up yet in what you've read.",
+			Model:  "extract-only",
+			Chunks: 0,
+		}
+	}
+	var b strings.Builder
+	b.WriteString("Straight from the book, up to where you're reading:\n\n")
+	lastKey := ""
+	for _, c := range retrieved {
+		key := fmt.Sprintf("%d:%d", c.BookID, c.ChapterIdx)
+		if key != lastKey {
+			if lastKey != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString("**" + getTitle(c.BookID, c.ChapterIdx) + "**\n")
+			lastKey = key
+		}
+		b.WriteString(strings.TrimSpace(c.Content))
+		b.WriteString("\n\n")
+	}
+	return &llm.Answer{
+		Text:      strings.TrimRight(b.String(), "\n"),
+		Citations: citations,
+		Model:     "extract-only",
+		Chunks:    len(retrieved),
+	}
 }
 
 // DeriveSessionTitle produces a short, human-friendly title for a chat

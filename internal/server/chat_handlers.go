@@ -1,12 +1,13 @@
 // HTTP handlers for chat sessions.
 //
 // API surface:
-//   GET    /api/works/{id}/sessions          — list sessions for a work
-//   POST   /api/works/{id}/sessions          — create a new session
-//   GET    /api/sessions/{id}/messages       — list messages in a session
-//   POST   /api/sessions/{id}/messages       — append a user msg + return assistant
-//   PUT    /api/sessions/{id}                — rename a session
-//   DELETE /api/sessions/{id}                — delete a session
+//
+//	GET    /api/works/{id}/sessions          — list sessions for a work
+//	POST   /api/works/{id}/sessions          — create a new session
+//	GET    /api/sessions/{id}/messages       — list messages in a session
+//	POST   /api/sessions/{id}/messages       — append a user msg + return assistant
+//	PUT    /api/sessions/{id}                — rename a session
+//	DELETE /api/sessions/{id}                — delete a session
 package server
 
 import (
@@ -101,6 +102,30 @@ func (s *Server) handleSetSessionScope(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
+// handleSetSessionAnswerMode changes a chat's answer mode (#130): "generated"
+// (the AI writes the answer) or "extract" (answer only from the book's own text
+// — no generation, so a memorized classic can't leak plot ahead of the reader).
+func (s *Server) handleSetSessionAnswerMode(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		AnswerMode string `json:"answer_mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if err := s.store.SetSessionAnswerMode(id, req.AnswerMode); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	sess, _ := s.store.GetSession(id)
+	writeJSON(w, http.StatusOK, sess)
+}
+
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
@@ -168,13 +193,6 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 // stores the assistant reply, and returns the assistant's chatMessage so
 // the client can append it to the visible thread.
 func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
-	rag := s.RAG()
-	if rag == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings.",
-		})
-		return
-	}
 	sessionID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
@@ -183,6 +201,15 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.store.GetSession(sessionID)
 	if err != nil || sess == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	// Extract-only answers from the book's own text, so it needs NO LLM. Only the
+	// generated mode requires a configured model.
+	rag := s.RAG()
+	if rag == nil && sess.AnswerMode != "extract" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "No LLM configured. Add an API key in Settings, or switch this chat to answer from the book text.",
+		})
 		return
 	}
 
@@ -243,7 +270,10 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
 	}
 
-	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope)
+	// Extract-only mode (#130): answer only from the book's own text — no model
+	// generation, so a memorized classic can't leak plot ahead of the reader.
+	extractOnly := sess.AnswerMode == "extract"
+	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope, extractOnly)
 	if err != nil {
 		// Persist a placeholder so the UI shows the failure inline rather
 		// than silently dropping the turn.

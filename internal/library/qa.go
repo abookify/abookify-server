@@ -283,24 +283,30 @@ func retrievePassages(store *db.Store, rag *llm.RAG, work *db.Work, target *db.B
 	}
 
 	var retrieved []db.Chunk
-	hits, err := VectorSearchChunks(store, rag.Client(), work.ID, question, topK)
-	if err == nil && len(hits) > 0 {
-		for _, h := range hits {
-			retrieved = append(retrieved, h.Chunk)
+	// Vector search when an LLM client is available (embeddings). Extract-only
+	// mode can run with no client at all, so guard the call and fall through to
+	// keyword retrieval — embeddings only rank existing passages, never generate.
+	if rag != nil && rag.Client() != nil {
+		hits, err := VectorSearchChunks(store, rag.Client(), work.ID, question, topK)
+		if err == nil && len(hits) > 0 {
+			for _, h := range hits {
+				retrieved = append(retrieved, h.Chunk)
+			}
+			log.Printf("qa: vector search returned %d chunks for work %d (scope=%q)",
+				len(retrieved), work.ID, scope.Type)
 		}
-		log.Printf("qa: vector search returned %d chunks for work %d (scope=%q)",
-			len(retrieved), work.ID, scope.Type)
-	} else {
-		// Keyword fallback. When scope names a book, search that book
-		// instead of the auto-resolved target so a transcript-vs-EPUB
-		// pick can't override the user's explicit choice.
+	}
+	if len(retrieved) == 0 {
+		// Keyword fallback (also the no-LLM-client path). When scope names a book,
+		// search that book instead of the auto-resolved target so a
+		// transcript-vs-EPUB pick can't override the user's explicit choice.
 		searchBookID := target.ID
 		if scope.BookID > 0 {
 			searchBookID = scope.BookID
 		}
 		kw := extractKeyword(question)
 		retrieved, _ = store.SearchChunks(searchBookID, kw)
-		log.Printf("qa: keyword fallback returned %d chunks for work %d (scope=%q, query=%q)",
+		log.Printf("qa: keyword retrieval returned %d chunks for work %d (scope=%q, query=%q)",
 			len(retrieved), work.ID, scope.Type, kw)
 	}
 
@@ -348,8 +354,8 @@ func extractKeyword(question string) string {
 // alignmentContext caches parsed alignments + sync data so citation
 // enrichment doesn't re-parse per chunk.
 type alignmentContext struct {
-	store         *db.Store
-	workID        int64
+	store  *db.Store
+	workID int64
 	// byEbookBook: ebook_book_id → list of parsed alignment pairs, plus the
 	// transcript book id those pairs map to.
 	byEbookBook map[int64]*ebookAlignmentData
@@ -362,8 +368,8 @@ type alignmentContext struct {
 
 type ebookAlignmentData struct {
 	transcriptBookID int64
-	pairs            []db.AlignmentPair       // edit-distance method
-	anchor           *AnchorAlignmentPayload  // anchor/embedding (render-ready, preferred)
+	pairs            []db.AlignmentPair      // edit-distance method
+	anchor           *AnchorAlignmentPayload // anchor/embedding (render-ready, preferred)
 }
 
 func newAlignmentContext(store *db.Store, workID int64) *alignmentContext {
