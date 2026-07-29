@@ -202,6 +202,26 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 		return fmt.Errorf("no words in sidecar")
 	}
 
+	// Sidecars arrive from elsewhere — remote-stt from the GPU box, syncthing
+	// between machines, the watcher picking up whatever lands in the library —
+	// and until now they went into the database unexamined. A sidecar carrying
+	// fabricated text reads as a perfectly normal book: the words are present so
+	// no gap fires, the audio is fine so no damage fires, and the word count is
+	// HIGHER than the truth so every summary looks better rather than worse.
+	// Import is the last place to notice before it becomes the reader's text,
+	// search index and Q&A source.
+	//
+	// Logged, not refused: the transcript is still mostly usable and rejecting it
+	// outright would lose the book. The point is that it announces itself instead
+	// of being believed.
+	if problems := checkSidecarIntegrity(&sc); len(problems) > 0 {
+		log.Printf("sidecar-import: WARNING — %s has %d structural problem(s); its word count is NOT trustworthy:",
+			filepath.Base(path), len(problems))
+		for _, p := range problems {
+			log.Printf("sidecar-import:   [%s] %s", p.Kind, p.Detail)
+		}
+	}
+
 	// Build sync_data JSON: [{s, e, w}, ...]
 	type syncWord struct {
 		S float64 `json:"s"`
