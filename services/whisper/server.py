@@ -209,7 +209,43 @@ def _looks_looped(segments):
     for t, (first, last, n) in spans.items():
         if n >= 4 and (last - first) >= 60.0:
             return True
-    return _looks_stuttered(segments)
+    return _looks_stuttered(segments) or _looks_degenerate(segments)
+
+
+def _looks_degenerate(segments):
+    """True when a segment's word timings are degenerate — many words claiming
+    one instant.
+
+    faster-whisper's word-alignment pass can collapse, assigning every word in a
+    segment the segment's own start time. When it does, the TEXT that comes with
+    it is not what the audio says. Atlas Shrugged's residue after the stutter fix
+    was entirely this, including obvious model failure like Greek and Korean
+    characters mid-sentence:
+
+        "grass as the lights\u03bc\u03ac and tr\ud558\uac8c\uc2b5\ub2c8\ub2e4 of everything were cut off"
+        audio: "torch lighted over the snow on the ridges of wyatt oil"
+
+    This is a DIFFERENT failure from the repetition loop: there is no repeated
+    phrase to key on, so _looks_stuttered cannot see it. The collapsed timings are
+    the only reliable signal, and they are the same signal the write-time
+    integrity check uses on the finished sidecar — this just catches it early
+    enough to retry.
+    """
+    for s in segments:
+        words = s.get("words") or []
+        if len(words) <= maxWordsPerInstant:
+            continue
+        counts = {}
+        for w in words:
+            counts[w["start"]] = counts.get(w["start"], 0) + 1
+            if counts[w["start"]] > maxWordsPerInstant:
+                return True
+    return False
+
+
+# Real word timings are never identical across a run of words; a handful of ties
+# is normal rounding. Matches the threshold the sidecar integrity check uses.
+maxWordsPerInstant = 6
 
 
 def _looks_stuttered(segments):
