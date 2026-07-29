@@ -77,6 +77,48 @@ the STT or TTS provider dropdowns. Voice is the last lane built (after e2e).
    protects Azure/AWS (which need multi-field credentials anyway). Getting this
    entry form right matters more right now than any single provider integration.
 
+## Privacy stance & outbound-data boundary (SUPERSEDES any provider ranking)
+
+**Rule: make exhaustive, precise claims about OUR OWN behaviour; make ZERO
+claims about any third party's.** We do **not** characterise a provider's privacy
+policy, rank providers by whether they train on data, store data-use metadata /
+"last verified" dates, or show any privacy verdict/badge. A claim about someone
+else's terms is stale the moment they change it and makes us liable for having
+vouched; our own conduct is fully in our control and stays true. (The TTS
+native-word-timestamp ranking STAYS — that's a factual capability of *our*
+pipeline, not a claim about their conduct. Drop only the privacy axis.)
+
+**Part 1 — hard limits on what we send, enforced in code.** Every outbound call
+the server makes (verified 2026-07-29). Anything to a cloud endpoint happens
+ONLY when the user has configured a cloud provider for that feature; local
+engines keep it on-box. Each is **user-triggered** and sends the **minimum** the
+feature needs:
+
+| Feature | External endpoint (cloud provider only) | What leaves | Trigger |
+|---|---|---|---|
+| Q&A answer | LLM chat (`api.anthropic.com` / `api.openai.com` / `openrouter.ai`) | the retrieved, position-bounded **passages + the question** — NOT the whole book (`qa.go` builds context from retrieved chunks only) | user asks |
+| RAG index build | `api.openai.com/v1/embeddings` | each chunk's text | import / "Rebuild search index" |
+| Transcription | `api.openai.com/v1/audio/transcriptions` | the audio being transcribed | user runs an STT job |
+| Narration | `api.openai.com/v1/audio/speech` | the text being narrated | user runs a TTS job |
+| Cover art | `openlibrary.org/search.json` + `covers.openlibrary.org` | **title + author only** | user clicks "Fetch missing covers" |
+| Voice (future) | realtime API | the audio for **that turn** only | user speaks |
+
+Local-only, never leaves the box: Kokoro (`:8880`), Whisper (`:5200`), Ollama
+(`:11434`), the hermetic engine. **Stated honestly:** RAG index build embeds
+*every* chunk's text (a semantic index needs them all) — the one feature that
+sends more than a single request's slice, and only with a cloud embedding
+provider; local/Ollama embeddings keep it on-box. This boundary must be explicit
+in code (not incidental) so the statement stays true as the code changes.
+
+**Part 2 — point at their policy and stop.** Each provider descriptor carries a
+`PolicyURL` (the vendor's OWN privacy-policy link). Next to each credential entry
+the Keys UI shows that link + one plain sentence: *"Once your data reaches
+{Vendor}, their terms govern."* No summary, no verdict, no recommendation.
+
+**Single-source with mobile:** these facts (the per-feature "what we send" line +
+the `PolicyURL`s) come from the backend (#202 schema / provider registry) so web
+and mobile render identical copy — the same facts must not be maintained twice.
+
 ## Data model
 
 New table (additive; nothing else changes shape):
@@ -126,6 +168,8 @@ type ProviderDescriptor struct {
     Kinds     []string          // "llm" | "stt" | "tts" | "voice" (several allowed)
     Credential []CredentialField // what the Keys section renders for this provider
     Models    map[string][]Model // per-kind model catalog (served via OptionsEndpoint)
+    PolicyURL string            // the vendor's OWN privacy-policy link (Part 2) — we
+                                // link it and say "their terms govern"; no verdict.
 }
 ```
 
@@ -171,7 +215,9 @@ Configure the OpenAI credential once in Keys, then prove each lane:
    word-timestamp gate flag + TTS native-timing rank flag + `kinds` incl. `voice`).
 3. Non-destructive boot migration (legacy keys → credentials, keep fallback).
 4. #202 schema: **Keys** section rendered from the registry (masked fields),
-   usable standalone.
+   usable standalone. Each entry shows the vendor's `PolicyURL` + "their terms
+   govern" (Part 2). The per-feature "what we send" line is served from the
+   backend too (single-sourced with mobile).
 5. #202 schema: per-feature provider + model selectors; `/api/stt|tts/models`;
    STT gate + TTS recommendation surfaced.
 6. Resolve providers from credentials (fallback to legacy settings).
