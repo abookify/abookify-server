@@ -38,7 +38,7 @@ type TranscriptionGap struct {
 	StartSec    float64 `json:"start_sec"`
 	EndSec      float64 `json:"end_sec"`
 	DurationSec float64 `json:"duration_sec"`
-	WordCount   int     `json:"word_count"`    // words actually found in this span (typically 0-few)
+	WordCount   int     `json:"word_count"` // words actually found in this span (typically 0-few)
 	SourceFile  string  `json:"source_file,omitempty"`
 }
 
@@ -153,6 +153,13 @@ func PersistTranscriptionGaps(store *db.Store, audioBookID int64, sc *sttSidecar
 	if gaps == nil {
 		gaps = []TranscriptionGap{}
 	}
+	// Bucket detection cannot see a hole shorter than its 60s bucket, which is
+	// how Life of Pi reported clean while missing ~1,854 words. Merge in the
+	// wordless-run detector, which has no resolution floor. The two are
+	// complementary — buckets catch sparse-but-not-empty (repetition loops),
+	// holes catch short-but-empty (frame damage) — so overlaps are dropped
+	// rather than either being preferred.
+	gaps = mergeGapSpans(gaps, DetectTranscriptionHoles(sc))
 	enc, err := json.Marshal(gaps)
 	if err != nil {
 		return fmt.Errorf("marshal gaps: %w", err)

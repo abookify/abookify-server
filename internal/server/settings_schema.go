@@ -267,10 +267,7 @@ func SettingsSchema() SettingsSchemaDoc {
 				Key:          "cast",
 				Title:        "Cast of Characters",
 				Experimental: true,
-				Description:  "Detects a named cast of characters from a work's EPUB. Enable it from the cast panel on any ebook — the server downloads (~6.5 GB) and runs the engine on demand, then stops it after it's idle to free memory. Extraction quality varies by genre/translation and aliases may over-split — hence the experimental label.",
-				Fields: []SettingsField{{
-					Key: "booknlp_enabled", Label: "Enable BookNLP cast extraction", Type: "bool", Default: "false",
-				}},
+				Description:  "Detects a named cast of characters from a work's EPUB. Extract it from the cast panel on any ebook — it runs in-process in under a second, with nothing to install. Places and allusions can still surface, and aliases that share no tokens (Rodya / Raskolnikov) split into separate rows — hence the experimental label.",
 			},
 			{
 				Key:         "library",

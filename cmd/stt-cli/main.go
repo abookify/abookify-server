@@ -34,6 +34,10 @@ func main() {
 	output := flag.String("output", "", "Output JSON file (default: <audio>.stt.json next to the input)")
 	stdoutFlag := flag.Bool("stdout", false, "Write JSON to stdout instead of a sidecar file")
 	redoFiles := flag.String("redo-files", "", "Comma-separated base filenames inside --audio dir to re-transcribe. Reads the existing sidecar, retranscribes only the named files, merges new words+silences over the old. Use to fill transcription gaps without redoing the whole book.")
+	allowCPU := flag.Bool("allow-cpu", false, "proceed even if the STT service is on CPU while this host has a GPU")
+	noVAD := flag.Bool("no-vad", false, "disable the voice-activity filter — use when whisper is silently discarding real speech (credits, quiet passages)")
+	noCondition := flag.Bool("no-condition", false, "disable conditioning on previously generated text — use when a stretch transcribes as a repetition loop or not at all")
+	allowDamaged := flag.Bool("allow-damaged", false, "proceed even if source files contain corrupt frames (transcription will silently lose narration)")
 	bootstrapSidecar := flag.Bool("bootstrap-sidecar", false, "Write a stub sidecar (sources + durations only, no words) and exit. --audio must point to a directory. The stub can then be filled chapter-by-chapter via --redo-files across multiple sessions.")
 	flag.Parse()
 
@@ -68,11 +72,32 @@ func main() {
 	}
 
 	// Pre-probe all durations so we can show accurate overall progress / ETA.
-	durations := make([]float64, len(files))
+	// A file that will not probe — zero-byte or truncated download — is SKIPPED
+	// with a warning rather than killing the run. A 16-hour book should not be
+	// unreachable because one file in the set is a husk; this has bitten before
+	// (a 170-byte truncated Sherlock file), and For Whom the Bell Tolls ships
+	// with 13 zero-byte placeholders alongside its 17 real files.
+	var kept []string
+	var durations []float64
 	var totalDur float64
-	for i, f := range files {
-		durations[i] = probeDuration(f)
-		totalDur += durations[i]
+	var skipped []string
+	for _, f := range files {
+		d, err := probeDuration(f)
+		if err != nil || d <= 0 {
+			skipped = append(skipped, filepath.Base(f))
+			continue
+		}
+		kept = append(kept, f)
+		durations = append(durations, d)
+		totalDur += d
+	}
+	if len(skipped) > 0 {
+		log.Printf("WARNING: skipping %d unreadable/zero-length file(s): %s",
+			len(skipped), strings.Join(skipped, ", "))
+	}
+	files = kept
+	if len(files) == 0 {
+		log.Fatalf("No readable audio files in %s (%d skipped as unreadable)", *audioPath, len(skipped))
 	}
 	if len(files) == 1 {
 		log.Printf("Audio: %s (%.0fs / %.1f min)", files[0], totalDur, totalDur/60)
@@ -107,8 +132,22 @@ func main() {
 	}
 
 	client := stt.NewClient(*whisperURL)
+	client.DisableVAD = *noVAD
+	client.DisableConditioning = *noCondition
+	if *noVAD || *noCondition {
+		log.Printf("STT overrides: vad_filter=%v condition_on_previous_text=%v",
+			!*noVAD, !*noCondition)
+	}
 	if err := client.Health(); err != nil {
 		log.Fatalf("Whisper not reachable at %s: %v", *whisperURL, err)
+	}
+
+	// Corrupt source frames silently truncate a transcript, so check the audio
+	// itself before spending hours on it. Deliberately ahead of the --redo-files
+	// branch: a redo is usually the response to missing words, which is exactly
+	// when the input is most likely to be damaged.
+	if err := damagePreflight(files, *allowDamaged); err != nil {
+		log.Fatalf("preflight: %v", err)
 	}
 
 	// Selective retry: only retranscribe the files named in --redo-files,
@@ -126,10 +165,16 @@ func main() {
 		return
 	}
 
+	// Verify what we are actually about to run on BEFORE committing hours.
+	if err := preflight(client, *allowCPU, totalDur); err != nil {
+		log.Fatalf("preflight: %v", err)
+	}
+
 	start := time.Now()
 	var combined stt.TranscribeResult
 	combined.Duration = totalDur
 
+	var allSilences []silenceEvent
 	var cumOffset float64
 	for fi, path := range files {
 		if len(files) > 1 {
@@ -144,7 +189,31 @@ func main() {
 		if combined.Language == "" {
 			combined.Language = r.Language
 		}
+
+		// Silences per file, here rather than in a second pass, so every
+		// checkpoint below is self-consistent (words AND silences for exactly
+		// the files completed so far).
+		if sil, err := detectSilences(path, -30, 0.15, cumOffset); err != nil {
+			log.Printf("  warning: silencedetect failed for %s: %v (continuing without)", filepath.Base(path), err)
+		} else {
+			log.Printf("  %s: %d silences detected", filepath.Base(path), len(sil))
+			allSilences = append(allSilences, sil...)
+		}
 		cumOffset += durations[fi]
+
+		// CHECKPOINT. The sidecar used to be written only after the LAST file,
+		// so anything that killed a long run — a reboot, an OOM, a stopped
+		// container — threw away every completed hour. Blueprint for Armageddon
+		// is 23 h of audio; losing it at 90% would cost ~2 h of GPU.
+		// Writing after each file caps the loss at the file in progress, and the
+		// partial sidecar is directly resumable with --redo-files.
+		if *output != "" && len(files) > 1 && fi < len(files)-1 {
+			if err := writeSidecar(*output, &combined, allSilences, files[:fi+1], durations[:fi+1], totalDur); err != nil {
+				log.Printf("  warning: checkpoint write failed: %v (continuing)", err)
+			} else {
+				log.Printf("  checkpoint: %d/%d files saved to %s", fi+1, len(files), filepath.Base(*output))
+			}
+		}
 	}
 	combined.Text = strings.TrimSpace(combined.Text)
 
@@ -159,60 +228,10 @@ func main() {
 		}
 	}
 
-	// Run silencedetect on each source file to get real acoustic pauses.
-	log.Printf("Running silence detection on %d file(s)...", len(files))
-	var allSilences []silenceEvent
-	{
-		var cumOffset float64
-		for fi, path := range files {
-			sil, err := detectSilences(path, -30, 0.15, cumOffset)
-			if err != nil {
-				log.Printf("  warning: silencedetect failed for %s: %v (continuing without)", filepath.Base(path), err)
-			} else {
-				log.Printf("  %s: %d silences detected", filepath.Base(path), len(sil))
-				allSilences = append(allSilences, sil...)
-			}
-			cumOffset += durations[fi]
-		}
-	}
 	classifySilences(allSilences)
 
 	// Build v2 event stream: words + silences interleaved by time.
 	// (event-stream merging retired in v3 — server derives what it needs from words+silences)
-
-	// v3 sidecar: pure transcription. Atomic outputs only — no chapter
-	// detection, no event-merging. The server's post-processing passes
-	// derive everything else from words+silences on import.
-	out := struct {
-		Version  int              `json:"version"`
-		Schema   string           `json:"schema"`
-		Language string           `json:"language,omitempty"`
-		Duration float64          `json:"duration"`
-		Sources  []sourceInfo     `json:"sources,omitempty"`
-		Words    []wordTS         `json:"words"`
-		Silences []silenceEvent   `json:"silences,omitempty"`
-		Metadata struct{}         `json:"metadata"`
-	}{
-		Version:  3,
-		Schema:   "abookify-sidecar/v3",
-		Language: combined.Language,
-		Duration: combined.Duration,
-		Words:    words,
-		Silences: allSilences,
-	}
-	// If we processed a directory, record each source file's offset and duration
-	// so downstream tooling can map words back to their original file.
-	if len(files) > 1 {
-		var acc float64
-		for i, f := range files {
-			out.Sources = append(out.Sources, sourceInfo{
-				Filename:  filepath.Base(f),
-				StartSec:  acc,
-				Duration:  durations[i],
-			})
-			acc += durations[i]
-		}
-	}
 
 	// Summary
 	chapterCount, paraCount, sentCount, breathCount := 0, 0, 0, 0
@@ -231,14 +250,18 @@ func main() {
 	log.Printf("Silence events: %d total (%d chapter, %d paragraph, %d sentence, %d breath)",
 		len(allSilences), chapterCount, paraCount, sentCount, breathCount)
 
-	data, _ := json.MarshalIndent(out, "", "  ")
-
 	if *output != "" {
-		if err := os.WriteFile(*output, data, 0644); err != nil {
+		if err := writeSidecar(*output, &combined, allSilences, files, durations, totalDur); err != nil {
 			log.Fatalf("Write output: %v", err)
 		}
-		log.Printf("Wrote %s (%d words, %d bytes)", *output, len(words), len(data))
+		fi, _ := os.Stat(*output)
+		sz := int64(0)
+		if fi != nil {
+			sz = fi.Size()
+		}
+		log.Printf("Wrote %s (%d words, %d bytes)", *output, len(words), sz)
 	} else {
+		data, _ := json.MarshalIndent(buildSidecar(&combined, allSilences, files, durations, totalDur), "", "  ")
 		os.Stdout.Write(data)
 	}
 
@@ -304,15 +327,21 @@ func transcribeFile(client *stt.Client, path string, baseOffset float64, wallSta
 	})
 }
 
-func probeDuration(path string) float64 {
+// probeDuration returns the audio duration in seconds. An error (or a
+// non-positive duration) means the file is unusable — the caller skips it
+// rather than aborting, so one bad file in a set does not cost the whole book.
+func probeDuration(path string) (float64, error) {
 	out, err := exec.Command("ffprobe", "-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
 	if err != nil {
-		log.Fatalf("ffprobe failed for %s: %v", path, err)
+		return 0, fmt.Errorf("ffprobe %s: %w", path, err)
 	}
-	d, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	return d
+	d, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration for %s: %w", path, err)
+	}
+	return d, nil
 }
 
 type wordTS struct {
@@ -377,3 +406,94 @@ func writeBootstrapSidecar(outputPath string, files []string, durations []float6
 // Narrator-pattern chapter detection moved to the server's post-processing
 // pipeline as of v3 sidecar (internal/library/chapter_detect.go). stt-cli
 // now writes a pure-transcription sidecar with no derived metadata.
+
+// sidecarDoc is the v3 sidecar: pure transcription. Atomic outputs only — no
+// chapter detection, no event merging. The server's post-processing passes
+// derive everything else from words+silences on import.
+type sidecarDoc struct {
+	Version  int            `json:"version"`
+	Schema   string         `json:"schema"`
+	Language string         `json:"language,omitempty"`
+	Duration float64        `json:"duration"`
+	Sources  []sourceInfo   `json:"sources,omitempty"`
+	Words    []wordTS       `json:"words"`
+	Silences []silenceEvent `json:"silences,omitempty"`
+	Metadata struct{}       `json:"metadata"`
+}
+
+// buildSidecar assembles the document for the files completed SO FAR, which is
+// what makes a mid-run checkpoint valid: `sources` describes exactly the files
+// whose words are present, so --redo-files can fill the remainder.
+//
+// duration stays the FULL run's duration, not the partial sum — a resumed
+// sidecar still describes the whole book, and the importer's file-offset
+// mapping depends on it.
+func buildSidecar(combined *stt.TranscribeResult, silences []silenceEvent,
+	files []string, durations []float64, totalDur float64) sidecarDoc {
+
+	var words []wordTS
+	for _, seg := range combined.Segments {
+		for _, w := range seg.Words {
+			words = append(words, wordTS{
+				Word: w.Word, Start: w.Start, End: w.End,
+				Probability: w.Probability, Idx: len(words),
+			})
+		}
+	}
+
+	doc := sidecarDoc{
+		Version:  3,
+		Schema:   "abookify-sidecar/v3",
+		Language: combined.Language,
+		Duration: totalDur,
+		Words:    words,
+		Silences: silences,
+	}
+	if len(files) > 1 {
+		var acc float64
+		for i, f := range files {
+			doc.Sources = append(doc.Sources, sourceInfo{
+				Filename: filepath.Base(f),
+				StartSec: acc,
+				Duration: durations[i],
+			})
+			acc += durations[i]
+		}
+	}
+	return doc
+}
+
+// writeSidecar writes the sidecar ATOMICALLY — temp file in the same directory,
+// then rename. A checkpoint that lands mid-write during a crash would otherwise
+// leave a truncated JSON file, which is worse than no checkpoint: it destroys
+// the completed work it was meant to protect.
+func writeSidecar(path string, combined *stt.TranscribeResult, silences []silenceEvent,
+	files []string, durations []float64, totalDur float64) error {
+
+	built := buildSidecar(combined, silences, files, durations, totalDur)
+	// Validate the OUTPUT, not just the inputs. A corrupted sidecar otherwise
+	// reads as a successful run and its word count as a recovery figure.
+	reportSidecarProblems(path, built.Words, built.Sources, built.Duration)
+	data, err := json.MarshalIndent(built, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".stt-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // durable before the rename
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}

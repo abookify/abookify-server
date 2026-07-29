@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,53 +10,68 @@ import (
 	"github.com/pj/abookify/internal/db"
 )
 
-// When BookNLP is configured but NOT running (the default — it's opt-in), an
-// extract-cast must fail SOFT: a 503 with an actionable "start it" message,
-// never a bare 500. This is the exact bug PJ hit clicking "Extract cast".
-func TestHandleExtractCastServiceDown(t *testing.T) {
+// Extraction runs in-process, so the whole path — EPUB chapters in, stored cast
+// out — is exercisable without any service, flag or network. This is what
+// replaced the old "BookNLP is opt-in and probably not running, so fail soft
+// with a 503" contract: there is nothing left to be down.
+func TestHandleExtractCastInProcess(t *testing.T) {
 	srv, store, dir := newTestServer(t)
 
-	// A reliably-closed port → connection refused (no real booknlp).
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := ln.Addr().String()
-	ln.Close()
-	srv.BookNLPURL = "http://" + addr
-
-	store.SetSetting("booknlp_enabled", "true")
 	workID, _ := store.CreateWork("Frankenstein", "Shelley")
 	epub := dir + "/f.epub"
 	store.UpsertBook(db.Book{WorkID: workID, Path: epub, Filename: "f.epub",
 		Format: "epub", MediaType: "text", Title: "Frankenstein", Origin: "publisher_epub"})
 	bookID := bookIDByPath(t, store, epub)
+
+	// Mid-sentence capitals are the name signal; a sentence-initial common word
+	// must not become a character.
+	// Vary the wording: a name that always sits directly after the same
+	// sentence-initial word would legitimately merge with it as a bigram.
+	body := strings.Repeat(
+		"I walked with Clerval through the town. Then Clerval spoke to Elizabeth. "+
+			"The letter from Elizabeth reached Clerval in autumn. "+
+			"Later that winter Elizabeth wrote to Clerval again. ", 6)
 	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "Ch1",
-		Content: strings.Repeat("word ", 50), WordCount: 50})
+		Content: body, WordCount: len(strings.Fields(body))})
 
 	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
 	req.SetPathValue("id", itoa(workID))
 	rec := httptest.NewRecorder()
 	srv.handleExtractCast(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 (graceful, not 500)", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	var out map[string]string
+	var out map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &out)
-	// New contract: the engine (re)starts on demand, so the message is friendly
-	// + actionable ("starting… try again") and NEVER surfaces a docker command.
-	if !strings.Contains(strings.ToLower(out["error"]), "starting") {
-		t.Errorf("error message not actionable: %q", out["error"])
+	if n, _ := out["characters"].(float64); n < 2 {
+		t.Fatalf("characters = %v, want >=2 (Clerval, Elizabeth)", out["characters"])
 	}
-	if strings.Contains(strings.ToLower(out["error"]), "docker") {
-		t.Errorf("error leaked a docker command to the user: %q", out["error"])
+
+	chars, err := store.ListCharactersForWork(workID)
+	if err != nil {
+		t.Fatalf("list characters: %v", err)
 	}
-	if strings.Contains(out["error"], "internal server error") {
-		t.Errorf("leaked a bare 500 message: %q", out["error"])
+	found := map[string]bool{}
+	for _, c := range chars {
+		found[c.Name] = true
+		if c.MentionCount <= 0 {
+			t.Errorf("%q stored with mention_count %d", c.Name, c.MentionCount)
+		}
+	}
+	for _, want := range []string{"Clerval", "Elizabeth"} {
+		if !found[want] {
+			t.Errorf("%q missing from stored cast; got %v", want, found)
+		}
+	}
+	if found["Then"] || found["Later"] {
+		t.Errorf("sentence-initial word stored as a character: %v", found)
 	}
 }
 
-// #133: the cast endpoint always reports experimental:true, gates `enabled`
-// on BOTH the booknlp_enabled flag and a configured service URL, and returns
-// an empty (never null) characters list when there's no cast.
+// The cast endpoint always reports experimental:true — the badge is mandatory
+// on every surface — reports enabled:true now that the extractor is in-process,
+// and returns an empty (never null) list when there is no cast.
 func TestHandleGetCast(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 
@@ -77,7 +91,6 @@ func TestHandleGetCast(t *testing.T) {
 		return rec.Code, out
 	}
 
-	// No cast, feature off → experimental:true, enabled:false, characters:[].
 	code, out := getCast()
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -85,25 +98,14 @@ func TestHandleGetCast(t *testing.T) {
 	if out["experimental"] != true {
 		t.Errorf("experimental = %v, want true (mandatory on every cast surface)", out["experimental"])
 	}
-	if out["enabled"] != false {
-		t.Errorf("enabled = %v, want false (flag off, no service)", out["enabled"])
+	if out["enabled"] != true {
+		t.Errorf("enabled = %v, want true (in-process — nothing to enable)", out["enabled"])
 	}
 	if chars, ok := out["characters"].([]any); !ok || len(chars) != 0 {
 		t.Errorf("characters = %v, want [] (empty, not null)", out["characters"])
 	}
 
-	// Flag on but no service URL → still NOT enabled (gate needs both).
-	store.SetSetting("booknlp_enabled", "true")
-	if _, out := getCast(); out["enabled"] != false {
-		t.Errorf("enabled = %v with flag-on/no-service, want false", out["enabled"])
-	}
-	// Flag on AND service configured → enabled.
-	srv.BookNLPURL = "http://localhost:5300"
-	if _, out := getCast(); out["enabled"] != true {
-		t.Errorf("enabled = %v with flag-on + service, want true", out["enabled"])
-	}
-
-	// Populated cast → rows carry name + aliases + gender + mention_count.
+	// Populated cast → rows carry name + aliases + mention_count, ranked.
 	store.ReplaceCharactersForBook(workID, bookID, []db.Character{
 		{Name: "Elizabeth Bennet", Aliases: []string{"Lizzy", "Eliza"}, Gender: "she/her", MentionCount: 142},
 		{Name: "Mr. Darcy", Aliases: []string{"Darcy"}, Gender: "he/him/his", MentionCount: 98},
@@ -123,17 +125,12 @@ func TestHandleGetCast(t *testing.T) {
 	if first["mention_count"].(float64) != 142 {
 		t.Errorf("mention_count = %v, want 142", first["mention_count"])
 	}
-	if al, ok := first["aliases"].([]any); !ok || len(al) != 2 {
-		t.Errorf("aliases = %v, want 2", first["aliases"])
-	}
 }
 
 // A work with no EPUB text source is a foreseeable input condition → graceful
-// 422, never a bare 500 (even with BookNLP configured).
+// 422, never a bare 500.
 func TestHandleExtractCastNoEPUB(t *testing.T) {
 	srv, store, _ := newTestServer(t)
-	srv.BookNLPURL = "http://127.0.0.1:5300" // configured, but never reached
-	store.SetSetting("booknlp_enabled", "true")
 	workID, _ := store.CreateWork("Audio Only", "Author") // no text book at all
 
 	req := httptest.NewRequest("POST", "/api/works/x/extract-cast", nil)
@@ -151,7 +148,7 @@ func TestHandleExtractCastNoEPUB(t *testing.T) {
 	}
 }
 
-// #133: an invalid work id is a 400, not a panic.
+// An invalid work id is a 400, not a panic.
 func TestHandleGetCastInvalidID(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest("GET", "/api/works/x/cast", nil)

@@ -17,6 +17,22 @@ import (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+
+	// DisableVAD turns off the service's voice-activity filter for this client.
+	//
+	// The VAD silently DISCARDS audio it does not judge to be speech, and it is
+	// wrong often enough to matter: The Da Vinci Code's closing credits and a
+	// 32-second stretch of The Handmaid's Tale were dropped entirely, producing
+	// spans that looked like transcription failures. Both transcribe correctly
+	// with the filter off. Default (false) preserves existing behaviour, since
+	// the VAD earns its place on most material.
+	DisableVAD bool
+
+	// DisableConditioning stops the decoder conditioning on its own previous
+	// output. Conditioning improves continuity but can trap the model in a
+	// repetition loop, and on some stretches it suppresses transcription
+	// altogether. Default (false) preserves existing behaviour.
+	DisableConditioning bool
 }
 
 func NewClient(baseURL string) *Client {
@@ -167,6 +183,18 @@ func (c *Client) TranscribeFile(audioPath string) (*TranscribeResult, error) {
 	// Request word-level timestamps for alignment
 	if err := w.WriteField("word_timestamps", "true"); err != nil {
 		return nil, err
+	}
+	// Only send the toggles when overriding, so a service predating them is
+	// unaffected and the default request is byte-identical to before.
+	if c.DisableVAD {
+		if err := w.WriteField("vad_filter", "false"); err != nil {
+			return nil, err
+		}
+	}
+	if c.DisableConditioning {
+		if err := w.WriteField("condition_on_previous_text", "false"); err != nil {
+			return nil, err
+		}
 	}
 
 	w.Close()

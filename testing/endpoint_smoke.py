@@ -12,7 +12,7 @@ It exists to catch the class of bug where a foreseeable condition (an opt-in
 service not running, a missing alignment, no LLM key) surfaces as a raw
 "internal server error" 500 instead of an actionable message. In particular it
 locks the cast-extraction graceful-degradation contract: with the opt-in
-BookNLP service NOT running, POST extract-cast must return a 503 (or 403/422),
+a work has no EPUB text, POST extract-cast must return a 422 (never a 500),
 never a 500.
 
 Usage: endpoint_smoke.py [base-url]
@@ -161,16 +161,15 @@ def main() -> int:
             check(res, base, "GET", f"/api/works/{tw}/word-sync/{tb}/0")
             check(res, base, "GET", f"/api/books/{tb}/chapters")
 
-    # --- The cast graceful-degradation contract (PJ's bug) -----------------
-    # With BookNLP not running, POST extract-cast must be graceful (503 ideal;
-    # 403 when the flag is off; 422 when the work has no EPUB) — NEVER a 500.
+    # --- The cast graceful-degradation contract ----------------------------
+    # Extraction is in-process, so on an EPUB work it just succeeds (200); a
+    # work with no EPUB text is a graceful 422. Never a bare 500 either way.
     cast_work = ids.get("epub_work") or ids.get("work")
     if cast_work is not None:
-        # Best-effort enable so we exercise the service-down 503 path (works on
-        # an open server / with a token; silently no-ops behind auth).
-        request(base, "POST", "/api/settings", {"booknlp_enabled": "true"})
         check(res, base, "POST", f"/api/works/{cast_work}/extract-cast",
-              expect={403, 422, 503}, note="must fail soft when BookNLP is down")
+              expect={200, 422}, note="200 on an EPUB work, 422 without one — never 500")
+        check(res, base, "GET", f"/api/works/{cast_work}/cast",
+              note="always 200: experimental flag + (possibly empty) characters")
     else:
         print("  (no work to test cast extraction)")
 

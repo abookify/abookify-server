@@ -35,14 +35,75 @@ import (
 // schema refactors and can be vendored into stt-cli builds without
 // pulling in the server library tree.
 type sidecarV3 struct {
-	Version  int             `json:"version"`
-	Schema   string          `json:"schema"`
-	Language string          `json:"language,omitempty"`
-	Duration float64         `json:"duration"`
-	Sources  []sourceInfo    `json:"sources,omitempty"`
-	Words    []wordTS        `json:"words"`
-	Silences []silenceEvent  `json:"silences,omitempty"`
-	Metadata struct{}        `json:"metadata"`
+	Version  int            `json:"version"`
+	Schema   string         `json:"schema"`
+	Language string         `json:"language,omitempty"`
+	Duration float64        `json:"duration"`
+	Sources  []sourceInfo   `json:"sources,omitempty"`
+	Words    []wordTS       `json:"words"`
+	Silences []silenceEvent `json:"silences,omitempty"`
+	Metadata struct{}       `json:"metadata"`
+}
+
+// offsetTolerance is how far a recomputed offset/duration may drift from the
+// sidecar before the redo refuses to run. ffprobe re-reports a duration to the
+// millisecond, and a repaired (re-encoded) file can legitimately move by a
+// frame or two, so an exact match is too strict — but anything approaching a
+// whole second of drift means the file set itself changed.
+const offsetTolerance = 1.0
+
+// verifyAgainstSidecar refuses the redo unless the audio directory still lays
+// out exactly as the sidecar records. Reports the FIRST divergence with both
+// views, since that is where the timeline starts being wrong.
+func verifyAgainstSidecar(files []string, durations, fileOffsets []float64, existing *sidecarV3) error {
+	// A sidecar written before sources were recorded cannot be checked. Say so
+	// rather than pretending the redo was verified.
+	if len(existing.Sources) == 0 {
+		log.Printf("redo: WARNING — sidecar has no sources array; cannot verify " +
+			"file offsets. If the directory has changed since it was written, the " +
+			"merged words will land in the wrong place.")
+		return nil
+	}
+
+	if len(files) != len(existing.Sources) {
+		have := make([]string, 0, len(files))
+		for _, p := range files {
+			have = append(have, filepath.Base(p))
+		}
+		want := make([]string, 0, len(existing.Sources))
+		for _, s := range existing.Sources {
+			want = append(want, s.Filename)
+		}
+		return fmt.Errorf("--redo-files: directory has %d audio file(s) but the sidecar "+
+			"records %d — every offset after the difference would be wrong, so the "+
+			"re-transcribed words would be written to the wrong place.\n"+
+			"  directory: %s\n"+
+			"  sidecar:   %s\n"+
+			"Remove strays (scratch files, duplicates) or re-run a full transcription",
+			len(files), len(existing.Sources), strings.Join(have, ", "), strings.Join(want, ", "))
+	}
+
+	for i, p := range files {
+		base := filepath.Base(p)
+		src := existing.Sources[i]
+		if base != src.Filename {
+			return fmt.Errorf("--redo-files: file %d is %q but the sidecar records %q at that "+
+				"position — the ordering changed, so timeline offsets no longer line up. "+
+				"Re-run a full transcription", i, base, src.Filename)
+		}
+		if diff := durations[i] - src.Duration; diff > offsetTolerance || diff < -offsetTolerance {
+			return fmt.Errorf("--redo-files: %s is %.1fs but the sidecar records %.1fs (%+.1fs) — "+
+				"everything after it would shift by that much. Re-run a full transcription",
+				base, durations[i], src.Duration, diff)
+		}
+		if diff := fileOffsets[i] - src.StartSec; diff > offsetTolerance || diff < -offsetTolerance {
+			return fmt.Errorf("--redo-files: %s would be placed at %.1fs but the sidecar has it at "+
+				"%.1fs (%+.1fs) — the re-transcribed words would land %.1fs from where they belong. "+
+				"Re-run a full transcription",
+				base, fileOffsets[i], src.StartSec, diff, diff)
+		}
+	}
+	return nil
 }
 
 // retranscribeAndMerge reads the existing sidecar, transcribes the
@@ -63,6 +124,21 @@ func retranscribeAndMerge(client *stt.Client, files []string, durations []float6
 		indexByBase[filepath.Base(p)] = i
 		fileOffsets = append(fileOffsets, acc)
 		acc += durations[i]
+	}
+
+	// The sidecar's own sources array is the authority on where each file sits on
+	// the book-continuous timeline. A redo computes offsets afresh from the
+	// directory, so if the directory no longer matches the sidecar every offset
+	// after the first difference is wrong — and the failure is SILENT: whisper
+	// transcribes correctly, the words are simply written to the wrong place, and
+	// the merge deletes good words from the range it believes it is replacing.
+	//
+	// Life of Pi hit this when a leftover scratch file (23.repair.NNN.mp3) joined
+	// the *.mp3 glob and pushed everything after it 1540s later. Verify instead of
+	// trusting: this is cheap, and the alternative is corruption that looks like a
+	// clean run.
+	if err := verifyAgainstSidecar(files, durations, fileOffsets, existing); err != nil {
+		return err
 	}
 
 	// Resolve the redo list to (file index, base filename, time range).
@@ -132,6 +208,12 @@ func retranscribeAndMerge(client *stt.Client, files []string, durations []float6
 	for i := range merged.Words {
 		merged.Words[i].Idx = i
 	}
+
+	// This is the write that produced the corrupted sidecar: three files' words
+	// landed 1540s late, overlapping words already there, and the run reported
+	// "+13,619 words recovered" as though it had succeeded. Check the result
+	// before it becomes the number someone believes.
+	reportSidecarProblems(outputPath, merged.Words, merged.Sources, merged.Duration)
 
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {

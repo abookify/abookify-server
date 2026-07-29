@@ -42,16 +42,16 @@ func (s *Server) handleQASuggestions(w http.ResponseWriter, r *http.Request) {
 		{Label: "Main characters so far", Prompt: "Who are the main characters introduced so far?"},
 	}
 
-	// Entity chips from the cast (experimental; only present when BookNLP has
-	// run), bounded to characters the reader has already met.
+	// Entity chips from the cast (experimental; only present when cast
+	// extraction has run), bounded to characters the reader has already met.
 	out = append(out, s.entitySuggestions(workID, bookID, chapter, hasChapter)...)
 
 	writeJSON(w, http.StatusOK, map[string]any{"suggestions": out})
 }
 
 // entitySuggestions builds up to two "Who is X again?" chips for top characters
-// the reader has ALREADY met. Spoiler-bounding without relying on BookNLP
-// mention offsets (which aren't stored): we load only the text of chapters up
+// the reader has ALREADY met. Spoiler-bounding without relying on stored
+// mention offsets (which aren't kept): we load only the text of chapters up
 // to the reader's position and check whether the character's name appears in
 // it. A character who first shows up later simply isn't in that text, so the
 // chip can't reveal them early. Empty when there's no cast or no chapter bound
@@ -118,7 +118,7 @@ func nameAppearsIn(hayLower, name string, aliases []string) bool {
 	return false
 }
 
-// shortCharName keeps a long canonical name (BookNLP sometimes yields the full
+// shortCharName keeps a long canonical name (extraction sometimes yields the full
 // "Józef Teodor Konrad Korzeniowski") readable on a chip: first + last word.
 func shortCharName(name string) string {
 	f := strings.Fields(name)

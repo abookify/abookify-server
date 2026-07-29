@@ -156,7 +156,7 @@ test:
 # Endpoint status-contract smoke suite against a RUNNING server (default
 # http://localhost:7654). Asserts every major route returns a sensible status
 # (2xx, or a graceful 4xx/503 with a JSON error) and NEVER a bare 500 — incl.
-# the cast graceful-degradation contract when BookNLP is not running.
+# the cast graceful-degradation contract when a work has no EPUB text.
 # Override the target with: make smoke BASE=https://my-server
 smoke:
 	./testing/endpoint-smoke.sh $(BASE)
