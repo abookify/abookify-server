@@ -17,6 +17,11 @@ const (
 	ProviderOpenAI     Provider = "openai"
 	ProviderOllama     Provider = "ollama"
 	ProviderOpenRouter Provider = "openrouter"
+	// ProviderGoogle is Gemini via its OpenAI-compatible endpoint (Bearer auth,
+	// chat-completions request/response shape) — so it reuses completeOpenAI. It
+	// is an LLM path only; a Google credential's other verified kinds (voice) are
+	// separate features, and Google Cloud TTS is a different product entirely.
+	ProviderGoogle Provider = "google"
 )
 
 // Client is a multi-provider LLM client.
@@ -61,6 +66,8 @@ func NewClient(provider Provider, apiKey, model, baseURL string) *Client {
 		case ProviderOpenRouter:
 			// Solid default — cheap and capable.
 			model = "openai/gpt-4o-mini"
+		case ProviderGoogle:
+			model = "gemini-1.5-flash"
 		}
 	}
 	if baseURL == "" {
@@ -76,6 +83,11 @@ func NewClient(provider Provider, apiKey, model, baseURL string) *Client {
 			// /api/v1/chat/completions — same path shape as OpenAI's
 			// /v1/chat/completions appended to this baseURL.
 			baseURL = "https://openrouter.ai/api"
+		case ProviderGoogle:
+			// Gemini's OpenAI-compatible surface. The base already carries
+			// /v1beta/openai, so the chat path is just /chat/completions
+			// (see chatCompletionsURL).
+			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 		}
 	}
 
@@ -96,11 +108,10 @@ func (c *Client) Complete(req CompletionRequest) (*CompletionResponse, error) {
 	switch c.provider {
 	case ProviderAnthropic:
 		return c.completeAnthropic(req)
-	case ProviderOpenAI, ProviderOpenRouter:
-		// OpenRouter implements the OpenAI chat-completions API verbatim,
-		// so the request shape and parsing are identical. Auth is also a
-		// Bearer token. The only delta is the base URL, which is set in
-		// NewClient.
+	case ProviderOpenAI, ProviderOpenRouter, ProviderGoogle:
+		// OpenRouter and Gemini both implement the OpenAI chat-completions API
+		// (Bearer auth, identical request/response shape); only the base URL and
+		// chat path differ, both set in NewClient / chatCompletionsURL.
 		return c.completeOpenAI(req)
 	case ProviderOllama:
 		return c.completeOllama(req)
@@ -170,6 +181,16 @@ func (c *Client) completeAnthropic(req CompletionRequest) (*CompletionResponse, 
 	}, nil
 }
 
+// chatCompletionsURL is the OpenAI-compatible chat endpoint for this client.
+// Gemini's compat surface lives under /v1beta/openai (already in baseURL) so its
+// path is /chat/completions; OpenAI and OpenRouter use /v1/chat/completions.
+func (c *Client) chatCompletionsURL() string {
+	if c.provider == ProviderGoogle {
+		return c.baseURL + "/chat/completions"
+	}
+	return c.baseURL + "/v1/chat/completions"
+}
+
 func (c *Client) completeOpenAI(req CompletionRequest) (*CompletionResponse, error) {
 	messages := req.Messages
 	if req.System != "" {
@@ -188,7 +209,7 @@ func (c *Client) completeOpenAI(req CompletionRequest) (*CompletionResponse, err
 	}
 
 	jsonBody, _ := json.Marshal(body)
-	httpReq, _ := http.NewRequest("POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	httpReq, _ := http.NewRequest("POST", c.chatCompletionsURL(), bytes.NewReader(jsonBody))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	// OpenRouter recommends an attribution header so app-level rate-limit
