@@ -2824,6 +2824,13 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 			{ID: "o1-mini", Label: "o1 mini — reasoning, cheaper"},
 			{ID: "gpt-3.5-turbo", Label: "GPT-3.5 Turbo — legacy"},
 		},
+		"google": {
+			{ID: "gemini-flash-latest", Label: "Gemini Flash (latest) — fast, cheap (default)"},
+			{ID: "gemini-pro-latest", Label: "Gemini Pro (latest) — most capable"},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash"},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro"},
+			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash"},
+		},
 		"openrouter": {
 			{ID: "anthropic/claude-3.5-sonnet", Label: "Claude 3.5 Sonnet"},
 			{ID: "anthropic/claude-3.5-haiku", Label: "Claude 3.5 Haiku"},
