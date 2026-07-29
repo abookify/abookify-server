@@ -157,6 +157,11 @@ type Book struct {
 	// "Original", "Annotated", "Spanish translation". Empty = default edition.
 	// Works with multiple editions expose an edition picker in the UI.
 	Edition    string    `json:"edition,omitempty"`
+	// RootID ties the book to its library_roots row (#220); 0 = unassigned or a
+	// virtual/generated path. Stale means the book's root is currently
+	// unreachable (e.g. an unplugged drive) — kept in the DB, shown as offline.
+	RootID       int64     `json:"root_id,omitempty"`
+	Stale        bool      `json:"stale,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -456,6 +461,21 @@ func migrate(db *sql.DB) error {
 			value TEXT NOT NULL DEFAULT ''
 		);
 
+		-- Library roots (#220): the N filesystem locations the scanner walks
+		-- (Jellyfin/Plex-style). The single -library path is migrated in as
+		-- root #1 on boot. is_default marks the write target for new imports;
+		-- position orders them. A book's root_id ties it to its root so an
+		-- unreachable (unplugged) root marks its books stale rather than
+		-- deleting them.
+		CREATE TABLE IF NOT EXISTS library_roots (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			path       TEXT NOT NULL UNIQUE,
+			label      TEXT NOT NULL DEFAULT '',
+			is_default INTEGER NOT NULL DEFAULT 0,
+			position   INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
 		-- Login sessions for optional username/password auth (#197).
 		-- Opaque random tokens minted at login (or embedded in a pairing
 		-- QR), validated per request. A DB table (not in-memory) so 30-day
@@ -552,6 +572,12 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE works ADD COLUMN description  TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE works ADD COLUMN year         INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE works ADD COLUMN genre        TEXT NOT NULL DEFAULT ''`,
+		// #220 multiple library roots: which root a book lives under (0 =
+		// unassigned/virtual), and whether it's currently stale (its root is
+		// unreachable, e.g. an unplugged drive) so the UI shows it as offline
+		// instead of the library silently shrinking.
+		`ALTER TABLE books ADD COLUMN root_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE books ADD COLUMN stale   INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE playback_positions ADD COLUMN device_id   TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE playback_positions ADD COLUMN device_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE books ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,

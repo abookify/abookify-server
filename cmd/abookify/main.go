@@ -86,6 +86,11 @@ func main() {
 	applog.Init(store)
 	applog.Info("system", "abookify server starting")
 
+	// #220: migrate the single -library path in as library root #1 (idempotent).
+	if err := library.EnsureRoots(store, *libraryPath); err != nil {
+		log.Printf("warning: library-root migration failed: %v", err)
+	}
+
 	// MOBI/AZW3/AZW → sibling .epub via calibre's ebook-convert (image
 	// dep). Idempotent — skips files that already have a sibling .epub.
 	// Lets the scanner + EPUB chapter extractor handle ebook formats
