@@ -791,18 +791,35 @@
     }
 
     // Library locations (#220) — per-root state: path, book count, online/offline.
+    let _libraryRoots = [];
+    async function moveRoot(id, dir) {
+      const ids = _libraryRoots.map(r => r.id);
+      const idx = ids.indexOf(id);
+      const swap = idx + dir;
+      if (idx < 0 || swap < 0 || swap >= ids.length) return;
+      [ids[idx], ids[swap]] = [ids[swap], ids[idx]];
+      const r = await fetch('/api/library/roots/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      if (!r.ok) { rootsStatus('✗ reorder failed', true); return; }
+      rootsStatus('Reordered.'); loadRoots();
+    }
     async function loadRoots() {
       const box = document.getElementById('roots-list');
       if (!box) return;
       try {
         const data = await fetch('/api/library/roots').then(r => r.json());
         const roots = data.roots || [];
+        _libraryRoots = roots;
         if (!roots.length) { box.innerHTML = '<div class="hint">No library locations configured.</div>'; return; }
-        box.innerHTML = roots.map(r => {
+        box.innerHTML = roots.map((r, i) => {
           const badge = r.reachable
             ? '<span style="color:#1e7a46; font-weight:600; white-space:nowrap;">● online</span>'
             : '<span style="color:#b45309; font-weight:600; white-space:nowrap;">● offline</span>';
           const stale = r.stale_count ? ` · <span style="color:#b45309;">${r.stale_count} stale</span>` : '';
+          // Reorder controls (spec #220: add/remove/reorder). Only shown with 2+
+          // roots; ends are disabled. Order sets scan order.
+          const reorder = roots.length > 1
+            ? `<button type="button" class="clear-key-btn" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="moveRoot(${r.id}, -1)" style="padding:2px 8px;">↑</button>
+               <button type="button" class="clear-key-btn" title="Move down" ${i === roots.length - 1 ? 'disabled' : ''} onclick="moveRoot(${r.id}, 1)" style="padding:2px 8px;">↓</button>` : '';
           const del = roots.length > 1
             ? `<button type="button" class="clear-key-btn" onclick='removeRoot(${r.id}, ${JSON.stringify(r.path)})'>Remove</button>` : '';
           return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
@@ -811,6 +828,7 @@
               <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.path)}</div>
               <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
             </div>
+            ${reorder}
             ${badge}
             ${del}
           </div>`;
