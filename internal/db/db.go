@@ -617,6 +617,11 @@ func migrate(db *sql.DB) error {
 		// the whole book (opt-in, may reveal the ending). The reader's live
 		// position is supplied per turn; the server resolves the bound.
 		`ALTER TABLE qa_sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'reading'`,
+		// Per-CHAT answer mode (#130 belt-and-braces): "generated" = the AI writes
+		// the answer from the passages (default); "extract" = answer ONLY from the
+		// book's own text (verbatim passages, no generation), so a memorized classic
+		// can't leak plot the reader hasn't reached.
+		`ALTER TABLE qa_sessions ADD COLUMN answer_mode TEXT NOT NULL DEFAULT 'generated'`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
