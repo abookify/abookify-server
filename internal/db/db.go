@@ -533,6 +533,24 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_character_mentions_char ON character_mentions(character_id);
+
+		-- Per-audio-file source integrity, from decoding the file itself.
+		-- This is what lets the UI say WHY narration is absent, and the two
+		-- causes need opposite actions: corrupt frames are repairable by
+		-- re-encoding, a truncated file has to be re-acquired because the audio
+		-- was never written. Cannot be inferred from transcript gaps — damage
+		-- costing less than the gap threshold is invisible there.
+		-- scanned_at doubles as the "have we ever looked?" flag, so the UI can
+		-- distinguish "verified complete" from "never checked".
+		CREATE TABLE IF NOT EXISTS source_scans (
+			book_id       INTEGER PRIMARY KEY,
+			scanned_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			decode_errors INTEGER NOT NULL DEFAULT 0,
+			truncated     INTEGER NOT NULL DEFAULT 0,
+			zero_at       INTEGER NOT NULL DEFAULT 0,
+			zero_bytes    INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (book_id) REFERENCES books(id)
+		);
 	`)
 	if err != nil {
 		return err
@@ -1269,6 +1287,87 @@ func (s *Store) UpdateChapterTitle(bookID int64, index int, title string) error 
 func (s *Store) SetBookStartSec(bookID int64, startSec float64) error {
 	_, err := s.db.Exec(`UPDATE books SET start_sec = ? WHERE id = ?`, startSec, bookID)
 	return err
+}
+
+// SourceScanRow is one audio file's persisted integrity result. Scanned is
+// false when the file has never been checked — which the UI must render
+// differently from "checked and clean", since an unchecked book cannot be
+// claimed complete.
+type SourceScanRow struct {
+	BookID       int64  `json:"book_id"`
+	Scanned      bool   `json:"scanned"`
+	ScannedAt    string `json:"scanned_at,omitempty"`
+	DecodeErrors int    `json:"decode_errors"`
+	Truncated    bool   `json:"truncated"`
+	ZeroAt       int64  `json:"zero_at,omitempty"`
+	ZeroBytes    int64  `json:"zero_bytes,omitempty"`
+}
+
+// SaveSourceScan records (or replaces) one audio file's integrity result.
+// A clean result is still written — "we looked and it was fine" is exactly the
+// fact the UI needs to claim a book is complete.
+func (s *Store) SaveSourceScan(r SourceScanRow) error {
+	tr := 0
+	if r.Truncated {
+		tr = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO source_scans (book_id, scanned_at, decode_errors, truncated, zero_at, zero_bytes)
+		VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+		ON CONFLICT(book_id) DO UPDATE SET
+			scanned_at    = CURRENT_TIMESTAMP,
+			decode_errors = excluded.decode_errors,
+			truncated     = excluded.truncated,
+			zero_at       = excluded.zero_at,
+			zero_bytes    = excluded.zero_bytes`,
+		r.BookID, r.DecodeErrors, tr, r.ZeroAt, r.ZeroBytes)
+	return err
+}
+
+// GetSourceScans returns the persisted scan for each of the given books, keyed
+// by book id. Books never scanned are simply absent from the map.
+func (s *Store) GetSourceScans(bookIDs []int64) (map[int64]SourceScanRow, error) {
+	out := map[int64]SourceScanRow{}
+	if len(bookIDs) == 0 {
+		return out, nil
+	}
+	q := `SELECT book_id, scanned_at, decode_errors, truncated, zero_at, zero_bytes
+	      FROM source_scans WHERE book_id IN (` + placeholders(len(bookIDs)) + `)`
+	args := make([]any, len(bookIDs))
+	for i, id := range bookIDs {
+		args[i] = id
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r SourceScanRow
+		var tr int
+		if err := rows.Scan(&r.BookID, &r.ScannedAt, &r.DecodeErrors, &tr, &r.ZeroAt, &r.ZeroBytes); err != nil {
+			return out, err
+		}
+		r.Truncated = tr != 0
+		r.Scanned = true
+		out[r.BookID] = r
+	}
+	return out, rows.Err()
+}
+
+// placeholders builds "?,?,?" for an IN clause.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, n*2-1)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
 }
 
 // SaveTranscriptionGaps persists the JSON-encoded list of audio spans
