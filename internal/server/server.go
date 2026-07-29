@@ -489,6 +489,10 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/settings/schema", s.handleSettingsSchema)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	// BYOK credentials (Keys section). Vendor catalog + saved keys (masked).
+	mux.HandleFunc("GET /api/credentials", s.handleListCredentials)
+	mux.HandleFunc("POST /api/credentials", s.handleSaveCredential)
+	mux.HandleFunc("DELETE /api/credentials/{id}", s.handleDeleteCredential)
 	mux.HandleFunc("GET /api/llm/models", s.handleListLLMModels)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
