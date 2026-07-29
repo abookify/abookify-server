@@ -151,18 +151,18 @@ func main() {
 	var tbID int64
 	if err := tx.QueryRow(`SELECT id FROM books WHERE work_id = ? AND format = 'transcript' LIMIT 1`,
 		*workID).Scan(&tbID); err == nil && tbID != 0 {
-		rows, err := tx.Query(`SELECT index_num, start_sec FROM chapters WHERE book_id = ? ORDER BY index_num`, tbID)
+		rows, err := tx.Query(`SELECT index_num, start_sec, end_sec FROM chapters WHERE book_id = ? ORDER BY index_num`, tbID)
 		if err != nil {
 			log.Fatalf("read transcript chapters: %v", err)
 		}
 		type seg struct {
-			idx   int
-			start float64
+			idx        int
+			start, end float64
 		}
 		var segs []seg
 		for rows.Next() {
 			var sg seg
-			rows.Scan(&sg.idx, &sg.start)
+			rows.Scan(&sg.idx, &sg.start, &sg.end)
 			segs = append(segs, sg)
 		}
 		rows.Close()
@@ -174,11 +174,24 @@ func main() {
 			bounds[i] = a
 			a += p.dur
 		}
+		// Attribute a segment to the part holding the BULK of it, not the part
+		// holding its first instant. Segment boundaries come from silences, and the
+		// silence that separates two parts belongs acoustically to the end of the
+		// first — so a segment opening a new part typically starts a fraction of a
+		// second BEFORE that part's boundary. Attributing by start_sec then files it
+		// under the previous part, and the effect compounds: Blueprint's six parts
+		// labelled as I, I, III, III, IV, V, with Part II and Part VI never appearing
+		// at all. The midpoint is insensitive to which side of the boundary the
+		// leading silence falls on.
 		within := map[int]int{}
 		for _, sg := range segs {
+			mid := sg.start
+			if sg.end > sg.start {
+				mid = (sg.start + sg.end) / 2
+			}
 			pi := 0
 			for i, b := range bounds {
-				if sg.start >= b {
+				if mid >= b {
 					pi = i
 				}
 			}
