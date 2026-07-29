@@ -77,10 +77,12 @@ func (s *Server) handleSearchCovers(w http.ResponseWriter, r *http.Request) {
 	}
 	var candidates []library.CoverCandidate
 	var err error
+	// Ask for a full grid of choices (#cover-bug-3: 12 was too few and left a
+	// ragged row). Dedup by cover id trims some, so request the max.
 	if freeText != "" {
-		candidates, err = library.SearchOpenLibraryCoversFreeText(freeText, 12)
+		candidates, err = library.SearchOpenLibraryCoversFreeText(freeText, 48)
 	} else {
-		candidates, err = library.SearchOpenLibraryCovers(title, author, 12)
+		candidates, err = library.SearchOpenLibraryCovers(title, author, 48)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "cover search failed: " + err.Error()})

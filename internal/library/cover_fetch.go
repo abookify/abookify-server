@@ -205,8 +205,11 @@ func SearchOpenLibraryCoversFreeText(query string, limit int) ([]CoverCandidate,
 }
 
 func runOLCoverSearch(q url.Values, limit int) ([]CoverCandidate, error) {
-	if limit <= 0 || limit > 20 {
+	if limit <= 0 {
 		limit = 12
+	}
+	if limit > 50 {
+		limit = 50
 	}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("fields", "title,author_name,cover_i")
