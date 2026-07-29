@@ -209,6 +209,12 @@ func retranscribeAndMerge(client *stt.Client, files []string, durations []float6
 		merged.Words[i].Idx = i
 	}
 
+	// This is the write that produced the corrupted sidecar: three files' words
+	// landed 1540s late, overlapping words already there, and the run reported
+	// "+13,619 words recovered" as though it had succeeded. Check the result
+	// before it becomes the number someone believes.
+	reportSidecarProblems(outputPath, merged.Words, merged.Sources, merged.Duration)
+
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

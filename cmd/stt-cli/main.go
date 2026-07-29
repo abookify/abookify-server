@@ -462,7 +462,11 @@ func buildSidecar(combined *stt.TranscribeResult, silences []silenceEvent,
 func writeSidecar(path string, combined *stt.TranscribeResult, silences []silenceEvent,
 	files []string, durations []float64, totalDur float64) error {
 
-	data, err := json.MarshalIndent(buildSidecar(combined, silences, files, durations, totalDur), "", "  ")
+	built := buildSidecar(combined, silences, files, durations, totalDur)
+	// Validate the OUTPUT, not just the inputs. A corrupted sidecar otherwise
+	// reads as a successful run and its word count as a recovery figure.
+	reportSidecarProblems(path, built.Words, built.Sources, built.Duration)
+	data, err := json.MarshalIndent(built, "", "  ")
 	if err != nil {
 		return err
 	}
