@@ -555,7 +555,8 @@ func (s *Server) SetReady(v bool) {
 	s.ready.Store(v)
 	if v {
 		go s.prewarmVoicePreviews()
-		s.startWhisperDeviceMonitor() // watch for a mid-run cuda→cpu downgrade
+		s.startWhisperDeviceMonitor()   // watch for a mid-run cuda→cpu downgrade
+		go s.reprobeEmptyCredentials() // populate capabilities for migrated/older keys
 	}
 }
 

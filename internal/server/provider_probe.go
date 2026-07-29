@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -21,9 +22,84 @@ func probeCapabilities(desc ProviderDescriptor, fields map[string]string) []stri
 	switch desc.ID {
 	case "openai":
 		return probeOpenAI(fields["api_key"], "https://api.openai.com")
+	case "anthropic":
+		return probeAnthropic(fields["api_key"], "https://api.anthropic.com")
+	case "google":
+		return probeGoogle(fields["api_key"], "https://generativelanguage.googleapis.com")
 	default:
 		return nil
 	}
+}
+
+// reprobeEmptyCredentials re-runs the capability probe for any stored credential
+// with empty capabilities — migrated keys (the migration doesn't probe) and keys
+// saved before a probe covered their vendor. Best-effort and background; only
+// touches empty ones so it doesn't re-hit vendors every boot once populated. No
+// key material is logged.
+func (s *Server) reprobeEmptyCredentials() {
+	creds, err := s.store.ListCredentials()
+	if err != nil {
+		return
+	}
+	for _, c := range creds {
+		if len(c.Capabilities) > 0 {
+			continue
+		}
+		desc, ok := providerDescriptor(c.Provider)
+		if !ok {
+			continue
+		}
+		if caps := probeCredentialFn(desc, c.Fields); len(caps) > 0 {
+			_ = s.store.SetCredentialCapabilities(c.ID, caps)
+		}
+	}
+}
+
+// probeAnthropic verifies the key against Anthropic's model list. Anthropic is
+// an LLM vendor only, so a working key verifies "llm".
+func probeAnthropic(apiKey, baseURL string) []string {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	return []string{"llm"}
+}
+
+// probeGoogle verifies the key against the Gemini API model list. A working
+// Gemini key serves Gemini LLM + Gemini Live (voice) — the SAME key. It does
+// NOT verify "tts": Google Cloud Text-to-Speech (WaveNet/Neural2) is a separate
+// GCP product requiring project enablement that a Gemini key does not reach, so
+// we never claim tts from it (PJ's exact caveat).
+func probeGoogle(apiKey, baseURL string) []string {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1beta/models?key="+url.QueryEscape(apiKey), nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	return []string{"llm", "voice"}
 }
 
 // probeOpenAI checks the key against OpenAI's model list and returns which kinds
