@@ -1,9 +1,11 @@
 package library
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,28 +81,47 @@ func ChunkedTranscribe(client stt.Provider, audioPath string, baseOffset float64
 			onSeg(SegmentEvent{SegIdx: i, TotalSegs: nSegments, SegStartSecs: startSecs})
 		}
 
-		// Retry transient Whisper failures (intermittent 500s on a segment that
-		// succeeds when retried). After maxAttempts, continue with an empty
-		// result so one bad chunk doesn't lose the rest of a multi-hour file.
-		const maxAttempts = 3
+		// Retry, but treat the two failure classes differently — they need
+		// opposite responses and conflating them loses hours of work.
+		//
+		//  - The SERVICE IS GONE (connection refused / EOF / reset). Nothing is
+		//    wrong with the audio; something restarted the container. Wait it
+		//    out. A redeploy takes minutes, so the old 3 attempts over ~6s could
+		//    never survive one: a whisper redeploy mid-run silently emptied FIVE
+		//    consecutive hour-long files of For Whom the Bell Tolls (4.3 h) while
+		//    the audio was perfectly fine.
+		//  - The MODEL REJECTED THIS CHUNK (an HTTP error came back). The service
+		//    is up and answering; retrying the identical bytes rarely helps, so
+		//    give up quickly and keep the rest of the book.
 		var result *stt.TranscribeResult
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attempts := 0
+		for {
+			attempts++
 			result, err = client.TranscribeFile(segPath)
 			if err == nil {
 				break
 			}
-			if attempt < maxAttempts {
-				backoff := time.Duration(attempt*2) * time.Second
-				log.Printf("stt-chunked: segment %d attempt %d/%d failed (%v); retry in %v",
-					i+1, attempt, maxAttempts, err, backoff)
-				time.Sleep(backoff)
+			down := isServiceUnavailable(err)
+			maxAttempts := segDecodeAttempts
+			if down {
+				maxAttempts = segServiceAttempts
 			}
+			if attempts >= maxAttempts {
+				break
+			}
+			backoff := time.Duration(attempts*2) * time.Second
+			if down && backoff > serviceRetryCap {
+				backoff = serviceRetryCap
+			}
+			log.Printf("stt-chunked: segment %d attempt %d/%d failed (%v); retry in %v",
+				i+1, attempts, maxAttempts, err, backoff)
+			time.Sleep(backoff)
 		}
 		os.Remove(segPath)
 		failed := err != nil
 		if failed {
 			log.Printf("stt-chunked: segment %d failed permanently after %d attempts: %v — skipping",
-				i+1, maxAttempts, err)
+				i+1, attempts, err)
 			result = &stt.TranscribeResult{}
 		}
 
@@ -144,6 +165,46 @@ func transcribeChunked(client stt.Provider, audioPath string, onProgress func(se
 			onProgress(e.SegIdx, e.TotalSegs)
 		}
 	})
+}
+
+const (
+	// A chunk the model itself rejects is usually deterministic — fail fast.
+	segDecodeAttempts = 3
+	// A chunk that cannot reach the service is worth waiting out: 20 attempts
+	// capped at 30s is ~9 minutes, comfortably longer than a container rebuild
+	// and model reload, and it costs nothing when the service is healthy.
+	segServiceAttempts = 20
+	serviceRetryCap    = 30 * time.Second
+)
+
+// isServiceUnavailable reports whether the STT call failed because the service
+// could not be REACHED, as opposed to answering with an error. Only the former
+// is worth waiting out.
+func isServiceUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A reachable service that returns an HTTP status is not "down", even for a
+	// 5xx — the client reports those as "stt error (status N)".
+	if strings.Contains(err.Error(), "stt error (status") {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range []string{"connection refused", "connection reset", "EOF",
+		"no such host", "broken pipe", "i/o timeout"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // segmentExt picks the container for an extracted chunk.

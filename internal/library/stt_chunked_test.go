@@ -1,7 +1,9 @@
 package library
 
 import (
+	"errors"
 	"math"
+	"net"
 	"testing"
 )
 
@@ -55,6 +57,40 @@ func TestChunkCountNoPhantomSegment(t *testing.T) {
 		// The last segment must start strictly before the end of the audio.
 		if last := float64((got - 1) * chunkDurationSecs); last >= tc.dur && tc.dur > 0 {
 			t.Errorf("duration %.2fs: last segment starts at %.0fs, at/past EOF", tc.dur, last)
+		}
+	}
+}
+
+// The two failure classes need opposite responses: a service that cannot be
+// REACHED is worth waiting out (a container restart takes minutes), while a
+// service that ANSWERS with an error has judged this chunk and will judge it the
+// same way again. Conflating them cost 4.3 hours of For Whom the Bell Tolls when
+// a whisper redeploy outlasted a 3-attempt/6-second retry budget.
+func TestIsServiceUnavailable(t *testing.T) {
+	down := []error{
+		errors.New(`stt request failed: Post "http://localhost:5200/transcribe": dial tcp 127.0.0.1:5200: connect: connection refused`),
+		errors.New(`stt request failed: Post "http://localhost:5200/transcribe": EOF`),
+		errors.New(`stt request failed: write tcp 127.0.0.1:59840->127.0.0.1:5200: write: connection reset by peer`),
+		errors.New(`Post "http://whisper:5200/transcribe": dial tcp: lookup whisper: no such host`),
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")},
+	}
+	for _, e := range down {
+		if !isServiceUnavailable(e) {
+			t.Errorf("should be treated as service-down (wait it out): %v", e)
+		}
+	}
+
+	answered := []error{
+		// The service is UP and rejected this chunk — retrying identical bytes
+		// will not help, and must not hold the run open for minutes.
+		errors.New(`stt error (status 500): {"error":"[Errno 1094995529] Invalid data found when processing input"}`),
+		errors.New(`stt error (status 500): {"error":"boolean index did not match indexed array along axis 0"}`),
+		errors.New(`stt error (status 400): {"error":"missing file field"}`),
+		nil,
+	}
+	for _, e := range answered {
+		if isServiceUnavailable(e) {
+			t.Errorf("should NOT be treated as service-down: %v", e)
 		}
 	}
 }
