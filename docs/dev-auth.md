@@ -19,25 +19,31 @@ backdoor:
 
 ## Enabling it (local test instance only) — set once, it persists
 
-Set the env var to any secret string and start the server without a relay URL.
-On startup the server **saves the token to its settings DB**, so you only do this
-ONCE — every later recreate/reboot loads it back automatically (no need to keep
-the env around, though keeping it in `.env` is fine and re-asserts it).
+The base `docker-compose.yml` passes `ABOOKIFY_DEV_AUTH_TOKEN` through to the
+server (`${ABOOKIFY_DEV_AUTH_TOKEN:-}`, empty by default), so the durable way to
+enable it is a **one line in the host-local `.env`** — no
+`docker-compose.override.yml` needed (that only auto-loads on a bare `docker
+compose up`, which is also the call that strips whisper's GPU, so avoid it):
 
 ```bash
-# docker compose: set it once, then `make server` (or up -d) — it's now persisted
-ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please docker compose \
-  -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-deps server
-
-# or put it in .env once (also fine — re-asserts the same token every boot):
+# append once to engineering/server/.env (gitignored, host-local) — do NOT clobber
+# existing creds; append the line:
 #   ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please
+```
 
+Then a plain **`make server`** picks it up. On startup the server **saves the
+token to its settings DB**, so from then on it's durable: a later recreate that
+doesn't re-supply the env still keeps the bypass (the DB copy wins). You only
+seed it once.
+
+```bash
 # native/desktop:
 ABOOKIFY_DEV_AUTH_TOKEN=dev-screenshots-please ./abookify
 ```
 
 Startup logs `⚠ DEV AUTH BYPASS ACTIVE (persisted) …` when it takes effect. After
-that first boot, the token is stored — a plain `make server` recreate keeps it.
+that first boot, the token is stored — a plain `make server` recreate keeps it,
+and you can drop the `.env` line if you like (the DB copy persists it).
 
 **To rotate/disable:** set a new `ABOOKIFY_DEV_AUTH_TOKEN` and reboot (overwrites
 the stored one), or clear the `dev_auth_token` setting. On any relay-exposed

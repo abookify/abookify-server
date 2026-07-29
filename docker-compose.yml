@@ -32,6 +32,14 @@ services:
       - ABOOKIFY_GENERATED_PATH=/generated
       - NULLBORE_BASE_DOMAIN=abookify.nullbore.com
       - ABOOKIFY_PUBLIC_URL=${ABOOKIFY_PUBLIC_URL:-}
+      # LOCAL-DEV auth bypass token (screenshots/test agents). Defaults empty, so
+      # it's a no-op on any host without it in .env — and main.go IGNORES it when
+      # ABOOKIFY_PUBLIC_URL is set (relay-exposed), so it can't become a prod
+      # backdoor. Plumbed here (not via docker-compose.override.yml) so a plain
+      # `make server` seeds it; the server then PERSISTS it to the settings DB, so
+      # later container recreates keep the bypass without re-supplying the env.
+      # See docs/dev-auth.md.
+      - ABOOKIFY_DEV_AUTH_TOKEN=${ABOOKIFY_DEV_AUTH_TOKEN:-}
     depends_on:
       kokoro:
         condition: service_started
