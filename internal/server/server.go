@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -352,6 +353,32 @@ func (s *Server) EmbedNewWorks() {
 	}()
 }
 
+// spaFallback serves embedded static assets, falling back to index.html for any
+// GET path that isn't a real asset — the SPA shell for a client-side route
+// (#221). Real files (index.html, settings.html, css/js/fonts) are served as-is;
+// unknown paths like /work/48 or /settings get the shell so a deep link or
+// refresh lands in the app instead of 404ing. API + /samples are registered as
+// more-specific mux patterns and never reach this handler.
+func spaFallback(staticFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(staticFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if clean == "" || clean == "." {
+			fileServer.ServeHTTP(w, r) // "/" → index.html
+			return
+		}
+		if f, err := staticFS.Open(clean); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r) // a real embedded asset
+			return
+		}
+		// Client-side route → serve the shell; the app routes from location.pathname.
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		fileServer.ServeHTTP(w, r2)
+	})
+}
+
 func New(store *db.Store, port string) *Server {
 	s := &Server{
 		store:         store,
@@ -494,9 +521,13 @@ func New(store *db.Store, port string) *Server {
 	mux.Handle("GET /samples/", http.StripPrefix("/samples/",
 		http.FileServer(http.Dir("/app/testdata/quality"))))
 
-	// Serve embedded web UI
+	// Serve embedded web UI, with an SPA fallback so deep links / refreshes on a
+	// client-side route (e.g. /work/48, /settings, /work/48/read/…) survive a cold
+	// load: an unknown non-asset path serves index.html, which then routes from
+	// location.pathname (#221). API + /samples are more-specific patterns, so they
+	// never reach here.
 	staticFS, _ := fs.Sub(staticFiles, "static")
-	mux.Handle("GET /", http.FileServer(http.FS(staticFS)))
+	mux.Handle("GET /", spaFallback(staticFS))
 
 	s.http = &http.Server{
 		Addr: ":" + port,
