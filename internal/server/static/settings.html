@@ -1013,7 +1013,7 @@
         const btn = document.getElementById('embed-refresh-btn');
         const pct = j.percent.toFixed(1);
         const fmt = n => n.toLocaleString();
-        el.textContent = `${fmt(j.embedded)} of ${fmt(j.total)} chunks embedded (${pct}%)`;
+        el.textContent = `${fmt(j.embedded)} of ${fmt(j.total)} passages indexed (${pct}%)`;
         // Threshold colors: same scheme as disk + coverage pill.
         el.style.color = '';
         if (j.total > 0) {
@@ -1053,8 +1053,8 @@
         const d = await res.json();
         msg.style.display = 'block';
         msg.innerHTML =
-          'Queued <b>' + d.works_queued + '</b> books for backfill. ' +
-          'Progress lands in the System Console (embed/rag).';
+          'Queued <b>' + d.works_queued + '</b> books to index. ' +
+          'Progress shows in the System Console.';
         // Coverage updates as embeds complete — poll a few times then back off.
         let attempts = 0;
         const tick = setInterval(() => {
@@ -1067,7 +1067,7 @@
         msg.textContent = 'Refresh failed: ' + e.message;
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Refresh embeddings';
+        btn.textContent = 'Rebuild search index';
       }
     }
 
