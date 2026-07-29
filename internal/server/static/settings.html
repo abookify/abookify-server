@@ -222,9 +222,13 @@
   </header>
   <script>
     // When embedded as the in-page Settings overlay (index.html opens this in an
-    // iframe so audio keeps playing), the "← Library" link closes the overlay
-    // instead of loading index.html inside the frame.
+    // iframe so audio keeps playing), the overlay already provides its own back
+    // bar + "Settings" title — so hide THIS page's header to avoid two stacked
+    // back controls and the word "Settings" twice. Standalone /settings.html
+    // keeps its header. The link still closes the overlay if it's ever reached.
     if (window.parent !== window) {
+      const h = document.querySelector('header');
+      if (h) h.style.display = 'none';
       document.getElementById('back-library').addEventListener('click', (e) => {
         e.preventDefault();
         window.parent.postMessage('close-settings', location.origin);
