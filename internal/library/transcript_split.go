@@ -4,6 +4,7 @@
 package library
 
 import (
+	"fmt"
 	"log"
 	"strings"
 
@@ -59,10 +60,24 @@ func SplitTranscriptByChapters(
 		slice := words[start:cursor]
 		content := joinWords(slice)
 
+		// The narrator usually announces a real title right after the number,
+		// and the detector names the chapter after the number alone. Recover the
+		// spoken title when the text makes it unambiguous. The announcement STAYS
+		// in the content — transcripts must remain word-for-word faithful because
+		// the reader's karaoke maps DOM words to sync words one to one.
+		title := ch.Title
+		if spoken := TitleFromAnnouncement(content); spoken != "" {
+			if ch.Number > 0 {
+				title = fmt.Sprintf("%d. %s", ch.Number, spoken)
+			} else {
+				title = spoken
+			}
+		}
+
 		if err := store.InsertChapter(db.Chapter{
 			BookID:     transcriptBookID,
 			Index:      ch.Index,
-			Title:      ch.Title,
+			Title:      title,
 			Src:        "detected",
 			Content:    content,
 			WordCount:  len(slice),
