@@ -38,6 +38,43 @@ type RescanResult struct {
 // Lives in the server package (not library) because library can't
 // import scanner — scanner imports library for ExtractMetadata, and
 // the cycle isn't worth breaking just to relocate this orchestration.
+// RescanAllRoots runs Rescan across every REACHABLE library root (#220),
+// assigning new books to their root and marking a root reachable when it yields
+// files. Unreachable roots are SKIPPED — their books are left intact (the boot
+// reconcile marks them stale) rather than dropped. Falls back to fallbackRoot
+// when no roots are configured. Aggregates the per-root results.
+func RescanAllRoots(store *db.Store, fallbackRoot string) (RescanResult, error) {
+	roots, _ := store.ListRoots()
+	if len(roots) == 0 {
+		if fallbackRoot == "" {
+			return RescanResult{}, nil
+		}
+		return Rescan(store, fallbackRoot)
+	}
+	var agg RescanResult
+	for i := range roots {
+		rt := roots[i]
+		if !library.RootReachable(rt.Path) {
+			applog.Infof("system", "#220 rescan: unreachable root %q skipped (books kept)", rt.Path)
+			continue
+		}
+		res, err := Rescan(store, rt.Path)
+		if err != nil {
+			applog.Warnf("system", "#220 rescan of root %q failed: %v", rt.Path, err)
+			continue
+		}
+		store.AssignBooksToRoot(rt.ID, rt.Path)
+		if res.Scanned > 0 {
+			library.MarkRootReachable(rt.Path)
+		}
+		agg.Scanned += res.Scanned
+		agg.Upserted += res.Upserted
+		agg.NewWorks += res.NewWorks
+		agg.ChaptersExtracted += res.ChaptersExtracted
+	}
+	return agg, nil
+}
+
 func Rescan(store *db.Store, libraryRoot string) (RescanResult, error) {
 	var res RescanResult
 

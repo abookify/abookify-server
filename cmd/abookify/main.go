@@ -110,6 +110,31 @@ func main() {
 		}
 	}
 
+	// #220: also scan any ADDITIONAL reachable library roots (root #1 =
+	// *libraryPath was scanned above). Unreachable roots are skipped — their
+	// books stay in the DB and the reconcile marks them stale, never deleted.
+	if roots, _ := store.ListRoots(); len(roots) > 1 {
+		for _, rt := range roots {
+			if rt.Path == *libraryPath || !library.RootReachable(rt.Path) {
+				continue
+			}
+			library.ConvertMobiFilesInDir(rt.Path)
+			extra, err := scanner.Scan(rt.Path)
+			if err != nil {
+				log.Printf("#220: scan of root %q failed: %v", rt.Path, err)
+				continue
+			}
+			for _, b := range extra {
+				store.UpsertBook(b)
+			}
+			store.AssignBooksToRoot(rt.ID, rt.Path)
+			if len(extra) > 0 {
+				library.MarkRootReachable(rt.Path)
+			}
+			log.Printf("#220: scanned additional root %q (%d files)", rt.Path, len(extra))
+		}
+	}
+
 	// Match audiobooks with ebooks and create works
 	if err := library.MatchAndCreateWorks(store); err != nil {
 		log.Printf("warning: matching failed: %v", err)

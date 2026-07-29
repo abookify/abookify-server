@@ -2835,7 +2835,9 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
 		return
 	}
-	result, err := Rescan(s.store, s.LibraryDir)
+	// #220: sweep every reachable library root (unreachable roots are skipped,
+	// their books kept). Falls back to the single dir pre-migration.
+	result, err := RescanAllRoots(s.store, s.LibraryDir)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
