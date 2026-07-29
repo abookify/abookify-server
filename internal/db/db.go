@@ -19,11 +19,11 @@ type Store struct {
 }
 
 type Work struct {
-	ID          int64  `json:"id"`
-	Title       string `json:"title"`
-	Author      string `json:"author"`
-	HasAudio    bool   `json:"has_audio"`
-	HasText     bool   `json:"has_text"`
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+	HasAudio bool   `json:"has_audio"`
+	HasText  bool   `json:"has_text"`
 	// Series metadata — extracted from EPUB Calibre tags or title patterns.
 	// Empty series string = standalone work.
 	Series      string  `json:"series,omitempty"`
@@ -39,29 +39,29 @@ type Work struct {
 	DisplayTextBookID int64 `json:"display_text_book_id,omitempty"`
 	// DisplayAudioBookID is the analogous per-work override for which audio
 	// edition plays. 0 = no override (resolver picks by OriginAuthority).
-	DisplayAudioBookID int64 `json:"display_audio_book_id,omitempty"`
-	AudioFiles   []Book         `json:"audio_files,omitempty"`
-	TextFiles    []Book         `json:"text_files,omitempty"`
-	ChapterLinks []ChapterLink  `json:"chapter_links,omitempty"`
-	TotalSize    int64          `json:"total_size"`
+	DisplayAudioBookID int64         `json:"display_audio_book_id,omitempty"`
+	AudioFiles         []Book        `json:"audio_files,omitempty"`
+	TextFiles          []Book        `json:"text_files,omitempty"`
+	ChapterLinks       []ChapterLink `json:"chapter_links,omitempty"`
+	TotalSize          int64         `json:"total_size"`
 	// Local-first sync stamps. SchemaVersion is the book.db shape this work
 	// would export under; ContentVersion is the RFC3339 UTC time of its last
 	// (re)process. See StampVersions and design/local-first-sync.md.
-	SchemaVersion  int    `json:"schema_version"`
-	ContentVersion string `json:"content_version"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	SchemaVersion  int       `json:"schema_version"`
+	ContentVersion string    `json:"content_version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type Chunk struct {
-	ID         int64   `json:"id"`
-	BookID     int64   `json:"book_id"`
-	ChapterIdx int     `json:"chapter_idx"`
-	ChunkIdx   int     `json:"chunk_idx"`
-	Content    string  `json:"content"`
-	StartWord  int     `json:"start_word"`
-	EndWord    int     `json:"end_word"`
-	Embedding  []byte  `json:"-"` // binary blob, not in JSON
+	ID         int64  `json:"id"`
+	BookID     int64  `json:"book_id"`
+	ChapterIdx int    `json:"chapter_idx"`
+	ChunkIdx   int    `json:"chunk_idx"`
+	Content    string `json:"content"`
+	StartWord  int    `json:"start_word"`
+	EndWord    int    `json:"end_word"`
+	Embedding  []byte `json:"-"` // binary blob, not in JSON
 }
 
 // AlignmentPair is one matched region between two sources. Stored as JSON
@@ -125,45 +125,45 @@ type Chapter struct {
 }
 
 type Book struct {
-	ID        int64     `json:"id"`
-	WorkID    int64     `json:"work_id"`
-	Path      string    `json:"path"`
-	Filename  string    `json:"filename"`
-	Format    string    `json:"format"`
-	MediaType string    `json:"media_type"` // "audio" or "text"
-	SizeBytes int64     `json:"size_bytes"`
-	Title     string    `json:"title,omitempty"`
-	Author    string    `json:"author,omitempty"`
-	Album     string    `json:"album,omitempty"`
-	Duration     float64   `json:"duration_secs,omitempty"`
+	ID        int64   `json:"id"`
+	WorkID    int64   `json:"work_id"`
+	Path      string  `json:"path"`
+	Filename  string  `json:"filename"`
+	Format    string  `json:"format"`
+	MediaType string  `json:"media_type"` // "audio" or "text"
+	SizeBytes int64   `json:"size_bytes"`
+	Title     string  `json:"title,omitempty"`
+	Author    string  `json:"author,omitempty"`
+	Album     string  `json:"album,omitempty"`
+	Duration  float64 `json:"duration_secs,omitempty"`
 	// StartSec is the file's start position on the concatenated book
 	// timeline (from the sidecar's sources[] when available). For
 	// single-file books this is always 0; for multi-file books it's
 	// the ground-truth offset Whisper used when transcribing, which
 	// avoids drift from summing metadata durations on the client.
-	StartSec     float64   `json:"start_sec,omitempty"`
-	ChapterCount int       `json:"chapter_count,omitempty"`
+	StartSec     float64 `json:"start_sec,omitempty"`
+	ChapterCount int     `json:"chapter_count,omitempty"`
 	// Origin describes how this source material was produced. Used by the
 	// display resolver to pick the highest-authority source for the reader.
 	// Values: publisher_epub, publisher_mobi, publisher_pdf, author_recording,
 	// narrator_recording, librivox, tts_kokoro, whisper_transcript,
 	// tts_preprocessed, user_upload (default).
-	Origin     string    `json:"origin,omitempty"`
+	Origin string `json:"origin,omitempty"`
 	// Visibility: "visible" (shown in UI, default) or "internal" (pipeline
 	// intermediates like TTS-preprocessed text that should never be shown).
-	Visibility string    `json:"visibility,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
 	// Edition labels a named variant within the same work. For audio:
 	// "LibriVox - Jane Doe", "Audible - John Smith". For text:
 	// "Original", "Annotated", "Spanish translation". Empty = default edition.
 	// Works with multiple editions expose an edition picker in the UI.
-	Edition    string    `json:"edition,omitempty"`
+	Edition string `json:"edition,omitempty"`
 	// RootID ties the book to its library_roots row (#220); 0 = unassigned or a
 	// virtual/generated path. Stale means the book's root is currently
 	// unreachable (e.g. an unplugged drive) — kept in the DB, shown as offline.
-	RootID       int64     `json:"root_id,omitempty"`
-	Stale        bool      `json:"stale,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	RootID    int64     `json:"root_id,omitempty"`
+	Stale     bool      `json:"stale,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // IsBusyErr reports whether err is a SQLite lock-contention error
@@ -2308,6 +2308,34 @@ func (s *Store) DeleteBook(bookID int64) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// DeleteBookByPath removes the book whose file path matches exactly, returning
+// its former work_id (0 if none) and whether a row was deleted. Used by the
+// watcher's remove-on-delete path (#219): a file vanishing from a REACHABLE
+// root means the user deleted it, so the row should go too. (A whole unplugged
+// root is handled separately — those books are marked stale, never deleted.)
+func (s *Store) DeleteBookByPath(path string) (workID int64, deleted bool, err error) {
+	var bookID int64
+	err = s.db.QueryRow(`SELECT id, work_id FROM books WHERE path = ?`, path).Scan(&bookID, &workID)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if derr := s.DeleteBook(bookID); derr != nil {
+		return workID, false, derr
+	}
+	return workID, true, nil
+}
+
+// CountBooksInWork returns how many books remain assigned to a work — the
+// watcher uses it to remove a work once its last book file is deleted.
+func (s *Store) CountBooksInWork(workID int64) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM books WHERE work_id = ?`, workID).Scan(&n)
+	return n, err
 }
 
 // SetBookEdition relabels a set of books' edition name (metadata-editor edition
