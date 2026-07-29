@@ -40,8 +40,8 @@ type ConverseResponse struct {
 // the answer (e.g. "af_heart").
 func Converse(
 	store *db.Store,
-	sttClient *stt.Client,
-	ttsClient *tts.Client,
+	sttClient stt.Provider,
+	ttsClient tts.Provider,
 	rag *llm.RAG,
 	workID int64,
 	questionAudioPath string,

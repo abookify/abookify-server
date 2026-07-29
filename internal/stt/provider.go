@@ -6,6 +6,9 @@ package stt
 type Provider interface {
 	Name() string
 	Health() error
+	// Info reports the active model + compute device (the device readout the
+	// server surfaces). Cloud providers return a "cloud" device.
+	Info() (*Info, error)
 	TranscribeFile(audioPath string) (*TranscribeResult, error)
 }
 

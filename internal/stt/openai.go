@@ -36,6 +36,11 @@ func NewOpenAIClient(apiKey string) *OpenAIClient {
 
 func (c *OpenAIClient) Name() string { return "openai-whisper" }
 
+// Info reports a cloud device for the server's device readout.
+func (c *OpenAIClient) Info() (*Info, error) {
+	return &Info{Model: c.model, Device: "cloud", ComputeType: "openai", GPUAvailable: false}, nil
+}
+
 func (c *OpenAIClient) Health() error {
 	if c.apiKey == "" {
 		return fmt.Errorf("OpenAI API key not configured")

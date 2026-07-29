@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pj/abookify/internal/applog"
@@ -35,11 +36,20 @@ type queuedJob struct {
 	run  func()
 }
 
+// speechProviders bundles the active TTS + STT providers so they can be swapped
+// atomically when the user changes provider/key in settings (#54 step 2) —
+// mirrors how ReloadLLM swaps the RAG client. Either may be nil (unconfigured).
+type speechProviders struct {
+	tts tts.Provider
+	stt stt.Provider
+}
+
 // Generator orchestrates TTS and STT jobs with a single-worker queue.
 type Generator struct {
-	store        *db.Store
-	ttsClient    *tts.Client
-	sttClient    *stt.Client
+	store *db.Store
+	// providers holds the current TTS/STT providers (local engine or a cloud
+	// BYOK provider). Swapped atomically by SetProviders on a settings change.
+	providers    atomic.Pointer[speechProviders]
 	generatedDir string
 	// libraryRoot is where sidecars live next to their audiobook
 	// directories — needed by the redo-STT path so it can locate the
@@ -86,7 +96,7 @@ func (g *Generator) clearCancelled(id string) {
 // path; other jobs don't touch sidecar files on disk.
 func (g *Generator) SetLibraryRoot(p string) { g.libraryRoot = p }
 
-func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client, generatedDir string, onUpdate func(JobStatus)) *Generator {
+func NewGenerator(store *db.Store, ttsProvider tts.Provider, sttProvider stt.Provider, generatedDir string, onUpdate func(JobStatus)) *Generator {
 	os.MkdirAll(generatedDir, 0755)
 
 	// Collect jobs that were running/queued before the restart so we can
@@ -107,8 +117,6 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 
 	g := &Generator{
 		store:        store,
-		ttsClient:    ttsClient,
-		sttClient:    sttClient,
 		generatedDir: generatedDir,
 		onUpdate:     onUpdate,
 		running:      make(map[string]bool),
@@ -116,6 +124,7 @@ func NewGenerator(store *db.Store, ttsClient *tts.Client, sttClient *stt.Client,
 		cancelled:    make(map[string]bool),
 		queue:        make(chan queuedJob, 50),
 	}
+	g.providers.Store(&speechProviders{tts: ttsProvider, stt: sttProvider})
 
 	// Single worker processes jobs sequentially
 	go g.worker()
@@ -162,8 +171,22 @@ func (g *Generator) worker() {
 	}
 }
 
-func (g *Generator) TTSClient() *tts.Client { return g.ttsClient }
-func (g *Generator) STTClient() *stt.Client { return g.sttClient }
+// tts / stt return the current providers (may be nil if unconfigured).
+func (g *Generator) tts() tts.Provider { return g.providers.Load().tts }
+func (g *Generator) stt() stt.Provider { return g.providers.Load().stt }
+
+// TTSClient / STTClient expose the active providers to the server (health,
+// device readout, voice preview, Q&A voice). Interface-typed so a cloud
+// provider works identically.
+func (g *Generator) TTSClient() tts.Provider { return g.tts() }
+func (g *Generator) STTClient() stt.Provider { return g.stt() }
+
+// SetProviders atomically swaps the TTS/STT providers — called on a settings
+// change so a new provider/key takes effect without a restart (mirrors
+// ReloadLLM). In-flight jobs keep the provider they started with.
+func (g *Generator) SetProviders(ttsProvider tts.Provider, sttProvider stt.Provider) {
+	g.providers.Store(&speechProviders{tts: ttsProvider, stt: sttProvider})
+}
 
 func (g *Generator) GetJobs() []JobStatus {
 	dbJobs, _ := g.store.ListJobs()
@@ -374,7 +397,7 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 					g.updateJob(job)
 				}
 
-				audioData, err := g.ttsClient.Synthesize(chunk, voice)
+				audioData, err := g.tts().Synthesize(chunk, voice)
 				if err != nil {
 					log.Printf("tts: synthesis failed for chapter %d chunk %d: %v", chMeta.Index, ci, err)
 					job.Status = "failed"
@@ -422,7 +445,7 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 				})
 
 				// Run Whisper alignment to get word-level timestamps
-				if g.sttClient != nil {
+				if g.stt() != nil {
 					job.CurrentStep = fmt.Sprintf("Aligning chapter %d/%d: %s", i+1, len(chapters), chMeta.Title)
 					g.updateJob(job)
 					// Pass original chapter text for alignment to original words
@@ -430,7 +453,7 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 				if origCh, err := g.store.GetChapterContent(bookID, chMeta.Index); err == nil && origCh != nil {
 					origText = origCh.Content
 				}
-				if err := AlignChapter(g.store, g.sttClient, job.WorkID, b.ID, i, mp3Path, origText); err != nil {
+				if err := AlignChapter(g.store, g.stt(), job.WorkID, b.ID, i, mp3Path, origText); err != nil {
 						log.Printf("tts: alignment failed for chapter %d (non-fatal): %v", chMeta.Index, err)
 					}
 				}
@@ -545,7 +568,7 @@ func (g *Generator) runSTT(job *JobStatus, workID int64) {
 		}
 		g.updateJob(job)
 
-		result, err := transcribeChunked(g.sttClient, af.Path, func(segIdx, totalSegs int) {
+		result, err := transcribeChunked(g.stt(), af.Path, func(segIdx, totalSegs int) {
 			segProgress := float64(segIdx) / float64(totalSegs)
 			fileProgress := (float64(i) + segProgress) / float64(len(audioFiles))
 			job.Progress = fileProgress
@@ -749,7 +772,7 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 	log.Printf("regenerate: starting chapter %d (%s) for book %d, voice=%s, content=%d chars",
 		ch.Index, ch.Title, bookID, voice, len(ch.Content))
 
-	if g.ttsClient == nil {
+	if g.tts() == nil {
 		log.Printf("regenerate: ERROR - ttsClient is nil")
 		return
 	}
@@ -782,7 +805,7 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 		}
 		g.updateJob(job)
 
-		data, err := g.ttsClient.Synthesize(chunk, voice)
+		data, err := g.tts().Synthesize(chunk, voice)
 		if err != nil {
 			log.Printf("regenerate: failed chapter %d: %v", ch.Index, err)
 			job.Status = "failed"
@@ -840,10 +863,10 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 			})
 
 			// Run Whisper alignment
-			if g.sttClient != nil {
+			if g.stt() != nil {
 				job.CurrentStep = fmt.Sprintf("Aligning: %s", ch.Title)
 				g.updateJob(job)
-				if err := AlignChapter(g.store, g.sttClient, workID, b.ID, audioIdx, mp3Path, ch.Content); err != nil {
+				if err := AlignChapter(g.store, g.stt(), workID, b.ID, audioIdx, mp3Path, ch.Content); err != nil {
 					log.Printf("regenerate: alignment failed (non-fatal): %v", err)
 				}
 			}
@@ -937,7 +960,7 @@ func (g *Generator) runRedoSTT(job *JobStatus, workID int64, filenames []string)
 		}
 		g.updateJob(job)
 	}
-	n, err := redoTranscriptionForFiles(g.store, g.sttClient, g.libraryRoot, workID, filenames, progress)
+	n, err := redoTranscriptionForFiles(g.store, g.stt(), g.libraryRoot, workID, filenames, progress)
 	if err != nil {
 		job.Status = "failed"
 		job.Error = err.Error()
