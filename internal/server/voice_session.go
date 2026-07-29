@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/pj/abookify/internal/library"
 )
 
 // Realtime voice conversation — server side of the WebRTC MVP.
@@ -123,6 +127,44 @@ func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
 		"available": key != "",
 		"provider":  "openai",
 	})
+}
+
+// handleVoiceContext is the server side of the realtime voice book-grounding
+// tool. The realtime model calls it (via a function-call relayed by the browser)
+// with the user's spoken question + the reader's live position; it returns ONLY
+// the reading-position-bounded passages (same bound as text Q&A), so the book
+// content that reaches the model can't exceed what the reader has read. Under
+// extract-only it declines grounding. The bound + decline are enforced in
+// library.VoiceContext (tested).
+func (s *Server) handleVoiceContext(w http.ResponseWriter, r *http.Request) {
+	workID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var body struct {
+		Query         string `json:"query"`
+		ScopeMode     string `json:"scope_mode"` // "reading" (spoiler-safe, default) | "book"
+		ReaderBookID  int64  `json:"reader_book_id"`
+		ReaderChapter int    `json:"reader_chapter"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if strings.TrimSpace(body.Query) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty query"})
+		return
+	}
+	// Default to the spoiler-safe reading scope unless the caller opts into book.
+	mode := body.ScopeMode
+	if mode == "" {
+		mode = "reading"
+	}
+	scope := library.ResolveSessionScope(mode, body.ReaderBookID, body.ReaderChapter, library.QueryScope{})
+	res, err := library.VoiceContext(s.store, s.RAG(), workID, body.Query, scope, s.extractOnlyEnabled())
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // firstNonEmptySetting returns the first non-empty value among the given keys.

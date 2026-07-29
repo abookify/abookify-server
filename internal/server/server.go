@@ -501,6 +501,10 @@ func New(store *db.Store, port string) *Server {
 	// ephemeral token so the browser never sees the real key (voice_session.go).
 	mux.HandleFunc("POST /api/voice/session", s.handleVoiceSession)
 	mux.HandleFunc("GET /api/voice/available", s.handleVoiceAvailable)
+	// Book-grounding retrieval tool for a realtime voice turn — returns only the
+	// reading-position-bounded passages (same bound as Q&A); declines under
+	// extract-only (voice_session.go / library.VoiceContext).
+	mux.HandleFunc("POST /api/works/{id}/voice-context", s.handleVoiceContext)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)
 	mux.HandleFunc("POST /api/tts/test", s.handleTestTTS)
 	mux.HandleFunc("POST /api/stt/test", s.handleTestSTT)
