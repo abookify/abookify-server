@@ -309,6 +309,15 @@ func main() {
 		log.Printf("cleaned up %d orphaned content rows (chunks/paragraphs/chapters)", removed)
 	}
 
+	// Surface any existing per-feature BYOK keys in the new Keys section without
+	// the user re-entering them. Non-destructive: the legacy settings still drive
+	// features until provider-resolution switches over.
+	if created, err := server.MigrateLegacyCredentials(store); err != nil {
+		log.Printf("credential migration: %v", err)
+	} else if len(created) > 0 {
+		log.Printf("migrated %d legacy key(s) into the Keys section: %v", len(created), created)
+	}
+
 	// Set up HTTP server
 	srv := server.New(store, *port)
 	srv.Version = version
