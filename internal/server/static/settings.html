@@ -290,7 +290,7 @@
       <div id="roots-list"></div>
       <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
         <input id="root-add-path" type="text" placeholder="/absolute/path/to/library" style="flex:1; min-width:220px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
-        <input id="root-add-label" type="text" placeholder="Label (optional)" style="flex:0 0 160px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+        <input id="root-add-label" type="text" placeholder="Name (e.g. Audiobooks)" title="A friendly name so you can tell your locations apart at a glance" style="flex:0 0 180px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
         <button type="button" onclick="addRoot()" style="flex:0 0 auto; padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">Add location</button>
       </div>
       <div id="roots-status" class="hint" style="margin-top:8px; min-height:1em;"></div>
@@ -825,8 +825,8 @@
           return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
             <input type="radio" name="root-default" ${r.is_default ? 'checked' : ''} title="Default destination for new imports" onclick="setDefaultRoot(${r.id})" style="width:auto; min-height:0;">
             <div style="flex:1; min-width:0;">
-              <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.path)}</div>
-              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
+              <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.host_path || r.path)}</div>
+              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.host_path || r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
             </div>
             ${reorder}
             ${badge}

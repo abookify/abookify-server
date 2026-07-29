@@ -36,9 +36,18 @@ func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(roots))
 	for _, rt := range roots {
 		total, stale, _ := s.store.CountBooksUnderRoot(rt.ID)
+		// Show the HOST path instead of the container mount point where we know it
+		// (the default library root when containerized). Other roots fall back to
+		// their (possibly container) path — shown only as last-resort detail under
+		// the friendly name (#220 finding 2 / item 2).
+		hostPath := ""
+		if rt.Path == s.LibraryDir {
+			hostPath = s.LibraryHostPath
+		}
 		out = append(out, map[string]any{
 			"id":          rt.ID,
 			"path":        rt.Path,
+			"host_path":   hostPath,
 			"label":       rt.Label,
 			"is_default":  rt.IsDefault,
 			"position":    rt.Position,

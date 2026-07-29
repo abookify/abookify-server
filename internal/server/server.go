@@ -34,14 +34,20 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	store        *db.Store
-	http         *http.Server
-	Events       *EventBus
-	Generator    *library.Generator
-	rag          atomic.Pointer[llm.RAG]
-	Ingest       *library.IngestQueue
-	LibraryDir   string
-	GeneratedDir string
+	store      *db.Store
+	http       *http.Server
+	Events     *EventBus
+	Generator  *library.Generator
+	rag        atomic.Pointer[llm.RAG]
+	Ingest     *library.IngestQueue
+	LibraryDir string
+	// LibraryHostPath is the HOST side of the library bind mount when the server
+	// runs in a container (#220 finding 2 / item 2). Docker hides the real path
+	// behind the container mount (/library), so compose passes the host path in
+	// and the roots UI shows it instead of the meaningless container path. Empty
+	// on native/desktop installs, where LibraryDir is already the real host path.
+	LibraryHostPath string
+	GeneratedDir    string
 	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
 	// Empty when the booknlp compose profile isn't running.
 	BookNLPURL string

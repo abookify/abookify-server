@@ -20,6 +20,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - ABOOKIFY_LIBRARY_PATH=/library
+      # HOST side of the library bind mount below, shown in the roots UI instead
+      # of the container path /library (#220). Set it in .env to your real host
+      # path (e.g. /mnt/media/audiobooks); defaults to the compose bind source.
+      - ABOOKIFY_LIBRARY_HOST_PATH=${ABOOKIFY_LIBRARY_HOST_PATH:-./testdata/library}
       - ABOOKIFY_DB_PATH=/app/data/abookify.db
       - ABOOKIFY_PORT=7654
       - ABOOKIFY_TTS_URL=http://kokoro:8880

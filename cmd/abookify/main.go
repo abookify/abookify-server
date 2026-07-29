@@ -313,6 +313,10 @@ func main() {
 	srv := server.New(store, *port)
 	srv.Version = version
 	srv.LibraryDir = *libraryPath
+	// Host path of the library mount when containerized (#220): compose passes
+	// ABOOKIFY_LIBRARY_HOST_PATH so the roots UI shows the real host path, not
+	// the container mount point. Empty on native/desktop (LibraryDir is real).
+	srv.LibraryHostPath = os.Getenv("ABOOKIFY_LIBRARY_HOST_PATH")
 	srv.GeneratedDir = *generatedPath
 	srv.BookNLPURL = *booknlpURL
 	srv.DataDir = *dataDir
