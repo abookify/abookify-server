@@ -1763,7 +1763,7 @@
     <button class="filter-btn" data-filter="paired">Paired</button>
     <button class="filter-btn" data-filter="audio-only">Audio only</button>
     <button class="filter-btn" data-filter="text-only">Text only</button>
-    <button class="filter-btn" data-filter="misaligned" title="Paired works with weak alignment — likely a wrong-edition ebook">Misaligned</button>
+    <button class="filter-btn" data-filter="misaligned" title="Paired books with weak alignment — likely a wrong-edition ebook">Misaligned</button>
     <select id="sort-select" class="sort-select" aria-label="Sort library" title="Sort library" onchange="onSortChange()">
       <option value="default">Sort: Default</option>
       <option value="title">Title (A–Z)</option>
@@ -1781,13 +1781,13 @@
       Import .abook
       <input type="file" accept=".abook" style="display:none;" onchange="importAbook(this)">
     </label>
-    <button class="filter-btn" onclick="openMergeDialog()" title="Merge two works together">Merge works</button>
+    <button class="filter-btn" onclick="openMergeDialog()" title="Merge two books together">Merge books</button>
   </div>
 
   <!-- Merge dialog -->
   <div id="rename-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div role="dialog" aria-modal="true" aria-label="Rename work" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
-      <h3 style="margin:0 0 16px; color:var(--text);">Rename work</h3>
+    <div role="dialog" aria-modal="true" aria-label="Rename book" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+      <h3 style="margin:0 0 16px; color:var(--text);">Rename book</h3>
       <input type="hidden" id="rename-work-id" value="">
       <label style="font-size:0.8rem; color:var(--text-muted);">Title:</label>
       <input id="rename-title" type="text" style="width:100%; padding:8px; margin:4px 0 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;">
@@ -1848,7 +1848,7 @@
       <!-- Editions: every audio + text edition, with default / rename / remove -->
       <div id="meta-editions" style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-          <span style="font-size:0.75rem; color:var(--text-muted);">Editions in this work — ◉ marks the default</span>
+          <span style="font-size:0.75rem; color:var(--text-muted);">Editions in this book — ◉ marks the default</span>
           <button type="button" onclick="openTTSWizard()" style="font-size:0.74rem; padding:5px 11px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer;">➕ Generate narration</button>
         </div>
         <div id="meta-editions-list" style="display:flex; flex-direction:column; gap:2px;"></div>
@@ -1903,9 +1903,9 @@
   </div>
 
   <div id="merge-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
-    <div role="dialog" aria-modal="true" aria-label="Merge works" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
-      <h3 style="margin:0 0 16px; color:var(--text);">Merge works</h3>
-      <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 12px;">Move all files from one work into another. The source work will be deleted.</p>
+    <div role="dialog" aria-modal="true" aria-label="Merge books" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
+      <h3 style="margin:0 0 16px; color:var(--text);">Merge books</h3>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 12px;">Move all files from one book into another. The source book will be deleted.</p>
       <label style="font-size:0.8rem; color:var(--text-muted);">Keep (target):</label>
       <select id="merge-target" style="width:100%; padding:8px; margin:4px 0 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
       <label style="font-size:0.8rem; color:var(--text-muted);">Merge from (will be deleted):</label>
@@ -2342,7 +2342,7 @@
     }
 
     async function mergeDuplicateGroup(targetId, sourceIds) {
-      if (!confirm(`Merge ${sourceIds.length} work(s) into #${targetId}? This deletes the duplicates.`)) return;
+      if (!confirm(`Merge ${sourceIds.length} book(s) into #${targetId}? This deletes the duplicates.`)) return;
       for (const sid of sourceIds) {
         const res = await fetch(`/api/works/${targetId}/merge`, {
           method: 'POST',
@@ -2455,7 +2455,7 @@
       }
       items.push(`<div class="work-menu-divider"></div>`);
       items.push(`<button class="work-menu-item danger" onclick="closeAllWorkMenus(); deleteWork(${work.id});">
-        <span class="icon">&#128465;</span>Delete work
+        <span class="icon">&#128465;</span>Delete book
       </button>`);
       return items.join('');
     }
@@ -2709,7 +2709,7 @@
     async function removeEdition(workId, bookIds, name) {
       const n = bookIds.length;
       const what = n > 1 ? `this edition (${n} files)` : 'this edition';
-      if (!confirm(`Remove ${what}${name ? ' — "' + name + '"' : ''}? This deletes ${n > 1 ? 'those sources' : 'that source'} and their chapters (the work + other editions stay).`)) return;
+      if (!confirm(`Remove ${what}${name ? ' — "' + name + '"' : ''}? This deletes ${n > 1 ? 'those sources' : 'that source'} and their chapters (the book + other editions stay).`)) return;
       metaStatus('Removing edition…');
       for (const id of bookIds) {
         const res = await fetch(`/api/works/${workId}/sources/${id}`, { method: 'DELETE' });
@@ -2745,7 +2745,7 @@
       const edEl = document.getElementById('tts-edition'); edEl.dataset.touched = '';
       const data = await fetch(`/api/works/${workId}/editions`).then(r => r.json()).catch(() => ({}));
       const texts = data.text || [];
-      if (!texts.length) { alert('This work has no text edition to narrate — add an EPUB first.'); return; }
+      if (!texts.length) { alert('This book has no text edition to narrate — add an EPUB first.'); return; }
       document.getElementById('tts-text-book').innerHTML = texts.map(e =>
         `<option value="${e.book_ids[0]}">${escapeHtml(e.label)} (${escapeHtml(e.provenance)})</option>`).join('');
       await ttsPopulateVoices();
@@ -2918,7 +2918,7 @@
     async function deleteWork(workId) {
       const work = (allWorks || []).find(w => w.id === workId);
       const name = work ? work.title : 'this book';
-      if (!confirm(`Delete "${name}"? This removes the work from the library (files on disk are kept).`)) return;
+      if (!confirm(`Delete "${name}"? This removes the book from the library (files on disk are kept).`)) return;
       const res = await fetch(`/api/works/${workId}`, { method: 'DELETE' });
       if (!res.ok) { alert('Delete failed: ' + (await res.text())); return; }
       if (currentDetailWorkId === workId) closeWorkDetail();
@@ -2963,12 +2963,12 @@
 
       filtered = sortWorks(filtered);
 
-      document.getElementById('stats').textContent = `${filtered.length} works`;
+      document.getElementById('stats').textContent = `${filtered.length} book${filtered.length === 1 ? '' : 's'}`;
       const el = document.getElementById('works-list');
 
       if (filtered.length === 0) {
         el.classList.remove('grouped');
-        el.innerHTML = `<div class="empty"><h2>No works found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
+        el.innerHTML = `<div class="empty"><h2>No books found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
         return;
       }
 
@@ -3003,7 +3003,7 @@
         const head = (field === 'author' && name !== unknown)
           ? `<span class="author-link" role="button" tabindex="0" title="Filter to ${escapeHtml(name)}" data-author="${attrEsc(name)}" onclick="filterByAuthor(this.dataset.author)">${escapeHtml(name)}</span>`
           : escapeHtml(name);
-        return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} work${items.length === 1 ? '' : 's'}</span></h3>
+        return `<div class="lib-group"><h3 class="group-head">${head} <span class="count">· ${items.length} book${items.length === 1 ? '' : 's'}</span></h3>
           <div class="group-grid">${items.map(posterCardHtml).join('')}</div></div>`;
       }).join('');
     }
@@ -3823,7 +3823,7 @@
         note = 'The audio follows the ebook paragraph by paragraph — coarser, used when the editions differ.';
       }
       if (payload.method === 'embedding' && (payload.match_quality ?? 1) < 0.3) {
-        note = 'Low correlation between the audio and this text — they may be different works.';
+        note = 'Low correlation between the audio and this text — they may be different books.';
       }
 
       const seg = (frac, color) => frac > 0
@@ -3912,7 +3912,7 @@
           fetch(`/api/works/${workId}`),
           fetch(`/api/works/${workId}/alignments`),
         ]);
-        if (!wRes.ok) throw new Error('work ' + wRes.status);
+        if (!wRes.ok) throw new Error('book ' + wRes.status);
         work = await wRes.json();
         if (aRes.ok) alignments = (await aRes.json()) || [];
       } catch (e) {
@@ -4018,7 +4018,7 @@
       try {
         const res = await fetch(`/api/works/${workId}/diff`);
         if (res.status === 404) {
-          body.innerHTML = `<p style="color:var(--text-muted)">No source comparison available for this work.</p>
+          body.innerHTML = `<p style="color:var(--text-muted)">No source comparison available for this book.</p>
             <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>`;
           return;
         }
