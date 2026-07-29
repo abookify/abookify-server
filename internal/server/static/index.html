@@ -395,6 +395,9 @@
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
+    /* Neutral "not aligned yet" — actionable, NOT an alarm. Never red; a podcast
+       (nothing to align) renders no pill at all. */
+    .media-pill.align-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); }
     .media-pill.align-clickable { cursor: pointer; }
     .media-pill.align-clickable:hover { filter: brightness(1.15); text-decoration: underline; }
 
@@ -3368,7 +3371,19 @@
      // in this file). Only renders when the work has an alignment row.
     function renderAlignBadge(work) {
       const c = work.coverage;
-      if (typeof c !== 'number') return '';
+      if (typeof c !== 'number') {
+        // No alignment row. Distinguish "not aligned yet" (a real text edition
+        // exists — actionable) from "nothing to align" (a podcast / audio-only —
+        // render NOTHING, never a 0% or red state). has_alignable_text is the
+        // discriminator, NOT has_text (a whisper transcript is a text book).
+        if (work.has_alignable_text) {
+          return `<span class="media-pill align-neutral align-clickable"
+            role="button" tabindex="0" aria-label="Not aligned yet — align this book to its audio"
+            onclick="event.stopPropagation(); realignWork(${work.id})"
+            title="This book has a text edition that hasn't been aligned to the audio yet · click to align">Not aligned yet</span>`;
+        }
+        return ''; // nothing to align — audio-only / podcast
+      }
       let cls, label;
       if (c >= 0.9)      { cls = 'align-good'; label = 'Tightly aligned'; }
       else if (c >= 0.6) { cls = 'align-good'; label = 'Mostly aligned'; }
