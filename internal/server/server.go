@@ -551,6 +551,7 @@ func (s *Server) SetReady(v bool) {
 	s.ready.Store(v)
 	if v {
 		go s.prewarmVoicePreviews()
+		s.startWhisperDeviceMonitor() // watch for a mid-run cuda→cpu downgrade
 	}
 }
 
