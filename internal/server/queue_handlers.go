@@ -157,11 +157,21 @@ func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.R
 		writeServerError(w, r, err)
 		return
 	}
+	// cause is what the UI keys its four states on. Untranscribed time alone
+	// cannot express the difference between "re-running STT fixes this" and
+	// "the audio was never delivered", and offering one Retry across both is a
+	// lie for half of them — 187 min of PJ's library is recoverable that way and
+	// 74 min is not.
+	//
+	// Derived from the PERSISTED SOURCE SCAN rather than from gap geometry: if a
+	// file decodes cleanly and narration is still absent, the pipeline dropped
+	// it, and that inference needs no guessing about bucket boundaries.
 	type summaryEntry struct {
-		WorkID         int64    `json:"work_id"`
-		TotalMissingS  float64  `json:"total_missing_sec"`
-		SegmentCount   int      `json:"segment_count"`
-		SourceFiles    []string `json:"source_files,omitempty"`
+		WorkID        int64    `json:"work_id"`
+		TotalMissingS float64  `json:"total_missing_sec"`
+		SegmentCount  int      `json:"segment_count"`
+		SourceFiles   []string `json:"source_files,omitempty"`
+		Cause         string   `json:"cause"`
 	}
 	type gapShape struct {
 		StartSec    float64 `json:"start_sec"`
@@ -173,7 +183,9 @@ func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.R
 	for _, wk := range works {
 		var entry summaryEntry
 		seen := map[string]bool{}
+		ids := make([]int64, 0, len(wk.AudioFiles))
 		for _, b := range wk.AudioFiles {
+			ids = append(ids, b.ID)
 			raw, err := s.store.GetTranscriptionGaps(b.ID)
 			if err != nil || raw == "" || raw == "[]" {
 				continue
@@ -191,7 +203,45 @@ func (s *Server) handleTranscriptionGapsSummary(w http.ResponseWriter, r *http.R
 				}
 			}
 		}
-		if entry.SegmentCount > 0 {
+
+		// Source integrity outranks gap geometry: a truncated or damaged file
+		// explains the absence AND determines the remedy.
+		scans, _ := s.store.GetSourceScans(ids)
+		var truncated, damaged, scannedClean int
+		for _, id := range ids {
+			sc, ok := scans[id]
+			if !ok {
+				continue
+			}
+			switch {
+			case sc.Truncated:
+				truncated++
+			case sc.DecodeErrors > 0:
+				damaged++
+			default:
+				scannedClean++
+			}
+		}
+
+		switch {
+		case truncated > 0:
+			entry.Cause = "truncated_source"
+		case damaged > 0:
+			entry.Cause = "damaged_source"
+		case entry.SegmentCount > 0 && scannedClean == len(ids) && len(ids) > 0:
+			// Every source verified readable, yet narration is missing — the
+			// only remaining explanation is that transcription dropped it, and
+			// re-running genuinely fixes it.
+			entry.Cause = "dropped_segment"
+		case entry.SegmentCount > 0:
+			// Gaps with no (or partial) scan. Never guess that a retry is safe.
+			entry.Cause = "unknown"
+		}
+
+		// A damaged source is reported even with no gap span: that is exactly the
+		// case where words vanish without ever crossing the gap threshold —
+		// Life of Pi lost ~1,854 words that way and looked clean.
+		if entry.SegmentCount > 0 || entry.Cause == "truncated_source" || entry.Cause == "damaged_source" {
 			entry.WorkID = wk.ID
 			out = append(out, entry)
 		}
@@ -225,5 +275,38 @@ func (s *Server) handleEmbedBook(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"book_id":  id,
 		"embedded": embedded,
+	})
+}
+
+// POST /api/works/{id}/scan-sources — decode every audio file of a work and
+// persist whether it is readable, which is what gives the gap indicator its
+// cause. Synchronous: the scan runs at roughly 760x realtime, so even a
+// 27-hour book finishes in about half a minute, and the caller wants a result
+// to render rather than a job to poll.
+//
+// A clean result is recorded too. "We looked and it was fine" is the fact that
+// lets a book be called complete; without it the UI can only say it has never
+// checked, which is the honest reading of an unscanned book.
+func (s *Server) handleScanSources(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	if s.LibraryDir == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "library path not configured",
+		})
+		return
+	}
+	scanned, damaged, err := library.ScanWorkSources(s.store, s.LibraryDir, id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"work_id": id,
+		"scanned": scanned,
+		"damaged": damaged,
 	})
 }
