@@ -125,19 +125,33 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 		return composeExtractAnswer(retrieved, citations, getTitle), nil
 	}
 
-	systemPrompt := fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
+	// Shared citation guidance for both prompts.
+	citationStyle := `Citation style: NEVER mention "Passage N", "passages 3-5", or any reference to internal passage numbers — the reader sees your prose plus a separate Sources panel that names the chapters. Cite by chapter name or a short inline quote (e.g., 'In Chapter 5, the narrator describes…'). The passage-N labels in your context are an internal hint for you only.`
+
+	var systemPrompt string
+	if scope.isWholeBook() {
+		systemPrompt = fmt.Sprintf(`You are a knowledgeable literary assistant helping a reader understand "%s".
 Answer questions based on the provided passages and the prior conversation.
 
-IMPORTANT — citation style: NEVER mention "Passage N", "passages 3-5", or
-any reference to internal passage numbers. The user does NOT see passage
-numbers; they see your prose answer plus a separate Sources panel below it
-that names the chapters. Cite by chapter name or quote a short phrase
-inline (e.g., 'In Chapter 5, Norm describes…' or 'as the narrator says,
-"…"'). The passage-N labels in your context are an internal hint for you
-only.
+%s
 
 If the passages don't contain enough information to answer, say so honestly.
-Keep answers concise but thorough — 2-4 paragraphs.`, work.Title)
+Keep answers concise but thorough — 2-4 paragraphs.`, work.Title, citationStyle)
+	} else {
+		// Bounded (spoiler-safe) scope — the reader is somewhere mid-book. Mirror the
+		// strict single-shot guard: OMIT the book title (its name alone primes a model
+		// that has the book memorised), forbid outside knowledge, and require an EXACT
+		// decline when the passages don't contain the answer — so a memorised classic
+		// can't leak plot the reader hasn't reached, even in generated mode. (#130)
+		systemPrompt = fmt.Sprintf(`You answer a reader's question using ONLY the passages provided and the earlier conversation — the only part of the book they have read so far. You do NOT know this book; ignore anything you might recall about it from elsewhere and rely solely on these passages.
+
+Hard rules:
+- Use ONLY facts explicitly stated in the passages (or established earlier in this conversation). No outside knowledge, no guessing, no recognising the book.
+- If the passages do not clearly contain the answer, reply with EXACTLY this and nothing more: "That hasn't come up yet in what you've read."
+- Never name or describe a character, event, death, twist, or ending that is not present in the passages — that would spoil the story for the reader.
+
+%s`, citationStyle)
+	}
 
 	// Build the message list: prior turns verbatim, then a final user
 	// turn containing both the new passages and the new question.
