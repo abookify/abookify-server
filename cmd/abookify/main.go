@@ -317,6 +317,18 @@ func main() {
 	// ABOOKIFY_LIBRARY_HOST_PATH so the roots UI shows the real host path, not
 	// the container mount point. Empty on native/desktop (LibraryDir is real).
 	srv.LibraryHostPath = os.Getenv("ABOOKIFY_LIBRARY_HOST_PATH")
+	// Local-dev auth bypass (mobile screenshot capture etc.): activate ONLY when
+	// the operator set ABOOKIFY_DEV_AUTH_TOKEN AND the instance isn't exposed via
+	// the relay (ABOOKIFY_PUBLIC_URL). This makes it impossible to enable on a real
+	// (network-facing) install — see engineering/server/docs/dev-auth.md.
+	if devTok := os.Getenv("ABOOKIFY_DEV_AUTH_TOKEN"); devTok != "" {
+		if pub := os.Getenv("ABOOKIFY_PUBLIC_URL"); pub != "" {
+			log.Printf("SECURITY: ABOOKIFY_DEV_AUTH_TOKEN IGNORED — this instance is relay-exposed (ABOOKIFY_PUBLIC_URL=%s). The dev auth bypass is local-test only.", pub)
+		} else {
+			srv.DevAuthToken = devTok
+			log.Printf("⚠ DEV AUTH BYPASS ACTIVE — requests bearing ABOOKIFY_DEV_AUTH_TOKEN skip login. LOCAL DEVELOPMENT ONLY; never set this on a real install.")
+		}
+	}
 	srv.GeneratedDir = *generatedPath
 	srv.BookNLPURL = *booknlpURL
 	srv.DataDir = *dataDir

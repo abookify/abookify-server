@@ -81,6 +81,19 @@ func isAuthExempt(r *http.Request) bool {
 	return false
 }
 
+// devAuthOK reports whether the request carries the LOCAL-DEV-ONLY bypass token
+// (see Server.DevAuthToken). Constant-time compared. Off unless the operator set
+// ABOOKIFY_DEV_AUTH_TOKEN on a non-relay-exposed instance (main.go enforces the
+// gate). This is a deliberate development affordance for a local test agent —
+// NOT a production path and NOT a backdoor: a real (relay) install never
+// activates it.
+func (s *Server) devAuthOK(r *http.Request) bool {
+	if s.DevAuthToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(tokenFromRequest(r)), []byte(s.DevAuthToken)) == 1
+}
+
 // authMiddleware gates the server when a password is configured. It is
 // the innermost middleware (accessLog → cors → auth → mux) so every
 // request is still logged and CORS-decorated, and OPTIONS preflight is
@@ -89,6 +102,10 @@ func isAuthExempt(r *http.Request) bool {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authEnabled() || isAuthExempt(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.devAuthOK(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -112,7 +129,10 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"auth_enabled": true, "authenticated": false}
-	if user, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
+	if s.devAuthOK(r) {
+		resp["authenticated"] = true
+		resp["username"] = "dev"
+	} else if user, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
 		resp["authenticated"] = true
 		resp["username"] = user
 	}

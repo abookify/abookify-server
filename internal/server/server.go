@@ -47,7 +47,13 @@ type Server struct {
 	// and the roots UI shows it instead of the meaningless container path. Empty
 	// on native/desktop installs, where LibraryDir is already the real host path.
 	LibraryHostPath string
-	GeneratedDir    string
+	// DevAuthToken is a LOCAL-DEVELOPMENT-ONLY auth bypass token (empty = off). A
+	// request bearing it (cookie / Bearer / ?access_token=) skips the login gate,
+	// so a local test agent (e.g. mobile screenshot capture) can reach gated
+	// surfaces. main.go refuses to activate it on a network-exposed (relay)
+	// install, so it can't weaken a real deployment. See auth.go devAuthOK.
+	DevAuthToken string
+	GeneratedDir string
 	// BookNLPURL is the optional cast-of-characters service (EXPERIMENTAL).
 	// Empty when the booknlp compose profile isn't running.
 	BookNLPURL string
