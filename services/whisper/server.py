@@ -51,9 +51,17 @@ def _load_model():
         raise
 
 
-# The model is held behind a lock so /unload can drop it while a transcribe is
-# NOT in flight, and so a reload cannot be started twice concurrently.
-_model_lock = threading.Lock()
+# RLock, not Lock: _run_transcribe holds it across the whole decode and calls
+# _get_model() inside, which re-acquires. A plain Lock deadlocks there.
+#
+# Held across the ENTIRE transcribe, including the lazy-generator
+# materialization — not merely around fetching the model. That is what makes
+# /unload safe: an unload cannot free the weights out from under a decode in
+# progress, and concurrent decodes through the single WhisperModel are
+# serialized. This restores protection that server-web had built (MODEL_LOCK)
+# and that I destroyed in 9316e34 by writing this file from a tree state that
+# predated their work.
+_model_lock = threading.RLock()
 model, DEVICE, COMPUTE_TYPE = _load_model()
 print(f"Model loaded (device={DEVICE}, compute={COMPUTE_TYPE}).")
 
@@ -125,6 +133,15 @@ def _run_transcribe(path, language, word_timestamps, initial_prompt, vad_filter,
     faster-whisper returns a LAZY generator, so decode errors surface while
     iterating, not at the call — the list() is what makes a failure catchable.
     """
+    with _model_lock:
+        return _transcribe_locked(path, language, word_timestamps, initial_prompt,
+                                  vad_filter, condition_on_previous_text)
+
+
+def _transcribe_locked(path, language, word_timestamps, initial_prompt, vad_filter,
+                       condition_on_previous_text=True):
+    """The decode itself. _model_lock MUST be held for the whole call, so an
+    /unload cannot free the model mid-decode."""
     segments, info = _get_model().transcribe(
         path,
         language=language if language else None,
