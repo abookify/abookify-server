@@ -122,3 +122,19 @@ func TestTrimGutenbergBoilerplate_ThisVariantAndOnlyFooter(t *testing.T) {
 		t.Errorf("book text was trimmed away:\n%s", got)
 	}
 }
+
+func TestTrimGutenbergBoilerplate_PreFenceSignOff(t *testing.T) {
+	// Pre-2020 PG files put a bare sign-off line BEFORE the fenced end marker,
+	// so cutting only at the fence leaves it as the book's last words.
+	const doc = `<p>They have a world to win. WORKING MEN OF ALL COUNTRIES, UNITE!</p>
+<p>End of the Project Gutenberg EBook of The Communist Manifesto, by Karl Marx</p>
+<span>*** END OF THIS PROJECT GUTENBERG EBOOK THE COMMUNIST MANIFESTO ***</span>
+<p>Section 1. General Terms of Use.</p>`
+	got := trimGutenbergBoilerplate(doc)
+	if strings.Contains(got, "End of the Project Gutenberg") {
+		t.Errorf("bare sign-off survived:\n%s", got)
+	}
+	if !strings.Contains(got, "WORKING MEN OF ALL COUNTRIES, UNITE!") {
+		t.Errorf("book text was trimmed away:\n%s", got)
+	}
+}

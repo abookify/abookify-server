@@ -177,11 +177,25 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		chapterIdx++
 	}
 
+	// The heading split can be COARSER than the publisher's own file split.
+	// chapterHeadingTextRe deliberately accepts "Part"/"Book"/"Volume" — needed
+	// where those ARE the chapters — but in a book divided into parts that each
+	// contain many chapters, and whose chapter titles carry no number ("The Old
+	// Sea-dog at the Admiral Benbow"), only the part headings match. Treasure
+	// Island then collapses from 34 chapters to 6 twelve-thousand-word slabs,
+	// and War of the Worlds from 27 to 2.
+	//
+	// The publisher's spine split is the other opinion about where chapters
+	// begin, so take whichever is finer rather than letting a heading split win
+	// merely because it exists. Both are cheap to compute on an epub.
+	if perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID); err == nil &&
+		len(perFile) > len(chapters) {
+		return perFile, nil
+	}
+
 	return chapters, nil
 }
 
-// extractPerSpineFile is the original one-chapter-per-spine-file extraction,
-// used as a fallback for EPUBs where no chapter headings are detected.
 // Project Gutenberg wraps every ebook in a licence header and footer, fenced by
 // these sentinels. The fence text has been stable across PG's epub generations
 // (the surrounding markup has not), so match on it rather than on the
@@ -189,6 +203,11 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 var (
 	pgStartRe = regexp.MustCompile(`(?is)\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*`)
 	pgEndRe   = regexp.MustCompile(`(?is)\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*`)
+	// Pre-2020 PG files precede the fenced end marker with a bare sign-off
+	// line ("End of the Project Gutenberg EBook of Siddhartha, by Herman
+	// Hesse"). Cutting only at the fence leaves that line as the last words of
+	// the book.
+	pgEndPlainRe = regexp.MustCompile(`(?i)\bEnd of (?:the )?Project Gutenberg(?:'?s)? EBook\b`)
 )
 
 // trimGutenbergBoilerplate drops everything outside the PG sentinels.
@@ -210,9 +229,16 @@ func trimGutenbergBoilerplate(html string) string {
 	if loc := pgEndRe.FindStringIndex(html); loc != nil {
 		html = html[:loc[0]]
 	}
+	// The bare sign-off sits BEFORE the fence, so it survives the cut above.
+	if loc := pgEndPlainRe.FindStringIndex(html); loc != nil {
+		html = html[:loc[0]]
+	}
 	return html
 }
 
+// extractPerSpineFile is the original one-chapter-per-spine-file extraction,
+// used when no chapter headings are detected or when the publisher's own file
+// split is finer than the headings we can see.
 func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]manifestItem, opfDir string, tocTitles map[string]string, bookID int64) ([]db.Chapter, error) {
 	var chapters []db.Chapter
 	chapterIdx := 0
