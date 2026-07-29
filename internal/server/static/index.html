@@ -4375,7 +4375,7 @@
 
     async function extractCast(workId) {
       const list = document.getElementById('cast-list-' + workId);
-      if (list) list.innerHTML = '<span class="cast-empty">Extracting cast… (BookNLP can take a few minutes)</span>';
+      if (list) list.innerHTML = '<span class="cast-empty">Extracting cast…</span>';
       try {
         const res = await fetch(`/api/works/${workId}/extract-cast`, { method: 'POST' });
         if (!res.ok) {
