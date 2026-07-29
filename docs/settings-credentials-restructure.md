@@ -63,6 +63,19 @@ the STT or TTS provider dropdowns. Voice is the last lane built (after e2e).
 8. **No-GPU pairing is coherent.** A user without a 12 GB GPU can't run Whisper
    large-v3, so cloud TTS implies cloud STT (the alignment pass has to run
    somewhere). Make that combination a supported configuration, not an accident.
+9. **One entry per VENDOR; features light up from the credential's verified
+   capabilities — never assumed.** Vendors issue account-level keys (Google gives
+   one key covering Gemini LLM, Gemini Live voice, Gemini TTS), so the Keys
+   section is keyed per **vendor**: one Google key lights up Gemini across every
+   lane it serves, with no re-paste. BUT one key does **not** unlock everything a
+   vendor sells — a Gemini key does not necessarily reach **Google Cloud TTS**
+   (WaveNet/Neural2), a separate GCP product needing project enablement. So each
+   credential **declares the capabilities it actually satisfies** (probed/verified
+   on save, stored on the row), and per-feature selectors offer only those —
+   never the full vendor menu that then fails at call time. **Verify Google TTS
+   reachability from a Gemini key before wiring anything Google-TTS.** Same logic
+   protects Azure/AWS (which need multi-field credentials anyway). Getting this
+   entry form right matters more right now than any single provider integration.
 
 ## Data model
 
@@ -70,15 +83,19 @@ New table (additive; nothing else changes shape):
 
 ```sql
 CREATE TABLE credentials (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider   TEXT NOT NULL,             -- 'openai' | 'anthropic' | 'azure_openai' | 'deepgram' | …
-  label      TEXT NOT NULL DEFAULT '',  -- '' today; names the key in a future multi-key UI
-  fields     TEXT NOT NULL DEFAULT '{}',-- JSON: {"api_key":"…"} | {"api_key":"…","region":"…","deployment":"…"} | …
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider     TEXT NOT NULL,             -- the VENDOR: 'openai' | 'google' | 'azure_openai' | 'aws' | 'anthropic' | …
+  label        TEXT NOT NULL DEFAULT '',  -- '' today; names the key in a future multi-key UI
+  fields       TEXT NOT NULL DEFAULT '{}',-- JSON: {"api_key":…} | {"api_key":…,"region":…,"deployment":…} | …
+  capabilities TEXT NOT NULL DEFAULT '[]',-- JSON array of VERIFIED feature kinds, e.g. ["llm","voice"]
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_credentials_provider ON credentials(provider);
--- NO UNIQUE(provider): the one-to-many relationship is allowed at the DB level.
--- Today the UI/migration create at most one row per provider.
+-- NO UNIQUE(provider): one-to-many is allowed at the DB level; the UI/migration
+-- create at most one row per vendor today. `capabilities` is what THIS key was
+-- probed to satisfy (a subset of what the vendor sells) — per-feature selectors
+-- gate on it. Store methods: Create/Get/List/UpsertProviderCredential/
+-- SetCredentialCapabilities/DeleteCredential (internal/db/db.go, tested).
 ```
 
 Per-feature choice stays in the `settings` KV — these are per-feature, not
