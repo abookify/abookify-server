@@ -1,4 +1,4 @@
-.PHONY: up down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
+.PHONY: up server down restart logs build test smoke relay relay-down health build-cli access-log access-log-remote css fonts build-server build-abook
 
 # Compose invocation. IMPORTANT: on a GPU host the CUDA overlay MUST be passed on
 # EVERY `up` — even for a single service — or compose reconciles the project from
@@ -94,6 +94,13 @@ fonts:
 
 up:
 	$(COMPOSE) up -d --build
+
+# Rebuild + recreate ONLY the server container. `--no-deps` means whisper/kokoro
+# are never referenced, so this can't reconcile whisper onto CPU — safe to run
+# while transcription is mid-run on the GPU. Keeps the CUDA overlay in COMPOSE
+# regardless. Use this (not `make up`) for a server-only deploy.
+server:
+	$(COMPOSE) up -d --build --no-deps server
 
 down:
 	$(COMPOSE) down
