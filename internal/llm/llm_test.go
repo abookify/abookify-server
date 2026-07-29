@@ -85,11 +85,11 @@ func TestGoogleChatCompletionsPath(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req["model"] != "gemini-1.5-flash" {
+		if req["model"] != "gemini-flash-latest" {
 			t.Errorf("model in body = %v", req["model"])
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model":   "gemini-1.5-flash",
+			"model":   "gemini-flash-latest",
 			"choices": []map[string]any{{"message": map[string]string{"content": "hello from gemini"}}},
 			"usage":   map[string]int{"prompt_tokens": 3, "completion_tokens": 4},
 		})

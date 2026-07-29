@@ -67,7 +67,11 @@ func NewClient(provider Provider, apiKey, model, baseURL string) *Client {
 			// Solid default — cheap and capable.
 			model = "openai/gpt-4o-mini"
 		case ProviderGoogle:
-			model = "gemini-1.5-flash"
+			// A rolling alias, not a pinned version: Google retires dated Gemini
+			// models (1.5-flash already 404s), and an alias tracks the current
+			// flash model so the default doesn't rot. Verified live against the
+			// ListModels output for the stored key.
+			model = "gemini-flash-latest"
 		}
 	}
 	if baseURL == "" {
