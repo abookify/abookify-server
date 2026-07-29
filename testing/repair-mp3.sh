@@ -39,8 +39,17 @@ for f in "$@"; do
     continue
   fi
 
-  tmp="${f%.mp3}.repair.$$.mp3"
-  if ! ffmpeg -y -v error -err_detect ignore_err -i "$f" -c:a libmp3lame -q:a 4 "$tmp" 2>/dev/null; then
+  # The scratch file must NOT end in .mp3. It lives beside the source (same
+  # filesystem, so the swap is an atomic rename), and every tool that walks an
+  # audiobook directory globs *.mp3 — a leftover scratch file therefore enters
+  # the book as an extra "source". That is not hypothetical: an interrupted run
+  # left 23.repair.NNN.mp3 in Life of Pi, which sorted between 23.mp3 and
+  # 24.mp3 and pushed every later file 1540s down the book-continuous timeline,
+  # silently misplacing three re-transcribed files. -f mp3 because the extension
+  # no longer tells ffmpeg the format.
+  tmp="${f%.mp3}.repair.$$.tmp"
+  trap 'rm -f "$tmp"' EXIT INT TERM
+  if ! ffmpeg -y -v error -err_detect ignore_err -i "$f" -c:a libmp3lame -q:a 4 -f mp3 "$tmp" 2>/dev/null; then
     echo "  FAILED   $f (re-encode error)"; rm -f "$tmp"; rc=1; continue
   fi
   after=$(errs "$tmp")
