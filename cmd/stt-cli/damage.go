@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,54 @@ import (
 const damageScanWorkers = 4
 
 type damageReport struct {
-	path   string
-	errors int
+	path      string
+	errors    int
+	truncated bool    // audio ends early, remainder is zero padding
+	zeroAt    int64   // byte offset where the padding starts
+	zeroMB    float64 // size of the padding
+}
+
+// minZeroRun is the literal-zero run that counts as truncation padding. Encoded
+// audio carries frame headers even through silence, so a quarter-megabyte of
+// literal 0x00 is never real audio — but the threshold stays well above any
+// plausible tag/padding block so a normal file cannot trip it.
+const minZeroRun = 256 << 10
+
+// findZeroPadding returns the offset and length of the longest literal-zero run,
+// or (0,0) if none reaches minZeroRun. Streams the file so a multi-GB input
+// costs nothing in memory.
+func findZeroPadding(path string) (int64, int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+
+	const block = 1 << 20
+	buf := make([]byte, block)
+	var pos, run, bestLen, bestStart int64
+	for {
+		n, err := f.Read(buf)
+		for i := 0; i < n; i++ {
+			if buf[i] == 0 {
+				run++
+				if run > bestLen {
+					bestLen = run
+					bestStart = pos + int64(i) - run + 1
+				}
+			} else {
+				run = 0
+			}
+		}
+		pos += int64(n)
+		if err != nil {
+			break
+		}
+	}
+	if bestLen < minZeroRun {
+		return 0, 0
+	}
+	return bestStart, bestLen
 }
 
 // scanFileDamage counts decode errors in one file. A file ffmpeg cannot open at
@@ -61,7 +108,19 @@ func scanFileDamage(path string) damageReport {
 			n++
 		}
 	}
-	return damageReport{path: path, errors: n}
+	r := damageReport{path: path, errors: n}
+	if n > 0 {
+		// Distinguish the two classes, because the remedies are opposite.
+		// Corrupt frames are recoverable by re-encoding. Zero padding means the
+		// audio was never written — re-encoding would silently TRUNCATE the file
+		// to the padding point, so the file has to be re-acquired instead.
+		if off, length := findZeroPadding(path); length > 0 {
+			r.truncated = true
+			r.zeroAt = off
+			r.zeroMB = float64(length) / (1 << 20)
+		}
+	}
+	return r
 }
 
 // scanDamage decodes every input file and reports those carrying corrupt frames.
@@ -105,15 +164,39 @@ func damagePreflight(files []string, allowDamaged bool) error {
 		return nil
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d of %d source file(s) contain corrupt frames:\n", len(damaged), len(files))
+	var corrupt, truncated []damageReport
 	for _, r := range damaged {
-		fmt.Fprintf(&b, "      %-24s %d decode error(s)\n", filepath.Base(r.path), r.errors)
+		if r.truncated {
+			truncated = append(truncated, r)
+		} else {
+			corrupt = append(corrupt, r)
+		}
 	}
-	b.WriteString("  A decoder STOPS at a corrupt frame and emits nothing until the end of the\n" +
-		"  current segment, so transcribing these now loses narration with no error.\n" +
-		"  Repair first (keeps a .orig backup, verifies duration survives):\n" +
-		"      testing/repair-mp3.sh <file> [...]")
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d source file(s) are unusable as-is.\n", len(damaged), len(files))
+	b.WriteString("  A decoder STOPS at bad data and emits nothing after it, so transcribing\n" +
+		"  these now loses narration with no error reported.\n")
+
+	if len(corrupt) > 0 {
+		b.WriteString("\n  CORRUPT FRAMES — recoverable by re-encoding:\n")
+		for _, r := range corrupt {
+			fmt.Fprintf(&b, "      %-24s %d decode error(s)\n", filepath.Base(r.path), r.errors)
+		}
+		b.WriteString("    Repair (keeps a .orig backup, verifies duration survives):\n" +
+			"        testing/repair-mp3.sh <file> [...]\n")
+	}
+
+	if len(truncated) > 0 {
+		b.WriteString("\n  TRUNCATED — the audio was never written; RE-ACQUIRE these, do NOT repair:\n")
+		for _, r := range truncated {
+			fmt.Fprintf(&b, "      %-24s audio ends at %.2f MiB, then %.1f MB of zero padding\n",
+				filepath.Base(r.path), float64(r.zeroAt)/(1<<20), r.zeroMB)
+		}
+		b.WriteString("    Re-encoding one of these TRUNCATES it to the padding point — it cannot\n" +
+			"    recover audio that is not in the file. A zero run starting on an exact MiB\n" +
+			"    boundary is the signature of an interrupted download or copy.\n")
+	}
 
 	if allowDamaged {
 		log.Printf("WARNING: %s\n  Proceeding anyway (-allow-damaged).", b.String())

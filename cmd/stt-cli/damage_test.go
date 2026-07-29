@@ -91,3 +91,60 @@ func TestDamagePreflightNoFiles(t *testing.T) {
 		t.Errorf("empty input list errored: %v", err)
 	}
 }
+
+// Truncation is a DIFFERENT defect from corrupt frames and the remedies are
+// opposite: re-encoding a truncated file silently shortens it to the padding
+// point, so the preflight must say re-acquire, not repair.
+func TestDamagePreflightTruncatedFile(t *testing.T) {
+	dir := t.TempDir()
+	trunc := filepath.Join(dir, "trunc.mp3")
+	makeMP3(t, trunc, "10")
+
+	raw, err := os.ReadFile(trunc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the first half, zero-fill the rest — an interrupted copy.
+	half := len(raw) / 2
+	padded := append(raw[:half], make([]byte, len(raw)-half+minZeroRun)...)
+	if err := os.WriteFile(trunc, padded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	off, length := findZeroPadding(trunc)
+	if length < minZeroRun {
+		t.Fatalf("zero padding not found (offset %d, len %d)", off, length)
+	}
+	if off < int64(half)-16 || off > int64(half)+16 {
+		t.Errorf("padding offset %d, expected ~%d", off, half)
+	}
+
+	d := scanDamage([]string{trunc})
+	if len(d) == 0 {
+		t.Skip("this ffmpeg build decoded the truncated file without reporting errors")
+	}
+	if !d[0].truncated {
+		t.Fatal("truncated file classified as corrupt frames — would be told to repair, which truncates it")
+	}
+
+	err = damagePreflight([]string{trunc}, false)
+	if err == nil {
+		t.Fatal("truncated input accepted")
+	}
+	if !strings.Contains(err.Error(), "RE-ACQUIRE") {
+		t.Errorf("preflight does not advise re-acquiring: %v", err)
+	}
+	if strings.Contains(err.Error(), "CORRUPT FRAMES") {
+		t.Errorf("truncated file listed under corrupt frames: %v", err)
+	}
+}
+
+// A clean file must not be mistaken for truncated.
+func TestFindZeroPaddingCleanFile(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.mp3")
+	makeMP3(t, good, "20")
+	if off, length := findZeroPadding(good); length > 0 {
+		t.Errorf("clean file reported %d bytes of padding at %d", length, off)
+	}
+}
