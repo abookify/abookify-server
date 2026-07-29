@@ -455,7 +455,7 @@
           const opts = f.option_groups
             ? f.option_groups.map(og => `<optgroup label="${schemaEscAttr(og.label)}">${og.options.map(o => schemaOpt(o, f.default)).join('')}</optgroup>`).join('')
             : (f.options || []).map(o => schemaOpt(o, f.default)).join('');
-          const onchange = f.key === 'llm_provider' ? ' onchange="onProviderChange()"' : '';
+          const onchange = f.key === 'llm_provider' ? ' onchange="onLLMProviderChange()"' : '';
           // Live readout of the device transcription is ACTUALLY running on
           // (probed from the engine via /api/info), distinct from the saved
           // preference above it.
@@ -505,6 +505,42 @@
       if (/^sk-or-/i.test(k))  return 'openrouter';
       if (/^sk-/i.test(k))     return 'openai'; // sk-proj-… or a plain sk-…
       return '';
+    }
+
+    // Auto-detection must never override an explicit choice: set once the user
+    // manually changes the provider dropdown. loadSettings sets the value
+    // programmatically and calls onProviderChange() directly, so this stays
+    // false on load and after an auto-switch (which also calls onProviderChange
+    // directly, not this).
+    let llmProviderUserSet = false;
+    function onLLMProviderChange() { llmProviderUserSet = true; onProviderChange(); }
+
+    // When a NEW key is pasted/typed, detect its provider from the prefix and
+    // switch the dropdown to match — visibly. If the user has explicitly chosen a
+    // provider we DON'T override it; we warn about the mismatch instead.
+    function onLLMKeyInput() {
+      const input = document.getElementById('llm-api-key');
+      const sel = document.getElementById('llm-provider');
+      const note = document.getElementById('llm-key-note');
+      if (!input || !sel) return;
+      const detected = detectKeyProvider(input.value);
+      const clearNote = () => { if (note) { note.style.display = 'none'; note.textContent = ''; } };
+      if (!detected || detected === sel.value) { clearNote(); return; }
+      if (llmProviderUserSet) {
+        if (note) {
+          note.textContent = `⚠ This looks like a ${LLM_PROVIDER_LABELS[detected]} key, but the provider is set to ${LLM_PROVIDER_LABELS[sel.value] || 'none'}. Change it above if that's not what you want.`;
+          note.style.color = 'var(--danger)';
+          note.style.display = '';
+        }
+        return;
+      }
+      sel.value = detected;
+      onProviderChange(); // repopulate models; keeps the flag false — this is auto, not a user choice
+      if (note) {
+        note.textContent = `Detected a ${LLM_PROVIDER_LABELS[detected]} key — switched the provider to ${LLM_PROVIDER_LABELS[detected]}.`;
+        note.style.color = 'var(--accent)';
+        note.style.display = '';
+      }
     }
 
     // Re-populate the model <select> when the provider changes. Adds a
@@ -710,6 +746,18 @@
         document.getElementById('booknlp-enabled').checked = settings.booknlp_enabled === 'true';
         // Now that provider+model are loaded, populate the model <select>.
         onProviderChange();
+        // Wire up new-key provider auto-detection (once). A note element under
+        // the key input reports an auto-switch, or a provider/key mismatch.
+        const _llmKeyInput = document.getElementById('llm-api-key');
+        if (_llmKeyInput && !_llmKeyInput._detectWired) {
+          _llmKeyInput._detectWired = true;
+          if (!document.getElementById('llm-key-note')) {
+            const n = document.createElement('div');
+            n.id = 'llm-key-note'; n.className = 'hint'; n.style.marginTop = '6px'; n.style.display = 'none';
+            _llmKeyInput.insertAdjacentElement('afterend', n);
+          }
+          _llmKeyInput.addEventListener('input', onLLMKeyInput);
+        }
       } catch {}
     }
 
