@@ -385,13 +385,16 @@
     .media-pill.audio { background: rgba(240,165,0,0.15); color: var(--mp3); }
     .media-pill.text { background: rgba(78,204,163,0.15); color: var(--epub); }
     .media-pill.missing { background: rgba(123,104,238,0.1); color: var(--generate); border: 1px dashed rgba(123,104,238,0.4); }
-    /* Transcription-status badge — the SAME three-level model mobile renders
-       (transcription's spec: distinguishable without reading the number):
-         🔴 gap-missing      — verified missing narration (dropped_segment=retry,
-                               truncated_source=re-acquire). We checked; words are absent.
-         🟠 gap-unclassified — we can't vouch (damaged_source, or cause unknown/unscanned).
-       (🟢 complete isn't rendered from the summary — a work simply absent isn't
-       assumed complete.) Web + mobile MUST agree on which book is which colour. */
+    /* Transcription-status badge — transcription's TIGHTENED model (split by WHICH
+       artefact is damaged, so the badge doesn't cry "book broken" when only the
+       text is incomplete). Web + mobile MUST agree on which book is which.
+         🔴 gap-missing      — the RECORDING is short (truncated_source): the AUDIO
+                               itself is missing. Re-acquire, no retry.
+         🟠 gap-unclassified — the recording MAY be incomplete (damaged_source):
+                               audio unreadable past a point. Scan.
+         (neutral) gap-neutral — only the TRANSCRIPT is incomplete; audio plays
+                               fine (dropped_segment=Retry; unknown=no retry). NOT
+                               "missing from the book". */
     .media-pill.gap-missing {
       background: rgba(200, 45, 45, 0.13);
       color: #b23b3b;
@@ -406,6 +409,10 @@
       cursor: pointer;
     }
     .media-pill.gap-unclassified:hover { background: rgba(240, 165, 0, 0.25); }
+    /* Text-only incompleteness — audio is fine, so this is informational, never an
+       alarm. dropped_segment (Retry recovers it) + unknown (no retry). */
+    .media-pill.gap-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
+    .media-pill.gap-neutral:hover { background: var(--surface-2); border-color: var(--text-muted); }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3467,27 +3474,29 @@
       const entry = transcriptionGapsByWork[workId];
       if (!entry) return '';
       const cause = entry.cause || 'unknown';
-      // 🟠 UNCLASSIFIED — decode errors mean we can't vouch it's complete. Shown
-      // even with no untranscribed span (the damaged_source case).
+      // 🟠 damaged — the RECORDING may be incomplete (audio unreadable past a
+      // point). Shown even with no untranscribed span (damaged_source).
       if (cause === 'damaged_source') {
-        return gapPill(workId, 'gap-unclassified', '⚠ Source may be incomplete',
-          'The audio file has decode errors, so we can\'t verify it\'s complete. Scan the source for details.');
+        return gapPill(workId, 'gap-unclassified', '⚠ Recording may be incomplete',
+          'The audio file has decode errors past a point, so part of the recording may be unreadable. Scan the source for details.');
       }
       if (!entry.segment_count) return ''; // nothing untranscribed and not damaged → claim nothing
       const dur = formatGapDuration(entry.total_missing_sec);
-      // 🔴 VERIFIED MISSING — we checked; narration is absent. dropped=retry,
-      // truncated=re-acquire (both red; the ACTION differs, not the level).
+      // 🔴 truncated — the AUDIO itself is short (never fully downloaded). This is
+      // the only "missing from the book" case; re-acquire, no retry.
       if (cause === 'truncated_source') {
-        return gapPill(workId, 'gap-missing', `${dur} missing from the source file`,
-          'This much narration was never delivered in the source file — re-acquire it. Re-transcribing cannot recover it. Click for details.');
+        return gapPill(workId, 'gap-missing', `${dur} missing from the recording`,
+          'This audio was never fully downloaded — re-acquire the recording. Re-transcribing cannot recover it. Click for details.');
       }
+      // (neutral) dropped_segment — audio plays fine; ONLY the transcript is
+      // incomplete. Never "missing from the book". Re-running STT recovers it.
       if (cause === 'dropped_segment') {
-        return gapPill(workId, 'gap-missing', `${dur} not transcribed`,
-          'The pipeline skipped part of the audio — re-running transcription recovers it. Click for details.');
+        return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
+          'Audio plays normally; only the text, search and Q&A are incomplete across this span. Re-running transcription recovers it. Click for details.');
       }
-      // 🟠 UNCLASSIFIED — cause unknown / source not scanned yet. Never implies a
-      // cause or that a retry is safe.
-      return gapPill(workId, 'gap-unclassified', `${dur} not transcribed · unverified`,
+      // (neutral) unknown / unscanned — not transcribed, cause not classified, no
+      // retry (never guess retrying is safe).
+      return gapPill(workId, 'gap-neutral', `${dur} not transcribed`,
         'Part of this audio has no transcript, and the source hasn\'t been scanned to classify why. Click for details.');
     }
 
@@ -3512,7 +3521,7 @@
           <pre class="gap-cmd" style="margin-top:0.5rem">${cmd}</pre>
         </details>`;
       if (cause === 'truncated_source') {
-        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">These words were never delivered in the source file — re-transcribing cannot recover them. Re-acquire a complete copy of the audio. No retry is offered because it would change nothing.</p>`;
+        return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">This audio was never fully downloaded — the recording itself is short, so re-transcribing cannot recover it. Re-acquire a complete copy of the recording. No retry is offered because it would change nothing.</p>`;
       }
       if (cause === 'damaged_source') {
         return `<p style="margin-top:1rem; color:var(--text-muted); font-size:0.85rem;">The source file has decode errors, so the transcript may be incomplete. Re-acquiring a clean copy is the fix.</p>`;
@@ -3520,7 +3529,7 @@
       if (cause === 'dropped_segment') {
         return `<div style="display:flex; align-items:center; gap:0.75rem; margin-top:1rem">
             <button class="primary-btn" id="gap-retry-btn" onclick="retryTranscriptionGaps(${workId}, ${JSON.stringify(fileList).replace(/"/g, '&quot;')})">Re-transcribe ${fileList.length} file${fileList.length === 1 ? '' : 's'}</button>
-            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">The pipeline skipped these — re-running recovers them.</span>
+            <span id="gap-retry-status" style="font-size:0.8rem; color:var(--text-muted);">Audio plays fine — this only restores the missing text/search. Re-running recovers it.</span>
           </div>${cli}`;
       }
       // unknown / interim: no one-click retry (never guess it's safe); advanced CLI only.
