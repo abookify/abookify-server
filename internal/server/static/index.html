@@ -2917,7 +2917,7 @@
 
     async function deleteWork(workId) {
       const work = (allWorks || []).find(w => w.id === workId);
-      const name = work ? work.title : `#${workId}`;
+      const name = work ? work.title : 'this book';
       if (!confirm(`Delete "${name}"? This removes the work from the library (files on disk are kept).`)) return;
       const res = await fetch(`/api/works/${workId}`, { method: 'DELETE' });
       if (!res.ok) { alert('Delete failed: ' + (await res.text())); return; }
@@ -3396,7 +3396,7 @@
 
     async function showGapDetails(workId) {
       const work = allWorks.find(w => w.id === workId);
-      const title = work ? work.title : `Work ${workId}`;
+      const title = work ? work.title : 'this book';
       let detail;
       try {
         const res = await fetch(`/api/works/${workId}/transcription-gaps`);
