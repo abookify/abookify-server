@@ -39,6 +39,8 @@ type SettingsOptionGroup struct {
 //	bool             checkbox ("true"/"false" string in the KV)
 //	select           dropdown from Options or OptionGroups
 //	select_or_custom dropdown (OptionsEndpoint) with a free-text fallback
+//	library_roots    marker: client renders the library-roots widget from
+//	                 /api/library/roots (no flat KV value) (#220)
 //
 // Addons name client-known adjunct controls for the field ("preview" a TTS
 // voice, "test" an LLM connection). Clients that don't implement an addon
