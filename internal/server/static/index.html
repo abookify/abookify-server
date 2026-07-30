@@ -3309,16 +3309,39 @@
       // content. Clicking a chapter seeks to the right file + offset via
       // seekToAbsoluteBookTime. Fall back to file list if no chapters found.
       const audioListId = 'audio-chapters-' + work.id;
-      queueMicrotask(() => loadAudioChapterList(files[0], work));
+      // Show the DEFAULT edition's chapters, not just the first file — matters
+      // when a work has several audio editions (LibriVox + Kokoro + your own).
+      const defaultFile = files.find(f => f.id === work.display_audio_id) || files[0];
+      queueMicrotask(() => loadAudioChapterList(defaultFile, work));
+      queueMicrotask(() => annotateAudioEditions(work.id)); // edition indicator when >1
       return `
         <div class="split-pane audio-pane">
-          <div class="pane-header audio">&#9835; Audiobook &middot; <span id="audio-count-${work.id}">${files.length}</span> chapters</div>
+          <div class="pane-header audio">&#9835; Audiobook &middot; <span id="audio-count-${work.id}">${files.length}</span> chapters<span id="audio-ed-note-${work.id}"></span></div>
           <div class="chapter-list">
             <div id="${audioListId}">
               <div class="chapter-row" style="color:var(--text-muted); font-style:italic; cursor:default;">Loading chapters&hellip;</div>
             </div>
           </div>
         </div>`;
+    }
+
+    // When a work has more than one audio edition, tell the listener which one
+    // they're hearing (its provenance — "Narrator recording" / "Kokoro TTS") and
+    // give a one-click path to pick another, right on the listening surface —
+    // so several editions on one work are never a guess. Single-edition works
+    // show nothing extra.
+    async function annotateAudioEditions(workId) {
+      let audio;
+      try { audio = ((await fetch(`/api/works/${workId}/editions`).then(r => r.json())).audio) || []; }
+      catch { return; }
+      if (audio.length <= 1) return;
+      const host = document.getElementById('audio-ed-note-' + workId);
+      if (!host) return;
+      const cur = audio.find(e => e.is_default) || audio[0];
+      host.innerHTML =
+        ` &middot; <span style="color:var(--text);" title="The narration edition you're hearing">${escapeHtml(cur.provenance || '')}</span>` +
+        ` <button onclick="openMetaEditor(${workId})" title="Choose a different narration edition"` +
+        ` style="font-size:0.7rem; padding:1px 7px; margin-left:4px; background:var(--bg); color:var(--text-muted); border:1px solid var(--border); border-radius:5px; cursor:pointer; vertical-align:middle;">&#8646; ${audio.length} editions</button>`;
     }
 
     // Detected-chapter cache: { bookId: [ {index, title, start_sec, end_sec, confidence}, ... ] }
