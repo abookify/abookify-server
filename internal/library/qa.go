@@ -14,6 +14,14 @@ import (
 	"github.com/pj/abookify/internal/llm"
 )
 
+// NotStartedRecapMessage is the true+useful reply when a reader asks to recap a
+// book they haven't started (position ~0, nothing read). It's said in place of
+// the generic "That hasn't come up yet" decline — which reads as "topic not
+// found" rather than "book not begun" and offers nothing to do next. Shared by
+// the chat/recap path (chat.go) and the recap endpoint (summaries.go) so the two
+// surfaces can't drift.
+const NotStartedRecapMessage = "You haven't started this book yet, so there's nothing to recap. Once you begin reading, a spoiler-free recap of the story so far will appear here."
+
 // QueryScope narrows chunk retrieval before the LLM context is built so
 // the reader can ask about "just this chapter" or avoid spoilers with
 // "up to here". Zero value (Type == "" or "book") = whole work, which

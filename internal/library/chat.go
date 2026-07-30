@@ -71,6 +71,16 @@ func AskInSession(store *db.Store, rag *llm.RAG, workID int64, history []db.QAMe
 		}
 	}
 
+	// Not-started case: a FRESH chat (no history) asking within a reading scope
+	// pinned at/before the very start, with nothing retrieved, means the reader
+	// hasn't read anything yet. Say so plainly + usefully — NOT the generic "hasn't
+	// come up yet" decline (which reads as "topic not found") and NOT a model guess.
+	// Every new user hits this on their first curious "recap so far" tap. Follow-ups
+	// (history present) and mid-book queries still flow to the model below.
+	if len(retrieved) == 0 && len(history) == 0 && scope.Type == "up_to_chapter" && scope.ChapterIdx <= 0 {
+		return &llm.Answer{Text: NotStartedRecapMessage, Model: "no-passages", Chunks: 0}, nil
+	}
+
 	// Even with no retrieval, we still let the model respond — it can use
 	// the prior context to answer follow-ups like "summarize the above".
 	titleCache := map[int64]map[int]string{}

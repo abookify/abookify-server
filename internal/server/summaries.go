@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
 )
 
@@ -139,6 +140,15 @@ func (s *Server) handleBookRecap(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid up_to"})
 		return
 	}
+	// Not started: nothing read yet (position before the first chapter). Say so
+	// plainly + usefully rather than generating an empty/confusing recap — this is
+	// the first thing a curious new user taps. No LLM call needed.
+	if upTo < 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"book_id": bookID, "up_to": upTo, "recap": library.NotStartedRecapMessage, "not_started": true, "cached": false,
+		})
+		return
+	}
 	// Book-text-only mode: decline (no generation, no leak) — see extractOnlyNotice.
 	if s.extractOnlyEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -193,8 +203,11 @@ func (s *Server) handleBookRecap(w http.ResponseWriter, r *http.Request) {
 		parts = append(parts, fmt.Sprintf("%d. %s: %s", n, label, sum))
 	}
 	if len(parts) == 0 {
+		// up_to ≥ 0 but no chapter has readable content yet (e.g. the reader is at
+		// the very start of chapter 0). Same honest, useful message as not-started
+		// rather than an empty recap.
 		writeJSON(w, http.StatusOK, map[string]any{
-			"book_id": bookID, "up_to": upTo, "recap": "", "cached": false, "model": client.Model(),
+			"book_id": bookID, "up_to": upTo, "recap": library.NotStartedRecapMessage, "not_started": true, "cached": false, "model": client.Model(),
 		})
 		return
 	}
