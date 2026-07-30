@@ -131,6 +131,12 @@ while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
     for ext in mp3 m4a m4b flac wav ogg opus; do
       [ -f "$base.$ext" ] && { audio="$base.$ext"; break; }
     done
+    # A single audio file can live INSIDE a directory named like the sidecar
+    # (Book.stt.json next to Book/01.mp3). The order file leaves audiodir empty
+    # for single-file works, so the flat lookup above misses these — 9 books
+    # (11,658 fabricated words) were about to be skipped as ORPHAN this way,
+    # each skip recorded as if examined.
+    [ -z "$audio" ] && [ -d "$base" ] && audio="$base"
   fi
   if [ -z "$audio" ]; then
     printf '%s\tORPHAN\t%s\t-\t-\t-\n' "$(date +%H:%M:%S)" "$name" >> "$PROG"
