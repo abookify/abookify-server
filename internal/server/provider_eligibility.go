@@ -62,6 +62,30 @@ func (s *Server) eligibleVendors(kind string) []string {
 	return out
 }
 
+// credentialHasCapability reports whether a stored credential for the vendor has
+// VERIFIED the given capability (probed, never assumed). Used to gate a feature
+// on what the key can actually serve — e.g. voice (Gemini Live) is offered for a
+// Google key only when it verified "voice", and a Google key never claims "tts"
+// (Google Cloud TTS is a separate product), so a key can't imply a capability it
+// can't serve.
+func (s *Server) credentialHasCapability(provider, capability string) bool {
+	creds, err := s.store.ListCredentials()
+	if err != nil {
+		return false
+	}
+	for _, c := range creds {
+		if c.Provider != provider {
+			continue
+		}
+		for _, capab := range c.Capabilities {
+			if capab == capability {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // providerLabel is the display name for a vendor from the catalog, or the id.
 func providerLabel(id string) string {
 	if d, ok := providerDescriptor(id); ok {

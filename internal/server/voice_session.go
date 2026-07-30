@@ -85,9 +85,12 @@ func mintRealtimeToken(client *http.Client, baseURL, apiKey, model string) (toke
 
 const geminiBase = "https://generativelanguage.googleapis.com"
 
-// geminiLiveModel is provisional; pin against the account's ListModels (a live
-// model) when the WebSocket client lands, same discipline as gpt-realtime.
-const geminiLiveModel = "gemini-2.0-flash-live-001"
+// geminiLiveModel is PINNED against the account's ListModels (2026-07-29): the
+// only bidiGenerateContent models are the gemini-2.5-flash-native-audio-* family
+// + gemini-3.x live previews; the docs-era gemini-2.0-flash-live-001 is NOT in
+// the account list (same rot as gemini-1.5-flash). A rolling "-latest" alias so
+// it tracks the current native-audio model instead of rotting on a dated one.
+const geminiLiveModel = "gemini-2.5-flash-native-audio-latest"
 
 // geminiLiveTokenConfig is the EXACT body sent to mint a Gemini Live ephemeral
 // token. EGRESS BOUNDARY: an empty session config — NEVER book/library text. The
@@ -161,6 +164,13 @@ func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
 			"provider": "openai", "transport": "webrtc",
 		})
 	case "google":
+		// Gate on the VERIFIED "voice" capability, not mere key presence: a Gemini
+		// key serves Gemini Live (voice) but NOT Google Cloud TTS, so it must not
+		// imply a capability it can't serve.
+		if !s.credentialHasCapability("google", "voice") {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this Google key hasn't verified the voice (Gemini Live) capability"})
+			return
+		}
 		key := s.store.CredentialAPIKey("google")
 		if key == "" {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no Google credential — add a Google (Gemini) key in Settings → Keys"})
@@ -191,13 +201,15 @@ func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
 			openaiKey = firstNonEmptySetting(settings, "openai_api_key")
 		}
 	}
-	googleKey := s.store.CredentialAPIKey("google")
-	// providers lists what can serve realtime voice today (a resolvable key).
+	// providers lists what can serve realtime voice today. OpenAI Realtime works
+	// for any OpenAI key (key presence). Google/Gemini Live is gated on the
+	// VERIFIED "voice" capability — a Gemini key serves Gemini Live voice but NOT
+	// Google Cloud TTS, so it can't imply a capability it doesn't have.
 	providers := []string{}
 	if openaiKey != "" {
 		providers = append(providers, "openai")
 	}
-	if googleKey != "" {
+	if s.credentialHasCapability("google", "voice") {
 		providers = append(providers, "google")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -117,3 +117,35 @@ func TestGeminiLiveMint_NoBookText(t *testing.T) {
 		t.Fatal("PRIVACY BOUNDARY: the real key must never be returned to the caller")
 	}
 }
+
+// TestVoiceAvailable_GoogleGatedOnVoiceCapability honours the credential-capability
+// declaration: a Google key is offered voice ONLY when it verified "voice"
+// (Gemini Live), never merely because a key exists — so a Gemini key can't imply
+// a capability (e.g. Google Cloud TTS, which it does not verify) it can't serve.
+func TestVoiceAvailable_GoogleGatedOnVoiceCapability(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+
+	// A Google key that verified only [llm] (NOT voice) must NOT be offered voice.
+	id, err := store.UpsertProviderCredential("google", "", map[string]string{"api_key": "AIza-x"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := store.SetCredentialCapabilities(id, []string{"llm"}); err != nil {
+		t.Fatalf("caps: %v", err)
+	}
+	if srv.credentialHasCapability("google", "voice") {
+		t.Fatal("google must NOT be voice-eligible without a verified voice capability")
+	}
+
+	// Once it verifies [llm, voice] (Gemini Live), it becomes eligible.
+	if err := store.SetCredentialCapabilities(id, []string{"llm", "voice"}); err != nil {
+		t.Fatalf("caps: %v", err)
+	}
+	if !srv.credentialHasCapability("google", "voice") {
+		t.Fatal("google should be voice-eligible once it verified the voice capability")
+	}
+	// It must never be considered tts-capable (Google Cloud TTS is separate).
+	if srv.credentialHasCapability("google", "tts") {
+		t.Fatal("a Gemini key must never claim tts — Google Cloud TTS is a separate product")
+	}
+}
