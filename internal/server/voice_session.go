@@ -241,11 +241,12 @@ var voiceProviderRegistry = []voiceProvider{
 		Available:      func(s *Server) bool { return s.credentialHasCapability("google", "voice") },
 		UnavailableMsg: "this Google key hasn't verified the voice (Gemini Live) capability — add/verify a Google (Gemini) key in Settings → Keys",
 		Mint: func(s *Server, c *http.Client) (map[string]any, error) {
-			token, err := mintGeminiLiveToken(c, geminiBase, s.store.CredentialAPIKey("google"))
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"token": token, "model": geminiLiveModel, "provider": "google", "transport": "gemini-live"}, nil
+			// Gemini Live runs through the server-side relay (see voice_relay.go):
+			// Google's ephemeral tokens don't authenticate the Live WS for our key,
+			// so the browser connects to OUR /api/voice/gemini-relay and the real
+			// key stays server-side. No token to mint — the slot just returns the
+			// connection shape (a relay flag) instead of a token.
+			return map[string]any{"provider": "google", "transport": "gemini-live", "model": geminiLiveModel, "relay": true}, nil
 		},
 	},
 	{

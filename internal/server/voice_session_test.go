@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 	"time"
@@ -253,5 +254,25 @@ func TestVoiceProviderRegistry_AllThreeLand(t *testing.T) {
 	}
 	if findVoiceProvider("nope") != nil {
 		t.Fatal("unknown provider must return nil (→ 400)")
+	}
+}
+
+// TestGeminiRelayUpstreamURL_KeyOnly locks the relay's egress boundary: the ONLY
+// thing added toward Google on the upstream dial is the API key (auth) — no book
+// or library text, no extra params.
+func TestGeminiRelayUpstreamURL_KeyOnly(t *testing.T) {
+	u := geminiLiveWSURL("AIza-REAL-key")
+	parsed, err := neturl.Parse(u)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	q := parsed.Query()
+	if q.Get("key") != "AIza-REAL-key" {
+		t.Fatalf("upstream URL must carry the key for auth, got %q", q.Get("key"))
+	}
+	for k := range q {
+		if k != "key" {
+			t.Fatalf("PRIVACY BOUNDARY: upstream URL may carry only the key, got param %q", k)
+		}
 	}
 }
