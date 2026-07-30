@@ -1917,7 +1917,7 @@
           <label style="font-size:0.72rem; color:var(--text-muted);">Voice</label>
           <select id="tts-voice" onchange="ttsOnVoiceChange()" style="width:100%; padding:7px; margin-top:3px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;"></select>
         </div>
-        <button type="button" onclick="ttsAudition()" style="flex:0 0 auto; font-size:0.8rem; padding:8px 14px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">▶ Audition voice</button>
+        <button type="button" id="tts-audition-btn" onclick="ttsAudition()" style="flex:0 0 auto; font-size:0.8rem; padding:8px 14px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">▶ Preview a block</button>
         <audio id="tts-audition" style="display:none;"></audio>
       </div>
       <div style="margin-top:12px;">
@@ -2825,11 +2825,46 @@
       const ed = document.getElementById('tts-edition');
       if (!ed.dataset.touched) ed.value = 'Kokoro · ' + (ttsVoiceLabels[v] || v);
     }
+    // Audition = hear a real BLOCK of the selected chapter in the chosen voice,
+    // synthesized through the same pipeline as the full edition — so what you
+    // preview is what you'll get. Falls back to the canned voice sample only when
+    // no chapter is selected (e.g. voice window opened outside the wizard).
     async function ttsAudition() {
       const v = document.getElementById('tts-voice').value || 'af_heart';
       const a = document.getElementById('tts-audition');
-      a.src = `/api/tts/voices/${encodeURIComponent(v)}/preview.mp3`;
-      try { await a.play(); } catch {}
+      const bookId = document.getElementById('tts-text-book')?.value;
+      const idx = document.getElementById('tts-chapter')?.value;
+      const btn = document.getElementById('tts-audition-btn');
+
+      // No chapter picked → canned voice sample (still useful for a quick voice A/B).
+      if (!bookId || idx === '' || idx == null) {
+        a.src = `/api/tts/voices/${encodeURIComponent(v)}/preview.mp3`;
+        try { await a.play(); } catch {}
+        return;
+      }
+
+      const orig = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '… synthesizing'; }
+      ttsWizStatus('Synthesizing a block of this chapter in ' + v + '…');
+      try {
+        const res = await fetch(`/api/books/${bookId}/chapters/${idx}/tts-preview?voice=${encodeURIComponent(v)}`);
+        if (!res.ok) { ttsWizStatus('Preview failed: ' + (await metaErr(res)), true); return; }
+        const text = decodePreviewText(res.headers.get('X-Preview-Text'));
+        const blob = await res.blob();
+        if (a.dataset.url) URL.revokeObjectURL(a.dataset.url);
+        const url = URL.createObjectURL(blob);
+        a.dataset.url = url; a.src = url;
+        if (text) ttsWizStatus('Now playing this block: “' + (text.length > 140 ? text.slice(0, 140) + '…' : text) + '”');
+        try { await a.play(); } catch {}
+      } catch (e) {
+        ttsWizStatus('Preview failed: ' + e, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = orig || '▶ Preview a block'; }
+      }
+    }
+    function decodePreviewText(b64) {
+      if (!b64) return '';
+      try { return decodeURIComponent(escape(atob(b64))); } catch { return ''; }
     }
     async function ttsLoadChapters() {
       const bookId = document.getElementById('tts-text-book').value;
