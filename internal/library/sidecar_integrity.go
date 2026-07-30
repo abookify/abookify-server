@@ -31,6 +31,24 @@ const (
 	// leaves headroom while still catching gross duplication.
 	maxImportWordsPerMin = 450.0
 	densityWindow        = 60.0
+
+	// Whisper's own per-word confidence, which is the closest cheap proxy we have
+	// for "does this text match the audio" — every other check only asks whether
+	// the text looks odd on its own terms.
+	//
+	// Calibrated on the library, not guessed. In books with fabricated spans the
+	// fabricated words carry a median confidence of 0.25-0.78 while the rest of
+	// the same book sits at 0.999-1.000. A RUN of consecutive low-confidence
+	// words is required rather than a windowed average, because a windowed mean
+	// dilutes a short fabricated pocket with the good narration around it and
+	// missed 10 of 57 damaged books that way.
+	//
+	// At floor 0.50 / run 8 this independently rediscovers 57 of 57 books already
+	// known damaged, with no book flagged that was not, using confidence ALONE and
+	// never looking at word timings. Two unrelated measurements of the same failed
+	// decode converging exactly is what makes the signal trustworthy.
+	lowConfFloor  = 0.50
+	minLowConfRun = 8
 )
 
 // SidecarProblem is one structural defect found in an imported sidecar.
@@ -114,7 +132,27 @@ func checkSidecarIntegrity(sc *sttSidecar) []SidecarProblem {
 			AtSec: at})
 	}
 
-	// 4. Sources must still tile the timeline; a hole or overlap means the file
+	// 4. Runs of words the model itself did not believe. This is the only check
+	// here that asks about the RELATIONSHIP between text and audio rather than
+	// about the text in isolation, so it is the one that can catch fabricated
+	// prose carrying structurally plausible timings.
+	//
+	// Skipped entirely when the sidecar has no confidence data (pre-v2), rather
+	// than treating absent confidence as zero and flagging the whole book.
+	if hasConf(sc.Words) {
+		if n, at := lowConfidenceRun(sc.Words); n > 0 {
+			out = append(out, SidecarProblem{
+				Kind: "model_did_not_believe_this",
+				Detail: fmt.Sprintf("%d word(s) sit in runs of %d+ consecutive words below %.2f "+
+					"confidence (worst run starts %.1fs) — Whisper did not believe its own output "+
+					"here, which in this library has meant the text does not match the audio",
+					n, minLowConfRun, lowConfFloor, at),
+				AtSec: at, Count: n,
+			})
+		}
+	}
+
+	// 5. Sources must still tile the timeline; a hole or overlap means the file
 	// set changed under the sidecar.
 	if len(sc.Sources) > 1 {
 		acc := sc.Sources[0].StartSec
@@ -164,6 +202,46 @@ func LogTranscriptProblems(label string, words []sttWord, sources []sttSource, d
 		log.Printf("stt: INTEGRITY   [%s] %s", p.Kind, p.Detail)
 	}
 	return len(problems)
+}
+
+// hasConf reports whether the sidecar carries per-word confidence at all.
+// Pre-v2 sidecars do not, and absent confidence must not read as zero.
+func hasConf(words []sttWord) bool {
+	for _, w := range words {
+		if w.Probability > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// lowConfidenceRun returns how many words sit inside runs of minLowConfRun or
+// more consecutive words below lowConfFloor, and where the longest such run
+// starts.
+func lowConfidenceRun(words []sttWord) (int, float64) {
+	var total, cur, best int
+	var bestAt, curAt float64
+	flush := func() {
+		if cur >= minLowConfRun {
+			total += cur
+			if cur > best {
+				best, bestAt = cur, curAt
+			}
+		}
+		cur = 0
+	}
+	for _, w := range words {
+		if w.Probability < lowConfFloor {
+			if cur == 0 {
+				curAt = w.Start
+			}
+			cur++
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return total, bestAt
 }
 
 // peakWordRate returns the highest words-per-minute over any window, and where.

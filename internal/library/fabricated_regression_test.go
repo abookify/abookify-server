@@ -29,10 +29,12 @@ type fabricatedCase struct {
 	AtSec     float64 `json:"at_sec"`
 	OnInstant int     `json:"words_on_one_instant"`
 	Text      string  `json:"text"`
+	MeanConf  float64 `json:"mean_confidence"`
 	Words     []struct {
-		W string  `json:"w"`
-		S float64 `json:"s"`
-		E float64 `json:"e"`
+		W    string  `json:"w"`
+		S    float64 `json:"s"`
+		E    float64 `json:"e"`
+		Conf float64 `json:"conf"`
 	} `json:"words"`
 }
 
@@ -169,6 +171,75 @@ func TestRegressionRealRunningHeadersAreStripped(t *testing.T) {
 		if strings.TrimSpace(strings.ReplaceAll(text, title, "")) == "" {
 			t.Errorf("%s: content is nothing but the heading yet isHeadingOnly said otherwise\n  title=%q text=%q",
 				d.File, title, text)
+		}
+	}
+}
+
+// The confidence check must catch every real fabricated span, and it must do so
+// WITHOUT reference to word timings — that independence is the whole point. It is
+// the only check that asks about the relationship between text and audio rather
+// than about the shape of the text alone.
+func TestRegressionLowConfidenceCatchesRealSpans(t *testing.T) {
+	for _, c := range loadFabricated(t) {
+		// Real captured words, but with their timings REPLACED by plausible
+		// sequential ones — so the collapsed-timestamp check cannot fire and only
+		// confidence is left to catch it. This is the gap the confidence signal
+		// exists to close.
+		var words []sttWord
+		for i := 0; i < 300; i++ {
+			words = append(words, sttWord{Word: "ordinary", Start: float64(i) * 0.4,
+				End: float64(i)*0.4 + 0.3, Probability: 0.98})
+		}
+		base := 200.0
+		var haveConf bool
+		for i, w := range c.Words {
+			if w.Conf > 0 {
+				haveConf = true
+			}
+			words = append(words, sttWord{Word: w.W,
+				Start: base + float64(i)*0.35, End: base + float64(i)*0.35 + 0.3,
+				Probability: w.Conf})
+		}
+		if !haveConf {
+			t.Skipf("%s: fixture carries no confidence data", c.Book)
+		}
+
+		probs := checkSidecarIntegrity(&sttSidecar{Duration: 1200, Words: words})
+		var kinds []string
+		for _, p := range probs {
+			kinds = append(kinds, p.Kind)
+		}
+		joined := strings.Join(kinds, ",")
+		if strings.Contains(joined, "synthesized_word_timings") {
+			t.Fatalf("%s: timings were meant to be plausible here — the test is not isolating "+
+				"the confidence signal", c.Book)
+		}
+		if !strings.Contains(joined, "model_did_not_believe_this") {
+			t.Errorf("%s: fabricated span with PLAUSIBLE timings not caught by confidence; kinds=%v\n  %s",
+				c.Book, kinds, c.Text)
+		}
+	}
+}
+
+// Confident narration must not be flagged, and a sidecar with no confidence data
+// at all must not be flagged either — absent confidence is not zero confidence.
+func TestRegressionConfidenceNoFalsePositives(t *testing.T) {
+	var good []sttWord
+	for i := 0; i < 3000; i++ {
+		good = append(good, sttWord{Word: "w", Start: float64(i) * 0.4,
+			End: float64(i)*0.4 + 0.3, Probability: 0.97})
+	}
+	if p := checkSidecarIntegrity(&sttSidecar{Duration: 1200, Words: good}); len(p) != 0 {
+		t.Errorf("confident narration flagged: %+v", p)
+	}
+
+	var noConf []sttWord
+	for i := 0; i < 3000; i++ {
+		noConf = append(noConf, sttWord{Word: "w", Start: float64(i) * 0.4, End: float64(i)*0.4 + 0.3})
+	}
+	for _, p := range checkSidecarIntegrity(&sttSidecar{Duration: 1200, Words: noConf}) {
+		if p.Kind == "model_did_not_believe_this" {
+			t.Error("a pre-v2 sidecar with no confidence data was flagged — absent is not zero")
 		}
 	}
 }
