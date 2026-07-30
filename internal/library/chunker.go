@@ -29,13 +29,15 @@ const (
 //     tokenizer drift between the counter and strings.Fields cannot put a book
 //     into a permanent rebuild loop.
 //
-//  3. A chapter's chunks run well PAST its text. Same 10% tolerance, opposite
-//     direction — and it is the signature of a repair rather than a re-split.
-//     Removing fabricated words SHRINKS a chapter, so the old chunks stay
-//     "long enough" under signal 2 alone and the book reads as up to date while
-//     every chunk still holds invented text. Free Will proved it: the reader
-//     showed the repaired words while Q&A went on citing a sentence the narrator
-//     never said, because 528 real words could not make 591 stale ones look short.
+//  3. A chunk's text is not the text it claims to cover. Exact, not a heuristic:
+//     a chunk is by construction the chapter's words [start_word, end_word)
+//     joined by single spaces, so it can be re-derived and compared.
+//
+//     Both length signals are blind to REWORDING, which is precisely what a
+//     re-transcription produces. 438 Days re-transcribed to within 2.2% of its
+//     old length — inside any tolerance — while every chunk still opened with
+//     "Chapter 1. The Sharkers.", a narrator announcement the new import strips.
+//     Length was never going to answer "is this the same text"; only the text can.
 func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, error) {
 	chunks, err := store.ListChunks(bookID)
 	if err != nil {
@@ -44,11 +46,13 @@ func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, er
 
 	chunkedIdx := map[int]bool{}
 	maxEnd := map[int]int{}
+	byChapter := map[int][]db.Chunk{}
 	for _, c := range chunks {
 		chunkedIdx[c.ChapterIdx] = true
 		if c.EndWord > maxEnd[c.ChapterIdx] {
 			maxEnd[c.ChapterIdx] = c.EndWord
 		}
+		byChapter[c.ChapterIdx] = append(byChapter[c.ChapterIdx], c)
 	}
 
 	textIdx := map[int]bool{}
@@ -73,8 +77,19 @@ func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, er
 		if float64(maxEnd[ch.Index]) < float64(ch.WordCount)*0.9 {
 			return true, nil // text grew past the chunks
 		}
-		if float64(maxEnd[ch.Index]) > float64(ch.WordCount)*1.1 {
-			return true, nil // chunks outlive the text: a repair removed words
+		// Exact check: re-derive each chunk from the chapter's current words.
+		full, err := store.GetChapterContent(bookID, ch.Index)
+		if err != nil || full == nil {
+			continue
+		}
+		words := strings.Fields(full.Content)
+		for _, c := range byChapter[ch.Index] {
+			if c.StartWord < 0 || c.EndWord > len(words) || c.StartWord > c.EndWord {
+				return true, nil // the chapter shrank out from under this chunk
+			}
+			if c.Content != strings.Join(words[c.StartWord:c.EndWord], " ") {
+				return true, nil // same span, different words: the text was rewritten
+			}
 		}
 	}
 	return false, nil

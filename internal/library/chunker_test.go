@@ -250,6 +250,46 @@ func chunksContain(t *testing.T, store *db.Store, bookID int64, needle string) b
 	return false
 }
 
+// The case no length tolerance can ever catch: a re-transcription that REWORDS a
+// chapter without changing how long it is. 438 Days came back within 2.2% of its
+// old length while every chunk still opened with the narrator announcement
+// ("Chapter 1. The Sharkers.") that the new import strips — inside every tolerance,
+// and completely different text. Same word COUNT here, so signals 1 and 2 both
+// pass and only comparing the words themselves works.
+func TestChunkBookRebuildsAfterRewordingAtSameLength(t *testing.T) {
+	store := testStoreForLib(t)
+	store.UpsertBook(db.Book{Path: "/w.txt", Filename: "w.txt", Format: "transcript", MediaType: "text"})
+	books, _ := store.ListBooks()
+	bookID := books[0].ID
+
+	old := "chapterone thesharkers " + chunkTestWords(498)
+	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "seg",
+		Content: old, WordCount: 500})
+	if err := ChunkBook(store, bookID); err != nil {
+		t.Fatalf("initial chunk: %v", err)
+	}
+	if !chunksContain(t, store, bookID, "thesharkers") {
+		t.Fatal("setup: announcement never reached the chunks")
+	}
+
+	// Re-transcribed: announcement stripped, two other words in its place. Exactly
+	// 500 words again.
+	store.DeleteChaptersByBook(bookID)
+	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "seg",
+		Content: "hisname wassalvador " + chunkTestWords(498), WordCount: 500})
+	if err := ChunkBook(store, bookID); err != nil {
+		t.Fatalf("rechunk after rewording: %v", err)
+	}
+
+	if chunksContain(t, store, bookID, "thesharkers") {
+		t.Error("chunks still hold the pre-transcription wording — same length, so no " +
+			"tolerance could see it; the words themselves have to be compared")
+	}
+	if !chunksContain(t, store, bookID, "wassalvador") {
+		t.Error("chunks never picked up the new wording")
+	}
+}
+
 // The guard must not fire on an unchanged book: rebuilding means re-embedding,
 // which is the expensive half of the pipeline.
 func TestChunkBookStableWhenUnchanged(t *testing.T) {
