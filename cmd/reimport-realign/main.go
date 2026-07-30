@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/db"
@@ -41,6 +42,15 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 	defer store.Close()
+
+	// Rewriting the text invalidates the alignment that describes it. If this
+	// process dies between the two, or the realign errors, the work is left with new
+	// text and an alignment payload pointing into text that no longer exists — a
+	// state nothing surfaces, and which presents to a reader as karaoke silently not
+	// working. So the exit status has to mean "verified", not "reached the end":
+	// anything that leaves the alignment older than this run fails loudly, and the
+	// caller must not record the book as done.
+	started := time.Now().Add(-2 * time.Second)
 
 	sidecar, err := library.ReimportWorkSidecar(store, *libRoot, *workID)
 	if err != nil {
@@ -69,7 +79,47 @@ func main() {
 	if err := store.StampVersions(*workID, abook.BookDBSchemaVersion); err != nil {
 		log.Fatalf("stamp versions for work %d: %v", *workID, err)
 	}
+	if err := verifyAlignmentFresh(store, *workID, started); err != nil {
+		log.Fatalf("ALIGNMENT NOT VERIFIED for work %d: %v\n"+
+			"The text was rewritten. Do NOT record this book as done — its alignment "+
+			"describes text that no longer exists, which reads as karaoke being broken.",
+			*workID, err)
+	}
 	fmt.Printf("stamped content_version (schema v%d)\n", abook.BookDBSchemaVersion)
+}
+
+// verifyAlignmentFresh confirms every alignment row for the work was rewritten by
+// this run. A work with no ebook peer legitimately has no rows — that is verified
+// too, and reported, rather than being indistinguishable from a failure.
+func verifyAlignmentFresh(store *db.Store, workID int64, started time.Time) error {
+	rows, err := store.ListAlignmentsForWork(workID)
+	if err != nil {
+		return fmt.Errorf("read alignments: %w", err)
+	}
+	if len(rows) == 0 {
+		w, err := store.GetWork(workID)
+		if err != nil || w == nil {
+			return fmt.Errorf("get work: %w", err)
+		}
+		for _, b := range w.TextFiles {
+			if b.Format != "transcript" && b.Origin != "whisper_transcript" {
+				return fmt.Errorf("work has an ebook peer (%s) but no alignment row was "+
+					"written — the aligner did not run or produced nothing", b.Filename)
+			}
+		}
+		fmt.Printf("alignment: none expected (no ebook peer to align against) — verified\n")
+		return nil
+	}
+	for _, a := range rows {
+		if a.UpdatedAt.Before(started) {
+			return fmt.Errorf("alignment %d (books %d→%d, %s/%s) last updated %s, before this "+
+				"run began at %s — it describes the previous transcript",
+				a.ID, a.FromBookID, a.ToBookID, a.Method, a.Unit,
+				a.UpdatedAt.Format(time.RFC3339), started.Format(time.RFC3339))
+		}
+	}
+	fmt.Printf("alignment: %d row(s) rewritten by this run — verified\n", len(rows))
+	return nil
 }
 
 // embedWork fills embeddings for every text book of the work, building the RAG
