@@ -44,3 +44,33 @@ func TestHTMLToTextWithoutHead(t *testing.T) {
 		t.Errorf("content lost when there is no head: %q", got)
 	}
 }
+
+// Calibre stamps the BOOK title as an <h1> in every split document, so dozens of
+// "chapters" contain that line and nothing else. Hitchhiker's Guide yielded 36
+// such chapters out of 72; each became an embedded chunk that Q&A cited as though
+// it were book text.
+func TestIsHeadingOnly(t *testing.T) {
+	title := "HH1 - Hitchhiker's Guide to the Galaxy"
+	cases := []struct {
+		text, title string
+		want        bool
+		why         string
+	}{
+		{title, title, true, "content is exactly the heading"},
+		{title + " " + title, title, true, "heading repeated, still no body"},
+		{title + " Far out in the uncharted backwaters of the unfashionable end.", title, false,
+			"heading plus real prose is a real chapter"},
+		{"CHAPTER 1 The house stood on a slight rise just on the edge of the village.", "CHAPTER 1", false,
+			"ordinary chapter"},
+		{"Hitchhiker’s Guide to the Galaxy", "Hitchhiker's Guide to the Galaxy", true,
+			"curly vs straight apostrophe must still match"},
+		{"", "", true, "empty is heading-only"},
+		{"A short but genuine opening paragraph of prose here.", "", false,
+			"no title known, but there is body text"},
+	}
+	for _, c := range cases {
+		if got := isHeadingOnly(c.text, c.title); got != c.want {
+			t.Errorf("%s: isHeadingOnly(%q, %q) = %v, want %v", c.why, c.text, c.title, got, c.want)
+		}
+	}
+}

@@ -161,6 +161,13 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 			continue
 		}
 
+		if isHeadingOnly(text, seg.title) {
+			// A document containing only its own heading is a Calibre split
+			// artefact, not a chapter. Left in, it becomes an embedded chunk and
+			// gets cited as though it were book text.
+			continue
+		}
+
 		title := seg.title
 		if title == "" {
 			title = tocTitles[stripFragment(firstHref)]
@@ -269,6 +276,9 @@ func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]mani
 		title := tocTitles[stripFragment(item.Href)]
 		if title == "" {
 			title = extractFirstHeading(rawHTML)
+		}
+		if isHeadingOnly(text, title) {
+			continue // heading-only split document — see isHeadingOnly
 		}
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", chapterIdx+1)
@@ -446,6 +456,42 @@ func htmlToText(raw string) string {
 		}
 	}
 	return strings.Join(result, "\n")
+}
+
+// minBodyAfterHeading is how much text must remain once a chapter's own heading
+// is discounted before it counts as a chapter at all.
+const minBodyAfterHeading = 20
+
+// isHeadingOnly reports whether a chapter's text is nothing but its own heading,
+// repeated or not.
+//
+// Calibre splits an EPUB into many small documents and stamps the BOOK title as
+// an <h1> in each one, so dozens of "chapters" contain that line and nothing
+// else. The existing len(text) < 20 guard does not catch them because the title
+// itself is longer than 20 characters — Hitchhiker's Guide yielded 36 such
+// chapters out of 72.
+//
+// These are not harmless empties. Each became a chunk, every chunk was embedded,
+// and Q&A retrieved them as citations: PJ saw one rendered on his phone as the
+// answer's source instead of book text. A citation that is just the book title
+// is indistinguishable from a real one to the reader.
+//
+// Discounting the heading rather than testing raw length also covers the
+// repeated case, so it does not matter whether the title appears once or ten
+// times.
+func isHeadingOnly(text, title string) bool {
+	body := text
+	if t := strings.TrimSpace(title); t != "" {
+		body = strings.ReplaceAll(body, t, "")
+	}
+	// Curly and straight apostrophes both occur in the same book; normalising
+	// lets one heading string match both spellings.
+	for _, variant := range []string{"\u2019", "'"} {
+		if t := strings.TrimSpace(title); t != "" {
+			body = strings.ReplaceAll(body, strings.ReplaceAll(t, "'", variant), "")
+		}
+	}
+	return len(strings.TrimSpace(body)) < minBodyAfterHeading
 }
 
 var headingRe = regexp.MustCompile(`(?is)<h[1-3][^>]*>(.*?)</h[1-3]>`)
