@@ -85,25 +85,32 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		return &TextSync{Mode: "none"}, nil
 	}
 
-	// #210b: an EBOOK gets word-by-word karaoke when a composed per-word audio map
-	// actually exists for this chapter — a word-anchor alignment paired with the
-	// transcript, composed by BuildEbookWordSync. If that yields a non-empty map,
-	// report Mode "word" so the reader fetches the word-sync endpoint and lights up
-	// words one at a time, exactly like the transcript. (The old code hardcoded
-	// paragraph here with a stale "no composed map yet" comment — the map shipped
-	// as #210b, so the reader's mode==='word' branch could never fire for an ebook.)
-	// Fall back to paragraph-follow otherwise: a word-anchor alignment still yields
-	// fine-grained paragraph times (same-edition → tight; embedding → coarser).
-	if best.Unit == "word" {
-		if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err == nil && len(wm) > 0 {
-			return &TextSync{Mode: "word", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}, nil
-		}
+	// Prefer word-by-word karaoke whenever a composed per-word audio map exists for
+	// THIS chapter — regardless of which alignment row is highest-confidence. A
+	// word-anchor alignment can coexist with a higher-confidence paragraph
+	// (embedding) row (e.g. Plato's Republic: a usable word map alongside a
+	// near-zero paragraph row); the word map is the finer sync, so it wins.
+	// BuildEbookWordSync picks the best WORD alignment itself and returns empty when
+	// there's no usable per-word timing (e.g. Meditations, which then correctly stays
+	// on its healthy paragraph path). BUG FIXED: gating this on best.Unit=="word"
+	// meant a paragraph-best work with a valid word map reported mode=paragraph, then
+	// built 0 spans → dead text that never highlighted (Republic, and word chapters
+	// of works whose top row is paragraph).
+	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err == nil && len(wm) > 0 {
+		return &TextSync{Mode: "word", Method: best.Method, Unit: "word", Confidence: best.Confidence}, nil
 	}
+
+	// No word map for this chapter. Try paragraph-follow; if we can't build any
+	// spans (no timing/coverage — front matter, an un-narrated section, or a broken
+	// paragraph row), report Mode "none" so the reader shows "no audio sync"
+	// HONESTLY, instead of empty paragraph-follow that never highlights and reads as
+	// "sync is broken". `none` is returned from every no-spans exit below.
+	none := &TextSync{Mode: "none", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
 	out := &TextSync{Mode: "paragraph", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
 
 	var p AnchorAlignmentPayload
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
-		return out, nil
+		return none, nil
 	}
 
 	// The ebook is the FROM side for the alignment rows; if this row was stored
@@ -119,7 +126,7 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		}
 	}
 	if !found || cLen <= 0 {
-		return out, nil
+		return none, nil // this chapter isn't in the alignment — no sync
 	}
 	cEnd := cStart + cLen
 
@@ -137,7 +144,7 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		anchors = append(anchors, fracAnchor{fs, s.StartSec}, fracAnchor{fe, s.EndSec})
 	}
 	if len(anchors) < 2 {
-		return out, nil // not enough timing to follow this chapter
+		return none, nil // not enough timing to follow this chapter — no sync
 	}
 	sort.Slice(anchors, func(i, j int) bool {
 		if anchors[i].frac == anchors[j].frac {
@@ -148,7 +155,7 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 
 	paras, err := store.ListParagraphs(bookID, chapterIdx)
 	if err != nil || len(paras) == 0 {
-		return out, nil
+		return none, nil
 	}
 	totalWords := 0
 	for _, pa := range paras {
@@ -157,7 +164,7 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		}
 	}
 	if totalWords <= 0 {
-		return out, nil
+		return none, nil
 	}
 
 	spans := make([]TextSyncSpan, 0, len(paras))
@@ -177,6 +184,9 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		}
 		spans = append(spans, TextSyncSpan{ParagraphIdx: pa.ParagraphIdx, Start: st, End: en})
 		prevEnd = en
+	}
+	if len(spans) == 0 {
+		return none, nil // built nothing usable — honest "no sync" over empty paragraph-follow
 	}
 	out.Spans = spans
 	return out, nil
