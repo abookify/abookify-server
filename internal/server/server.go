@@ -487,6 +487,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
 	mux.HandleFunc("GET /api/tts/preview", s.handleTTSPreview)
 	mux.HandleFunc("GET /api/tts/voices/{voice}/preview.mp3", s.handleVoicePreview)
+	mux.HandleFunc("GET /api/books/{bookId}/chapters/{idx}/tts-preview", s.handleChapterTTSPreview)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/settings/schema", s.handleSettingsSchema)
 	mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
