@@ -403,6 +403,10 @@ func main() {
 		// #159b: a newly-imported/scanned book gets embedded without a restart
 		// (no-op when no LLM; idempotent + single-flight, so cheap on every tick).
 		srv.EmbedNewWorks()
+		// A repaired book landing here can leave surfaces disagreeing (reader
+		// corrected, Q&A still citing the stale chunk) — verify coherence and log
+		// loud if not. Single-flight, so a burst of completions stays cheap.
+		srv.SweepCoherenceAsync("library changed")
 	}
 	var watchPaths []string
 	if roots, _ := store.ListRoots(); len(roots) > 0 {
@@ -451,6 +455,12 @@ func main() {
 	// Boot is done — flip ready so the desktop shell's /api/ready poll
 	// unblocks and it can show its window.
 	srv.SetReady(true)
+
+	// Standing coherence check: verifies a repaired book agrees across the
+	// reader, search, Q&A, sync and text-trust, logging loud if not. Runs once
+	// after boot then on a slow ticker, so a book the repair lands overnight is
+	// caught without anyone remembering to look.
+	srv.StartCoherenceSweeper()
 
 	// Serve in a goroutine so the main goroutine can wait for a shutdown
 	// signal and drain cleanly (Tauri sends SIGTERM/SIGINT on quit).

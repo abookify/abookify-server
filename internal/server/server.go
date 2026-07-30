@@ -102,6 +102,13 @@ type Server struct {
 	voicePreviewMu sync.Mutex
 	embedAllDirty  bool
 
+	// coherence sweep single-flight (see coherence.go). A repaired book landing
+	// via the watcher triggers a sweep; dirty re-runs it once if a trigger
+	// arrived mid-pass, so a burst of book completions collapses to two passes.
+	coherenceMu      sync.Mutex
+	coherenceRunning bool
+	coherenceDirty   bool
+
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
 	alignMu       sync.Mutex
@@ -508,6 +515,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/voice/available", s.handleVoiceAvailable)
 	mux.HandleFunc("GET /api/voice/gemini-relay", s.handleGeminiRelay)
 	mux.HandleFunc("GET /api/sync-health", s.handleSyncHealth)
+	mux.HandleFunc("GET /api/coherence", s.handleLibraryCoherence)
+	mux.HandleFunc("GET /api/works/{id}/coherence", s.handleWorkCoherence)
 	// Book-grounding retrieval tool for a realtime voice turn — returns only the
 	// reading-position-bounded passages (same bound as Q&A); declines under
 	// extract-only (voice_session.go / library.VoiceContext).
@@ -2917,6 +2926,10 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 	if s.Events != nil {
 		s.Events.Broadcast(Event{Type: "library_updated"})
 	}
+	// A repair lands via ImportSidecars inside the rescan — verify every
+	// surface still agrees about the text and log loud if not. Off the response
+	// path so the rescan returns promptly.
+	go s.sweepCoherence("after rescan")
 	writeJSON(w, http.StatusOK, result)
 }
 
