@@ -398,11 +398,16 @@
   }
 
   async function startGemini(sess) {
-    // A Gemini Live ephemeral token (the "auth_tokens/…" name) is used IN PLACE
-    // of the API key — the ?key= param — not as ?access_token= (that yields a 1008
-    // "unregistered caller"). The token is short-lived + single-use, so it's fine
-    // in the URL; the real key never leaves the server.
-    const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(sess.token));
+    // Gemini Live runs through OUR server-side relay (sess.relay): Google's
+    // ephemeral tokens don't authenticate the Live WS for this key, so instead of
+    // exposing the real key the browser connects to /api/voice/gemini-relay and the
+    // server bridges frames to Google with the key held server-side. The relay is
+    // a transparent pipe, so everything below (setup, mic, audio, search_book) is
+    // unchanged. (The direct-token path is kept for the day ephemeral tokens work.)
+    const url = sess.relay
+      ? ((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/voice/gemini-relay')
+      : ('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?access_token=' + encodeURIComponent(sess.token));
+    const ws = new WebSocket(url);
     geminiWS = ws;
     const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
     let playHead = 0;
