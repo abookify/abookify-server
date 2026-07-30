@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -82,34 +83,101 @@ func mintRealtimeToken(client *http.Client, baseURL, apiKey, model string) (toke
 	return out.Value, out.ExpiresAt, nil
 }
 
-// handleVoiceSession mints an ephemeral realtime token for the browser. It
-// resolves the OpenAI key from the credentials vault (then the legacy setting),
-// so PJ's already-stored key lights this up with no second paste, and returns
-// ONLY the ephemeral token + model — never the real key.
-func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
-	key := s.store.CredentialAPIKey("openai")
-	if key == "" {
-		if settings, _ := s.store.GetAllSettings(); settings != nil {
-			key = firstNonEmptySetting(settings, "openai_api_key")
-		}
-	}
-	if key == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "no OpenAI credential — add an OpenAI key in Settings → Keys",
-		})
-		return
-	}
-	token, expiresAt, err := mintRealtimeToken(&http.Client{Timeout: 15 * time.Second}, openAIRealtimeBase, key, defaultRealtimeModel)
+const geminiBase = "https://generativelanguage.googleapis.com"
+
+// geminiLiveModel is provisional; pin against the account's ListModels (a live
+// model) when the WebSocket client lands, same discipline as gpt-realtime.
+const geminiLiveModel = "gemini-2.0-flash-live-001"
+
+// geminiLiveTokenConfig is the EXACT body sent to mint a Gemini Live ephemeral
+// token. EGRESS BOUNDARY: an empty session config — NEVER book/library text. The
+// model + any book grounding are set by the client on its Live connection, so
+// nothing about the reader's library leaves at mint time.
+// TestVoiceSessionOutboundBoundary_NoBookText covers both providers.
+func geminiLiveTokenConfig() map[string]any { return map[string]any{} }
+
+// mintGeminiLiveToken mints a Gemini Live ephemeral token (POST
+// /v1alpha/auth_tokens — pinned live 2026-07-29: 200, returns {"name": token}).
+// The real Google key is used ONLY here, server-side; the browser gets only the
+// ephemeral token, so PJ's key never reaches the client (same rule as OpenAI).
+func mintGeminiLiveToken(client *http.Client, baseURL, apiKey string) (token string, err error) {
+	body, _ := json.Marshal(geminiLiveTokenConfig())
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1alpha/auth_tokens?key="+url.QueryEscape(apiKey), bytes.NewReader(body))
 	if err != nil {
-		writeServerError(w, r, err)
-		return
+		return "", err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      token, // ephemeral ek_… — safe for the browser; the real key stays here
-		"expires_at": expiresAt,
-		"model":      defaultRealtimeModel,
-		"provider":   "openai",
-	})
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gemini live mint failed: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Name string `json:"name"` // the ephemeral token id (auth_tokens/…)
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", fmt.Errorf("parse gemini mint response: %w", err)
+	}
+	if out.Name == "" {
+		return "", fmt.Errorf("gemini mint response had no token")
+	}
+	return out.Name, nil
+}
+
+// handleVoiceSession mints an ephemeral realtime token for the browser, per
+// provider (?provider=openai default | google). It resolves the vendor key from
+// the credentials vault (OpenAI also falls back to the legacy setting), so PJ's
+// already-stored key lights this up with no second paste, and returns ONLY the
+// ephemeral token — never the real key, for either provider.
+func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		provider = "openai"
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	switch provider {
+	case "openai":
+		key := s.store.CredentialAPIKey("openai")
+		if key == "" {
+			if settings, _ := s.store.GetAllSettings(); settings != nil {
+				key = firstNonEmptySetting(settings, "openai_api_key")
+			}
+		}
+		if key == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no OpenAI credential — add an OpenAI key in Settings → Keys"})
+			return
+		}
+		token, expiresAt, err := mintRealtimeToken(client, openAIRealtimeBase, key, defaultRealtimeModel)
+		if err != nil {
+			writeServerError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token, "expires_at": expiresAt, "model": defaultRealtimeModel,
+			"provider": "openai", "transport": "webrtc",
+		})
+	case "google":
+		key := s.store.CredentialAPIKey("google")
+		if key == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no Google credential — add a Google (Gemini) key in Settings → Keys"})
+			return
+		}
+		token, err := mintGeminiLiveToken(client, geminiBase, key)
+		if err != nil {
+			writeServerError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token, "model": geminiLiveModel,
+			"provider": "google", "transport": "gemini-live",
+		})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice provider: " + provider})
+	}
 }
 
 // handleVoiceAvailable reports whether realtime voice can be offered — i.e. an
@@ -117,15 +185,25 @@ func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
 // call, no token minted. The UI gates its voice entry point on this so PJ is
 // never invited to tap into a guaranteed failure.
 func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
-	key := s.store.CredentialAPIKey("openai")
-	if key == "" {
+	openaiKey := s.store.CredentialAPIKey("openai")
+	if openaiKey == "" {
 		if settings, _ := s.store.GetAllSettings(); settings != nil {
-			key = firstNonEmptySetting(settings, "openai_api_key")
+			openaiKey = firstNonEmptySetting(settings, "openai_api_key")
 		}
 	}
+	googleKey := s.store.CredentialAPIKey("google")
+	// providers lists what can serve realtime voice today (a resolvable key).
+	providers := []string{}
+	if openaiKey != "" {
+		providers = append(providers, "openai")
+	}
+	if googleKey != "" {
+		providers = append(providers, "google")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"available": key != "",
-		"provider":  "openai",
+		"available": len(providers) > 0,
+		"providers": providers,
+		"provider":  "openai", // back-compat: the default/primary provider
 	})
 }
 

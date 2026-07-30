@@ -79,3 +79,41 @@ func TestRealtimeSessionConfig_MinimalShape(t *testing.T) {
 		t.Fatalf("session config drifted from the pinned minimal shape: %v", cfg)
 	}
 }
+
+// TestGeminiLiveMint_NoBookText holds the SAME boundary for the Google/Gemini
+// Live provider: the mint body carries no book/library text, the real key stays
+// in the query server-side, and the caller gets only the ephemeral token (name).
+func TestGeminiLiveMint_NoBookText(t *testing.T) {
+	if len(geminiLiveTokenConfig()) != 0 {
+		t.Fatalf("gemini mint config must be empty (no book/library text), got %v", geminiLiveTokenConfig())
+	}
+	var capturedBody, capturedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v1alpha/auth_tokens") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		capturedBody = string(b)
+		capturedQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "auth_tokens/ephemeral-xyz"})
+	}))
+	defer srv.Close()
+
+	tok, err := mintGeminiLiveToken(srv.Client(), srv.URL, "AIza-REAL-google-key")
+	if err != nil {
+		t.Fatalf("gemini mint: %v", err)
+	}
+	if tok != "auth_tokens/ephemeral-xyz" {
+		t.Fatalf("expected the ephemeral token name, got %q", tok)
+	}
+	if strings.TrimSpace(capturedBody) != "{}" {
+		t.Fatalf("PRIVACY BOUNDARY: gemini mint body must be empty session config, got %q", capturedBody)
+	}
+	if !strings.Contains(capturedQuery, "AIza-REAL-google-key") {
+		t.Fatalf("real key should authorize the mint via query, got %q", capturedQuery)
+	}
+	if strings.Contains(tok, "AIza-REAL") {
+		t.Fatal("PRIVACY BOUNDARY: the real key must never be returned to the caller")
+	}
+}
