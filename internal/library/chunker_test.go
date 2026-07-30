@@ -196,6 +196,60 @@ func TestChunkBookRebuildsAfterContentGrows(t *testing.T) {
 	}
 }
 
+// The mirror case, and the one that shipped broken: a REPAIR removes fabricated
+// words, so the chapter shrinks. Chunks covering the old, longer text are then
+// never "short", so the only growth signal never fires and the book reads as up
+// to date while every chunk still holds text the narrator never said.
+//
+// Free Will is the real instance — the reader showed the repaired words while Q&A
+// went on citing "squad against a person with a wander his life savings", because
+// 528 real words could not make 591 stale ones look short. Assert on CONTENT, not
+// counts: a rebuild that produced the right number of wrong chunks is the bug.
+func TestChunkBookRebuildsAfterRepairShrinksContent(t *testing.T) {
+	store := testStoreForLib(t)
+	store.UpsertBook(db.Book{Path: "/r.txt", Filename: "r.txt", Format: "transcript", MediaType: "text"})
+	books, _ := store.ListBooks()
+	bookID := books[0].ID
+
+	// 600 words, the last 100 of them a fabricated run.
+	fabricated := chunkTestWords(500) + " " + strings.TrimSpace(strings.Repeat("squadagainstawander ", 100))
+	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "seg",
+		Content: fabricated, WordCount: 600})
+	if err := ChunkBook(store, bookID); err != nil {
+		t.Fatalf("initial chunk: %v", err)
+	}
+	if !chunksContain(t, store, bookID, "squadagainstawander") {
+		t.Fatal("setup: fabricated text never reached the chunks")
+	}
+
+	// Repair: the invented run is gone, so the chapter is SHORTER than before.
+	store.DeleteChaptersByBook(bookID)
+	store.InsertChapter(db.Chapter{BookID: bookID, Index: 0, Title: "seg",
+		Content: chunkTestWords(500), WordCount: 500})
+	if err := ChunkBook(store, bookID); err != nil {
+		t.Fatalf("rechunk after repair: %v", err)
+	}
+
+	if chunksContain(t, store, bookID, "squadagainstawander") {
+		t.Error("chunks still hold the fabricated text after repair — Q&A would keep citing " +
+			"words the narrator never said")
+	}
+}
+
+func chunksContain(t *testing.T, store *db.Store, bookID int64, needle string) bool {
+	t.Helper()
+	chunks, err := store.ListChunks(bookID)
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	for _, c := range chunks {
+		if strings.Contains(c.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // The guard must not fire on an unchanged book: rebuilding means re-embedding,
 // which is the expensive half of the pipeline.
 func TestChunkBookStableWhenUnchanged(t *testing.T) {

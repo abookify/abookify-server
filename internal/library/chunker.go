@@ -28,6 +28,14 @@ const (
 //     Compared against the chapter's own word_count with a 10% tolerance, so
 //     tokenizer drift between the counter and strings.Fields cannot put a book
 //     into a permanent rebuild loop.
+//
+//  3. A chapter's chunks run well PAST its text. Same 10% tolerance, opposite
+//     direction — and it is the signature of a repair rather than a re-split.
+//     Removing fabricated words SHRINKS a chapter, so the old chunks stay
+//     "long enough" under signal 2 alone and the book reads as up to date while
+//     every chunk still holds invented text. Free Will proved it: the reader
+//     showed the repaired words while Q&A went on citing a sentence the narrator
+//     never said, because 528 real words could not make 591 stale ones look short.
 func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, error) {
 	chunks, err := store.ListChunks(bookID)
 	if err != nil {
@@ -59,8 +67,14 @@ func chunksStale(store *db.Store, bookID int64, chapters []db.Chapter) (bool, er
 		}
 	}
 	for _, ch := range chapters {
-		if ch.WordCount > 0 && float64(maxEnd[ch.Index]) < float64(ch.WordCount)*0.9 {
-			return true, nil
+		if ch.WordCount == 0 {
+			continue
+		}
+		if float64(maxEnd[ch.Index]) < float64(ch.WordCount)*0.9 {
+			return true, nil // text grew past the chunks
+		}
+		if float64(maxEnd[ch.Index]) > float64(ch.WordCount)*1.1 {
+			return true, nil // chunks outlive the text: a repair removed words
 		}
 	}
 	return false, nil
