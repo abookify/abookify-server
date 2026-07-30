@@ -56,6 +56,10 @@ type ncxDoc struct {
 }
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+// headRe matches the whole <head> block, whose <title> text would otherwise
+// survive tag-stripping and duplicate the chapter heading.
+var headRe = regexp.MustCompile(`(?is)<head[^>]*>.*?</head>`)
 var whitespaceRe = regexp.MustCompile(`\s+`)
 
 // ExtractEPUBChapters parses an EPUB and returns its chapters with text content.
@@ -404,6 +408,18 @@ func sanitizeHTML(raw string) string {
 }
 
 func htmlToText(raw string) string {
+	// Drop <head> entirely. Its <title> is not body text, but stripping tags
+	// leaves the title STRING behind, so it lands at the top of the chapter and
+	// duplicates the <h1> that repeats it — Calibre-converted EPUBs put the same
+	// line in both.
+	//
+	// This was not cosmetic. Hitchhiker's Guide produced 38 chunks that were
+	// nothing but "HH1 - Hitchhiker's Guide to the Galaxy" twice over, ALL of
+	// them embedded, so Q&A retrieved and cited them as if they were book text.
+	// PJ saw exactly that on his phone: a citation rendering as the title
+	// repeated rather than any passage. Fabricated citations are worse than a
+	// cosmetic reader glitch, because he has no way to tell them from real ones.
+	raw = headRe.ReplaceAllString(raw, "")
 	// Remove script and style blocks
 	raw = scriptRe.ReplaceAllString(raw, "")
 	raw = styleRe.ReplaceAllString(raw, "")
