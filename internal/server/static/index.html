@@ -444,6 +444,15 @@
     .tt-ch-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
     .tt-ch-count { color: var(--text-muted); white-space: nowrap; }
     .tt-actions { margin-top: 14px; }
+    /* Below-threshold subtle entry (detail view only) — muted, quiet, not a banner. */
+    .media-pill.tt-subtle { background: transparent; color: var(--text-muted); border: 1px solid var(--border); cursor: pointer; font-weight: 500; }
+    /* Actual suspect passages — tap ▶ to hear one. */
+    .tt-pass-list { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+    .tt-pass-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .tt-pass-play { flex: 0 0 auto; padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.8rem; white-space: nowrap; }
+    .tt-pass-body { min-width: 0; }
+    .tt-pass-text { font-size: 0.92rem; line-height: 1.4; overflow-wrap: anywhere; }
+    .tt-pass-where { color: var(--text-muted); font-size: 0.78rem; margin-top: 2px; }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3559,17 +3568,21 @@
       fillTextTrustBadges();
     }
 
+    // Presentation rule (matches mobile): ALWAYS surface "unchecked" (never looked
+    // must never look clean); show the warning banner at 1%+; DON'T banner below 1%
+    // (verified 0% / minor <1%) — a 0.15% problem shown as a warning is its own
+    // dishonesty. Returns null for below-threshold; the detail stays reachable via a
+    // subtle muted entry (fillTextTrustBadges, detail context only).
     function textTrustPillFor(tt) {
       if (!tt || tt.state === 'unchecked') {
         return { cls: 'tt-unchecked', text: 'Text not checked',
                  title: (tt && tt.headline) || 'Not checked against the audio' };
       }
+      if (tt.state === 'verified' || tt.state === 'minor') return null; // below 1% → no banner
       const counts = `${(tt.suspect_words || 0).toLocaleString()} of ${(tt.total_words || 0).toLocaleString()} words`;
       const pctText = tt.total_words ? ` (${Number(tt.suspect_percent).toFixed(2)}%)` : '';
-      if (tt.state === 'verified') return { cls: 'tt-verified', text: 'Text checked ✓', title: tt.headline };
-      // minor / significant → lead with the RAW counts so scale is judgeable.
-      return { cls: tt.state === 'significant' ? 'tt-significant' : 'tt-minor',
-               text: `⚠ ${counts}${pctText}`, title: tt.headline };
+      // 1%+ → lead with the RAW counts so scale is judgeable.
+      return { cls: 'tt-significant', text: `⚠ ${counts}${pctText}`, title: tt.headline };
     }
 
     // A slot rendered inline in .work-badges; filled once the summary loads, so
@@ -3577,12 +3590,39 @@
     function renderTextTrustBadge(work) {
       return `<span class="tt-slot" data-work="${work.id}"></span>`;
     }
-    function fillTextTrustBadges(root) {
+    // `subtle` (detail view only) keeps a quiet, muted entry for below-threshold
+    // works so the curious can still open the passages; on cards those render
+    // nothing, keeping the low-% state out of the reader's face.
+    function fillTextTrustBadges(root, subtle) {
       if (!textTrustLoaded) return;
       (root || document).querySelectorAll('.tt-slot').forEach(slot => {
         const id = +slot.dataset.work;
-        const p = textTrustPillFor(textTrustByWork[id]);
+        const tt = textTrustByWork[id];
+        const p = textTrustPillFor(tt);
+        if (!p) {
+          if (subtle && tt) {
+            const title = tt.state === 'verified' ? (tt.headline || 'Text matches the audio')
+                                                   : (tt.headline || 'A few passages — details');
+            slot.className = 'media-pill tt-slot tt-subtle';
+            slot.style.display = '';
+            slot.setAttribute('role', 'button');
+            slot.setAttribute('tabindex', '0');
+            slot.setAttribute('title', title);
+            slot.setAttribute('aria-label', title);
+            slot.onclick = (e) => { e.stopPropagation(); openTextTrust(id); };
+            slot.textContent = tt.state === 'verified' ? 'Text ✓' : 'Text · details';
+          } else {
+            slot.className = 'tt-slot';
+            slot.style.display = 'none';
+            slot.onclick = null;
+            slot.removeAttribute('role');
+            slot.removeAttribute('tabindex');
+            slot.textContent = '';
+          }
+          return;
+        }
         slot.className = 'media-pill tt-slot ' + p.cls;
+        slot.style.display = '';
         slot.setAttribute('role', 'button');
         slot.setAttribute('tabindex', '0');
         slot.setAttribute('title', p.title);
@@ -3610,6 +3650,19 @@
           <span class="tt-ch-title">${escapeHtml(c.title || ('Chapter ' + ((c.index || 0) + 1)))}</span>
           <span class="tt-ch-count">${(c.suspect_words || 0).toLocaleString()} words</span>
         </div>`).join('');
+      // The actual passages — tap ▶ to hear one and judge for yourself. This is the
+      // real answer to "which words", not just a per-chapter count.
+      const passages = (d.passages || []);
+      const passageRows = passages.map(p => {
+        const where = escapeHtml(p.chapter_title || (p.chapter_index >= 0 ? ('Chapter ' + (p.chapter_index + 1)) : ''));
+        return `
+        <div class="tt-pass-row">
+          <button class="tt-pass-play" onclick="ttJumpToWorst(${workId}, ${p.start_sec})" title="Play from ${formatTime(p.start_sec)}">&#9654; ${formatTime(p.start_sec)}</button>
+          <div class="tt-pass-body">
+            <div class="tt-pass-text">${escapeHtml(p.text || '')}</div>
+            ${where ? `<div class="tt-pass-where">${where}</div>` : ''}
+          </div>
+        </div>`; }).join('');
       const worst = (d.worst_at_sec != null && d.worst_at_sec > 0)
         ? `<button class="tt-jump" onclick="ttJumpToWorst(${workId}, ${d.worst_at_sec})">Play from the worst passage (${formatTime(d.worst_at_sec)})</button>`
         : '';
@@ -3627,7 +3680,9 @@
             <p class="tt-detail">${escapeHtml(d.detail || '')}</p>
             ${counts ? `<div class="tt-counts">${counts}</div>` : ''}
             ${worst}
-            ${chapters.length ? `<div class="tt-ch-head">Where &mdash; worst chapters first</div><div class="tt-ch-list">${chapterRows}</div>` : ''}
+            ${passages.length
+              ? `<div class="tt-ch-head">The passages &mdash; tap &#9654; to hear one and judge</div><div class="tt-pass-list">${passageRows}</div>`
+              : (chapters.length ? `<div class="tt-ch-head">Where &mdash; worst chapters first</div><div class="tt-ch-list">${chapterRows}</div>` : '')}
             <div class="tt-actions">${checkBtn}</div>
           </div>
         </div>`;
@@ -4532,7 +4587,7 @@
       if (toolbar) toolbar.style.display = 'none';
       detail.style.display = '';
       window.scrollTo(0, 0);
-      fillTextTrustBadges(detail); // fill the detail's text-trust slot
+      fillTextTrustBadges(detail, true); // detail: keep a subtle entry for below-threshold works
       // Hydrate the panes (same work the accordion expand used to do).
       hydrateWorkDetail(work);
       hydrateWorkProgress();
