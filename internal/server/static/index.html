@@ -4839,6 +4839,18 @@
       if (!el) return;
       const work = allWorks.find(w => w.id === workId);
       if (!work || bookId == null) { el.style.display = 'none'; return; }
+      // Prefer the SERVER's authoritative per-chapter mode (the same source the
+      // karaoke uses) whenever a chapter is loaded — the client-side
+      // row-by-confidence heuristic (resolveReaderSyncMode) carries the same
+      // precedence bug we fixed server-side and can't validate the word map's
+      // plausibility. Fall back to the heuristic only for the pre-chapter preview.
+      const pos = currentReaderChapter[workId];
+      if (pos && typeof pos.index === 'number' && pos.bookId === bookId) {
+        try {
+          const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${pos.index}`);
+          if (res.ok) { const ts = await res.json(); paintSyncPill(ts.mode || 'none', ts); return; }
+        } catch { /* fall through to the heuristic preview */ }
+      }
       const aligns = await getAlignments(workId);
       const m = resolveReaderSyncMode(work, bookId, aligns);
       paintSyncPill(m.mode, m);
