@@ -52,8 +52,13 @@ while IFS=$'\t' read -r aff dur sidecar audiodir; do
     echo "$name" >> "$DONE"; continue
   fi
 
-  before=$(fabricated "$sidecar")
+  # Measure "before" from the BACKUP, not the live sidecar. On a resumed book the
+  # live sidecar is already partially rebuilt, so reading it there reports a
+  # before-figure from the partial state — Free Will resumed and reported "0->0"
+  # when the truth was 516->0. The repair's own numbers have to be trustworthy or
+  # they are worse than no numbers.
   [ -f "$BK/$name.stt.json" ] || cp "$sidecar" "$BK/$name.stt.json" 2>/dev/null
+  before=$(fabricated "$BK/$name.stt.json")
   start=$(date +%s)
 
   if [ -d "$audio" ] && [ "$(find "$audio" -maxdepth 1 -type f \( -name '*.mp3' -o -name '*.m4a' -o -name '*.m4b' -o -name '*.flac' \) | wc -l)" -ge 2 ]; then
