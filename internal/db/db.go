@@ -587,6 +587,25 @@ func migrate(db *sql.DB) error {
 		-- costing less than the gap threshold is invisible there.
 		-- scanned_at doubles as the "have we ever looked?" flag, so the UI can
 		-- distinguish "verified complete" from "never checked".
+		-- Per-work text trustworthiness: does the transcript match the audio?
+		-- Persisted rather than computed per request because answering it means
+		-- parsing the sidecar (~140 ms/book, 8.3 s for the library), which is far
+		-- too slow for a library listing.
+		--
+		-- checked_at doubles as the "have we looked?" flag. A book with no row is
+		-- UNCHECKED, which must render differently from a book that passed — a
+		-- silently unchecked book otherwise looks identical to a clean one.
+		CREATE TABLE IF NOT EXISTS text_trust (
+			work_id        INTEGER PRIMARY KEY,
+			checked_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			has_confidence INTEGER NOT NULL DEFAULT 0,
+			suspect_words  INTEGER NOT NULL DEFAULT 0,
+			total_words    INTEGER NOT NULL DEFAULT 0,
+			worst_at_sec   REAL NOT NULL DEFAULT 0,
+			chapters_json  TEXT NOT NULL DEFAULT '[]',
+			FOREIGN KEY (work_id) REFERENCES works(id)
+		);
+
 		CREATE TABLE IF NOT EXISTS source_scans (
 			book_id       INTEGER PRIMARY KEY,
 			scanned_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1504,6 +1523,84 @@ func (s *Store) UpdateChapterTitle(bookID int64, index int, title string) error 
 func (s *Store) SetBookStartSec(bookID int64, startSec float64) error {
 	_, err := s.db.Exec(`UPDATE books SET start_sec = ? WHERE id = ?`, startSec, bookID)
 	return err
+}
+
+// TextTrustRow is one work's persisted text-trust verdict.
+//
+// HasConfidence false means the sidecar predates per-word confidence, so the
+// question could not be asked. That is NOT the same as a clean result and the UI
+// must not render it as one.
+type TextTrustRow struct {
+	WorkID        int64  `json:"work_id"`
+	CheckedAt     string `json:"checked_at,omitempty"`
+	HasConfidence bool   `json:"has_confidence"`
+	SuspectWords  int    `json:"suspect_words"`
+	TotalWords    int    `json:"total_words"`
+	WorstAtSec    float64 `json:"worst_at_sec,omitempty"`
+	ChaptersJSON  string `json:"-"`
+}
+
+// SaveTextTrust records (or replaces) a work's verdict. A clean result is stored
+// too — "we looked and it was fine" is the fact that lets the UI say so.
+func (s *Store) SaveTextTrust(r TextTrustRow) error {
+	hc := 0
+	if r.HasConfidence {
+		hc = 1
+	}
+	if r.ChaptersJSON == "" {
+		r.ChaptersJSON = "[]"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO text_trust (work_id, checked_at, has_confidence, suspect_words,
+		                        total_words, worst_at_sec, chapters_json)
+		VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+		ON CONFLICT(work_id) DO UPDATE SET
+			checked_at     = CURRENT_TIMESTAMP,
+			has_confidence = excluded.has_confidence,
+			suspect_words  = excluded.suspect_words,
+			total_words    = excluded.total_words,
+			worst_at_sec   = excluded.worst_at_sec,
+			chapters_json  = excluded.chapters_json`,
+		r.WorkID, hc, r.SuspectWords, r.TotalWords, r.WorstAtSec, r.ChaptersJSON)
+	return err
+}
+
+// GetTextTrust returns a work's verdict, or nil when it has never been checked.
+func (s *Store) GetTextTrust(workID int64) (*TextTrustRow, error) {
+	var r TextTrustRow
+	var hc int
+	err := s.db.QueryRow(`SELECT work_id, checked_at, has_confidence, suspect_words,
+	                             total_words, worst_at_sec, chapters_json
+	                      FROM text_trust WHERE work_id = ?`, workID).
+		Scan(&r.WorkID, &r.CheckedAt, &hc, &r.SuspectWords, &r.TotalWords,
+			&r.WorstAtSec, &r.ChaptersJSON)
+	if err != nil {
+		return nil, nil // never checked
+	}
+	r.HasConfidence = hc != 0
+	return &r, nil
+}
+
+// ListTextTrust returns every stored verdict, keyed by work id.
+func (s *Store) ListTextTrust() (map[int64]TextTrustRow, error) {
+	out := map[int64]TextTrustRow{}
+	rows, err := s.db.Query(`SELECT work_id, checked_at, has_confidence, suspect_words,
+	                                total_words, worst_at_sec, chapters_json FROM text_trust`)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r TextTrustRow
+		var hc int
+		if err := rows.Scan(&r.WorkID, &r.CheckedAt, &hc, &r.SuspectWords,
+			&r.TotalWords, &r.WorstAtSec, &r.ChaptersJSON); err != nil {
+			return out, err
+		}
+		r.HasConfidence = hc != 0
+		out[r.WorkID] = r
+	}
+	return out, rows.Err()
 }
 
 // SourceScanRow is one audio file's persisted integrity result. Scanned is

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -309,4 +310,62 @@ func (s *Server) handleScanSources(w http.ResponseWriter, r *http.Request) {
 		"scanned": scanned,
 		"damaged": damaged,
 	})
+}
+
+// GET /api/works/{id}/text-trust — does this work's transcript match its audio?
+//
+// Always 200 with a state, including "unchecked" for a work nobody has examined.
+// That distinction is the point: a silently unchecked book otherwise looks
+// identical to one that passed, which is how 122,759 invented words stayed
+// invisible.
+func (s *Server) handleTextTrust(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	row, _ := s.store.GetTextTrust(id)
+	writeJSON(w, http.StatusOK, library.BuildTextTrust(id, row))
+}
+
+// POST /api/works/{id}/text-trust/check — examine the work now and persist the
+// verdict. Synchronous; parsing one sidecar costs ~140 ms.
+func (s *Server) handleTextTrustCheck(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	if s.LibraryDir == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library path not configured"})
+		return
+	}
+	t, err := library.ComputeTextTrust(s.store, s.LibraryDir, id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if t == nil {
+		writeJSON(w, http.StatusOK, library.BuildTextTrust(id, nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+// GET /api/text-trust/summary — one row per work that has been checked, for the
+// library listing. Works absent from the array have never been checked; the UI
+// must render that as unknown rather than clean.
+func (s *Server) handleTextTrustSummary(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.ListTextTrust()
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	out := make([]library.TextTrust, 0, len(rows))
+	for id := range rows {
+		row := rows[id]
+		out = append(out, library.BuildTextTrust(id, &row))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SuspectPercent > out[j].SuspectPercent })
+	writeJSON(w, http.StatusOK, out)
 }

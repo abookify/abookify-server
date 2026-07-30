@@ -482,6 +482,10 @@ func New(store *db.Store, port string) *Server {
 	// Shared cause→presentation contract both web + mobile render from (gap_status.go).
 	mux.HandleFunc("GET /api/transcription-gaps/legend", s.handleGapStatusLegend)
 	mux.HandleFunc("POST /api/works/{id}/scan-sources", s.handleScanSources)
+	// Text trust: does the transcript match the audio? (#fabricated-text)
+	mux.HandleFunc("GET /api/works/{id}/text-trust", s.handleTextTrust)
+	mux.HandleFunc("POST /api/works/{id}/text-trust/check", s.handleTextTrustCheck)
+	mux.HandleFunc("GET /api/text-trust/summary", s.handleTextTrustSummary)
 	mux.HandleFunc("POST /api/works/{id}/retry-stt", s.handleRetryTranscription)
 	mux.HandleFunc("GET /api/works/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("POST /api/works/{id}/position", s.handleSavePosition)
@@ -567,7 +571,7 @@ func (s *Server) SetReady(v bool) {
 	s.ready.Store(v)
 	if v {
 		go s.prewarmVoicePreviews()
-		s.startWhisperDeviceMonitor()   // watch for a mid-run cuda→cpu downgrade
+		s.startWhisperDeviceMonitor()  // watch for a mid-run cuda→cpu downgrade
 		go s.reprobeEmptyCredentials() // populate capabilities for migrated/older keys
 	}
 }
@@ -887,15 +891,15 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		wk := &works[i]
 		sum := abook.SummarizeWork(s.store, wk)
 		out = append(out, catalogEntry{
-			ID:               wk.ID,
-			Title:            wk.Title,
-			Author:           wk.Author,
-			Language:         "en",
-			CoverPath:        fmt.Sprintf("/api/works/%d/cover", wk.ID),
-			HasAudio:         wk.HasAudio,
-			HasText:          wk.HasText,
-			SourceKind:       sum.SourceKind,
-			CoveragePct:      sum.CoveragePct,
+			ID:             wk.ID,
+			Title:          wk.Title,
+			Author:         wk.Author,
+			Language:       "en",
+			CoverPath:      fmt.Sprintf("/api/works/%d/cover", wk.ID),
+			HasAudio:       wk.HasAudio,
+			HasText:        wk.HasText,
+			SourceKind:     sum.SourceKind,
+			CoveragePct:    sum.CoveragePct,
 			AlignMethod:    sum.AlignMethod,
 			AlignUnit:      sum.AlignUnit,
 			HasWordSync:    synced[wk.ID],
