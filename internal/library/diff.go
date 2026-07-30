@@ -20,24 +20,27 @@ type DiffSource struct {
 // a_words/b_words) to bound the payload; divergent runs carry the actual text
 // (capped). a_pct/b_pct locate the run as 0–1 position-through-source.
 type DiffSpan struct {
-	Kind   string  `json:"kind"`
-	AText  string  `json:"a_text"`
-	BText  string  `json:"b_text"`
-	AWords int     `json:"a_words,omitempty"`
-	BWords int     `json:"b_words,omitempty"`
-	APct   float64 `json:"a_pct"`
-	BPct   float64 `json:"b_pct"`
+	Kind     string  `json:"kind"`
+	AText    string  `json:"a_text"`
+	BText    string  `json:"b_text"`
+	AWords   int     `json:"a_words,omitempty"`
+	BWords   int     `json:"b_words,omitempty"`
+	APct     float64 `json:"a_pct"`
+	BPct     float64 `json:"b_pct"`
+	StartSec float64 `json:"start_sec,omitempty"` // audio time of this divergence, so a reader can hear it
 }
 
 // DirectionalCoverage expresses an alignment pair's coverage in BOTH
 // directions, which mean different things (the #199 fix — a single number was
 // the whole bug). The math lives in the anchor payload (transcription owns it);
 // this only forms the two ratios:
-//   AudioToEbook (QUALITY) = aligned_trans_words / trans_words — how much of the
-//     narration is backed by ebook text. High ⇒ a clean, trustworthy alignment.
-//   EbookToAudio (SCOPE)   = aligned_ebook_words / ebook_words — how much of the
-//     ebook is actually narrated. Low is normal/expected for a collection or
-//     abridgement (e.g. Heart of Darkness: 92% quality, 33% scope).
+//
+//	AudioToEbook (QUALITY) = aligned_trans_words / trans_words — how much of the
+//	  narration is backed by ebook text. High ⇒ a clean, trustworthy alignment.
+//	EbookToAudio (SCOPE)   = aligned_ebook_words / ebook_words — how much of the
+//	  ebook is actually narrated. Low is normal/expected for a collection or
+//	  abridgement (e.g. Heart of Darkness: 92% quality, 33% scope).
+//
 // aligned_*_words derive from the divergence tally: the words NOT in an
 // {ebook,trans}-only segment (i.e. aligned + replace runs).
 type DirectionalCoverage struct {
@@ -165,6 +168,7 @@ var normCompareRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 //     "hung over" == "hungover"),
 //   - British<->American spelling ("towards"=="toward", "centre"=="center",
 //     "litre"=="liter", "recognised"=="recognized", "colour"=="color", …).
+//
 // Only real word substitutions/insertions/deletions survive as divergences.
 func normalizeForCompare(s string) string {
 	var b strings.Builder
@@ -299,6 +303,10 @@ func BuildDiff(store *db.Store, workID int64) (*WorkDiff, bool, error) {
 	}
 
 	spans := make([]DiffSpan, 0, len(bestPayload.Segments))
+	// Track the last known audio position from aligned segments (only those carry
+	// baked times) so a divergence can be time-anchored to where it occurs — the
+	// reader clicks it and hears the narration at that moment.
+	var lastAudioSec float64
 	for _, s := range bestPayload.Segments {
 		kind := s.Kind
 		// A "replace" whose two sides are identical once normalized (case,
@@ -324,6 +332,18 @@ func BuildDiff(store *db.Store, workID int64) (*WorkDiff, bool, error) {
 		if kind != SegAligned {
 			span.AText = joinCapped(ebookToks, s.EbookStart, s.EbookEnd)
 			span.BText = joinCapped(transToks, s.TransStart, s.TransEnd)
+			// Anchor the divergence to audio: this segment's own baked time if it
+			// has one, else the last aligned position (the divergence begins there).
+			if s.StartSec > 0 {
+				span.StartSec = s.StartSec
+			} else {
+				span.StartSec = lastAudioSec
+			}
+		}
+		if s.EndSec > 0 {
+			lastAudioSec = s.EndSec
+		} else if s.StartSec > 0 {
+			lastAudioSec = s.StartSec
 		}
 		spans = append(spans, span)
 	}
