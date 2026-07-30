@@ -15,13 +15,37 @@
 # Bootstrapping all sources up front also keeps --redo-files' offset guard happy:
 # the sidecar records every file in the directory, so the recomputed timeline
 # matches and the run is not refused.
+#
+# EACH BOOK IS LANDED IN THE DATABASE AS IT FINISHES, not at the end of the run.
+# stt-cli only writes a sidecar file; the reader, search and Q&A all read the
+# database. Without the reimport step the whole overnight run could complete
+# perfectly and change nothing a user sees. Doing it per book also means an
+# interrupted run leaves the books it did finish fully applied rather than
+# leaving every one of them half-done.
 set -uo pipefail
 cd /home/pj/projects/jarvis/abookify/engineering/server
 S=/home/pj/tmp/claude-1000/-home-pj-projects-jarvis-abookify-engineering-server/77ca4a16-7ccd-4b76-bfa8-6d948ce25840/scratchpad
 ORDER="$S/repair_order.tsv"; DONE="$S/repair-done.txt"; FILEDONE="$S/repair-files-done.txt"
 PROG="$S/repair-progress.tsv"; BK="$S/repair-backups"; LOGS="$S/repair-logs"
 CLI=../server-transcription/bin/stt-cli
+RI=./bin/reimport-realign
+DB=./data/abookify.db
 mkdir -p "$BK" "$LOGS"; touch "$DONE" "$FILEDONE" "$PROG"
+
+# Resolve a work id from the audio path the repair just rewrote. The order file
+# carries host paths; the database stores the in-container /library form.
+workid() {
+  python3 -c "
+import sqlite3,sys,os
+p=sys.argv[1]
+lib=os.path.abspath('testdata/library')
+p=os.path.abspath(p)
+inner='/library'+p[len(lib):] if p.startswith(lib) else p
+c=sqlite3.connect('file:'+sys.argv[2]+'?mode=ro',uri=True)
+r=c.execute('select work_id from books where path=? or path like ? limit 1',(inner,inner.rstrip('/')+'/%')).fetchone()
+print(r[0] if r else 0)
+" "$1" "$DB" 2>/dev/null || echo 0
+}
 
 fabricated() {
   python3 -c "
@@ -86,9 +110,24 @@ while IFS=$'\t' read -r aff dur sidecar audiodir; do
     "$CLI" -audio "$audio" >> "$LOGS/$name.log" 2>&1; rc=$?
   fi
 
+  # Land it: refresh the transcript + paragraphs from the new sidecar, re-chunk it
+  # (sidecar-import does that now) and re-run anchor alignment. Embeddings on the
+  # new chunks come back empty and are filled by the server's own backfill on the
+  # next scan/restart, or immediately via POST /api/embeddings/refresh.
+  wid=$(workid "$audio")
+  if [ "${wid:-0}" != "0" ]; then
+    if "$RI" -db "$DB" -library ./testdata/library -work "$wid" >> "$LOGS/$name.log" 2>&1; then
+      land="landed(work $wid)"
+    else
+      land="LAND_FAIL(work $wid)"
+    fi
+  else
+    land="NO_WORK_ID"
+  fi
+
   secs=$(( $(date +%s) - start ))
   after=$(fabricated "$sidecar")
-  printf '%s\trc=%d\t%s\t%s->%s\t%dm\n' "$(date +%H:%M:%S)" "$rc" "$name" "$before" "$after" "$((secs/60))" >> "$PROG"
+  printf '%s\trc=%d\t%s\t%s->%s\t%dm\t%s\n' "$(date +%H:%M:%S)" "$rc" "$name" "$before" "$after" "$((secs/60))" "$land" >> "$PROG"
   echo "$name" >> "$DONE"
 done < "$ORDER"
 echo "REPAIR_COMPLETE" >> "$PROG"
