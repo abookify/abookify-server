@@ -33,6 +33,7 @@ func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	inContainer := runningInContainer()
 	out := make([]map[string]any, 0, len(roots))
 	for _, rt := range roots {
 		total, stale, _ := s.store.CountBooksUnderRoot(rt.ID)
@@ -54,6 +55,12 @@ func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 			"reachable":   library.RootReachable(rt.Path),
 			"book_count":  total,
 			"stale_count": stale,
+			// When we have no host mapping AND we're inside a container, the path
+			// shown is the IN-CONTAINER mount ("/library"), not a folder on the
+			// user's machine. Flag it so the UI can say so plainly instead of
+			// showing a bare "/library" that reads like a bug (PJ read it that way).
+			// Native (non-container) runs: the path IS the real host folder — no flag.
+			"container_path": hostPath == "" && inContainer,
 		})
 	}
 	// Generated/derived books (root_id=0: TTS output + virtual transcripts) belong
@@ -61,6 +68,21 @@ func (s *Server) handleListRoots(w http.ResponseWriter, r *http.Request) {
 	// the whole library and nothing is silently hidden (#220 FINDING 1).
 	unattributed, _ := s.store.CountUnattributedBooks()
 	writeJSON(w, http.StatusOK, map[string]any{"roots": out, "unattributed_count": unattributed})
+}
+
+// runningInContainer reports whether the server is running inside a container
+// (Docker/OCI/k8s). Used so the roots UI can label a bind-mount path as the
+// in-container path when no host path was provided, instead of showing a bare
+// "/library" that looks broken. Cheap file checks; fine to call per request.
+func runningInContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		s := string(data)
+		return strings.Contains(s, "docker") || strings.Contains(s, "containerd") || strings.Contains(s, "kubepods")
+	}
+	return false
 }
 
 // pathsOverlap reports whether two absolute paths are equal or nested (one is a

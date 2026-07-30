@@ -1063,11 +1063,17 @@
                <button type="button" class="clear-key-btn" title="Move down" ${i === roots.length - 1 ? 'disabled' : ''} onclick="moveRoot(${r.id}, 1)" style="padding:2px 8px;">↓</button>` : '';
           const del = roots.length > 1
             ? `<button type="button" class="clear-key-btn" onclick='removeRoot(${r.id}, ${JSON.stringify(r.path)})'>Remove</button>` : '';
+          // When the shown path is the in-container mount (no host mapping given),
+          // say so plainly instead of a bare "/library" that reads like a bug.
+          const containerNote = r.container_path
+            ? `<div class="hint" style="font-style:italic;">This is the path inside the server container. To show the folder on your machine, set <code>ABOOKIFY_LIBRARY_HOST_PATH</code> to its host path.</div>`
+            : '';
           return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
             <input type="radio" name="root-default" ${r.is_default ? 'checked' : ''} title="Default destination for new imports" onclick="setDefaultRoot(${r.id})" style="width:auto; min-height:0;">
             <div style="flex:1; min-width:0;">
               <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.label || r.host_path || r.path)}</div>
-              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.host_path || r.path)} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
+              <div class="hint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${schemaEscHtml(r.host_path || r.path)}${r.container_path ? ' (in-container path)' : ''} · ${r.book_count} book${r.book_count === 1 ? '' : 's'}${stale}</div>
+              ${containerNote}
             </div>
             ${reorder}
             ${badge}
