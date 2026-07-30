@@ -340,11 +340,55 @@ func retrievePassages(store *db.Store, rag *llm.RAG, work *db.Work, target *db.B
 		retrieved = fetchChunksInScope(store, scope)
 	}
 
+	// Drop junk chunks that are a single phrase repeated (e.g. a running
+	// header/title the EPUB extractor didn't strip — Hitchhiker's opens with
+	// "HH1 - Hitchhiker's Guide to the Galaxy" repeated). Feeding one to the LLM
+	// poisons the answer, and citing it shows the reader garbage. Never a real
+	// passage, so dropping is safe.
+	retrieved = dropPureRepetition(retrieved)
+
 	const limit = 8
 	if len(retrieved) > limit {
 		retrieved = retrieved[:limit]
 	}
 	return retrieved, nil
+}
+
+// dropPureRepetition removes chunks whose content is nothing but one phrase
+// repeated back-to-back (a boilerplate/running-header artefact). Conservative:
+// only a chunk that is EXACTLY k≥2 copies of a base token sequence is dropped, so
+// genuine prose (which never divides cleanly into identical repeats) is untouched.
+func dropPureRepetition(chunks []db.Chunk) []db.Chunk {
+	out := chunks[:0]
+	for _, c := range chunks {
+		if !isPureRepetition(c.Content) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func isPureRepetition(content string) bool {
+	f := strings.Fields(content)
+	if len(f) < 4 { // too short to be confident it's junk
+		return false
+	}
+	for base := 1; base <= len(f)/2; base++ {
+		if len(f)%base != 0 {
+			continue
+		}
+		repeated := true
+		for i := base; i < len(f); i++ {
+			if f[i] != f[i%base] {
+				repeated = false
+				break
+			}
+		}
+		if repeated {
+			return true // content is its first `base` tokens repeated len/base times
+		}
+	}
+	return false
 }
 
 // extractKeyword pulls the most specific (longest) non-stopword from a
