@@ -50,6 +50,15 @@ func ProviderCatalog() []ProviderDescriptor {
 			CredentialFields: []ProviderCredentialField{apiKey},
 			PolicyURL:        "https://www.anthropic.com/legal/privacy",
 		},
+		{
+			// Deepgram serves VOICE CONVERSATION here (its Voice Agent API) — NOT a
+			// karaoke speech-to-text path; that distinction is settled. One "voice"
+			// Kind, so it joins the realtime-voice provider list alongside OpenAI
+			// Realtime + Gemini Live and never appears in the STT/TTS selectors.
+			ID: "deepgram", Label: "Deepgram", Kinds: []string{"voice"},
+			CredentialFields: []ProviderCredentialField{apiKey},
+			PolicyURL:        "https://deepgram.com/privacy",
+		},
 	}
 }
 

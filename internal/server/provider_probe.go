@@ -26,9 +26,34 @@ func probeCapabilities(desc ProviderDescriptor, fields map[string]string) []stri
 		return probeAnthropic(fields["api_key"], "https://api.anthropic.com")
 	case "google":
 		return probeGoogle(fields["api_key"], "https://generativelanguage.googleapis.com")
+	case "deepgram":
+		return probeDeepgram(fields["api_key"], "https://api.deepgram.com")
 	default:
 		return nil
 	}
+}
+
+// probeDeepgram verifies the key against Deepgram's project list. Deepgram is a
+// VOICE-conversation vendor here (its Voice Agent API), NOT a karaoke STT path
+// (that distinction is settled), so a working key verifies "voice" only.
+func probeDeepgram(apiKey, baseURL string) []string {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/projects", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Token "+apiKey)
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	return []string{"voice"}
 }
 
 // reprobeEmptyCredentials re-runs the capability probe for any stored credential

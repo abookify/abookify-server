@@ -88,3 +88,27 @@ func TestProbeGoogle(t *testing.T) {
 		t.Fatalf("bad key → nothing, got %v", got)
 	}
 }
+
+func TestProbeDeepgram(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Token good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"projects": []map[string]string{{"project_id": "p1"}}})
+	}))
+	defer srv.Close()
+	got := probeDeepgram("good", srv.URL)
+	if strings.Join(got, ",") != "voice" {
+		t.Fatalf("deepgram key → voice only, got %v", got)
+	}
+	// Deepgram here is voice conversation, NOT karaoke STT — it must never claim stt/tts.
+	for _, c := range got {
+		if c == "stt" || c == "tts" {
+			t.Fatalf("deepgram voice-conversation key must not claim %q (not a karaoke STT path)", c)
+		}
+	}
+	if got := probeDeepgram("bad", srv.URL); len(got) != 0 {
+		t.Fatalf("bad key → nothing, got %v", got)
+	}
+}
