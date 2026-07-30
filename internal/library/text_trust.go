@@ -32,12 +32,14 @@ const (
 	TrustUnchecked   = "unchecked"   // no confidence data — question not askable
 )
 
-// trustSignificantPct is where "minor" becomes "significant". Chosen from the
-// library rather than invented: the median affected book sits at 0.21% and only
-// two of 58 exceed 1%, so 1% separates "a few scattered passages" from "enough to
-// notice while reading". The raw counts are always exposed so the UI never has to
-// rely on the tier alone.
-const trustSignificantPct = 1.0
+// trustSignificantPct is where "minor" becomes "significant" — and, with the
+// presentation rule, where a client surfaces the warning banner. Set to 3%: the
+// coverage number already tells the reader the text isn't perfect (a 94%-aligned
+// work is visibly not 100%), so a second warning below 3% is redundant noise on
+// top of a number that's already honest. Below 3% the information still exists in
+// the review area; it just doesn't interrupt anyone. The raw counts are always
+// exposed so the UI never relies on the tier alone.
+const trustSignificantPct = 3.0
 
 // TrustChapter is one affected chapter, so a reader can be told WHERE rather than
 // only that something somewhere is wrong.

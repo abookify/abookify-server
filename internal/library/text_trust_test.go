@@ -36,9 +36,11 @@ func TestTextTrustStates(t *testing.T) {
 		want           string
 	}{
 		{0, 50000, TrustVerified},
-		{100, 50000, TrustMinor},       // 0.2% — the library median
-		{500, 50000, TrustSignificant}, // 1.0% — the boundary
-		{3299, 77220, TrustSignificant},
+		{100, 50000, TrustMinor},        // 0.2% — the library median
+		{500, 50000, TrustMinor},        // 1.0% — below the 3% banner threshold now
+		{1400, 50000, TrustMinor},       // 2.8% — still minor (coverage already tells the truth)
+		{1500, 50000, TrustSignificant}, // 3.0% — the boundary
+		{3299, 77220, TrustSignificant}, // 4.27%
 	}
 	for _, c := range cases {
 		got := BuildTextTrust(1, &db.TextTrustRow{
