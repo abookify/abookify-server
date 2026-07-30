@@ -184,105 +184,119 @@ func mintDeepgramToken(client *http.Client, baseURL, apiKey string) (token strin
 // the credentials vault (OpenAI also falls back to the legacy setting), so PJ's
 // already-stored key lights this up with no second paste, and returns ONLY the
 // ephemeral token — never the real key, for either provider.
+// ---- Voice-provider slot ----
+// Speech-to-speech conversation vendors share ONE shape: an availability gate
+// (key presence or a verified capability) and a token mint that returns the exact
+// JSON the browser gets — an ephemeral token + its transport, NEVER the real key.
+// handleVoiceSession/handleVoiceAvailable iterate this registry, so adding a
+// provider is ONE entry, not a new dispatch case. OpenAI Realtime, Gemini Live
+// and Deepgram all land here. The per-vendor mints + gates below are the ONLY
+// provider-specific code; everything else is shared.
+type voiceProvider struct {
+	ID             string
+	Label          string
+	Available      func(s *Server) bool // gate for the picker + the session mint
+	UnavailableMsg string               // legible 503 when the key/capability is absent
+	Mint           func(s *Server, c *http.Client) (map[string]any, error)
+}
+
+// openAIVoiceKey resolves the OpenAI key from the vault, then the legacy inline
+// setting — so an already-stored key lights up voice with no second paste.
+func (s *Server) openAIVoiceKey() string {
+	if k := s.store.CredentialAPIKey("openai"); k != "" {
+		return k
+	}
+	if settings, _ := s.store.GetAllSettings(); settings != nil {
+		return firstNonEmptySetting(settings, "openai_api_key")
+	}
+	return ""
+}
+
+// voiceProviderRegistry is the slot. A fourth provider is one more entry here.
+var voiceProviderRegistry = []voiceProvider{
+	{
+		ID: "openai", Label: "OpenAI Realtime",
+		Available:      func(s *Server) bool { return s.openAIVoiceKey() != "" },
+		UnavailableMsg: "no OpenAI credential — add an OpenAI key in Settings → Keys",
+		Mint: func(s *Server, c *http.Client) (map[string]any, error) {
+			token, expiresAt, err := mintRealtimeToken(c, openAIRealtimeBase, s.openAIVoiceKey(), defaultRealtimeModel)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"token": token, "expires_at": expiresAt, "model": defaultRealtimeModel, "provider": "openai", "transport": "webrtc"}, nil
+		},
+	},
+	{
+		// Gate on the VERIFIED "voice" capability, not mere key presence: a Gemini
+		// key serves Gemini Live (voice) but NOT Google Cloud TTS.
+		ID: "google", Label: "Google Gemini Live",
+		Available:      func(s *Server) bool { return s.credentialHasCapability("google", "voice") },
+		UnavailableMsg: "this Google key hasn't verified the voice (Gemini Live) capability — add/verify a Google (Gemini) key in Settings → Keys",
+		Mint: func(s *Server, c *http.Client) (map[string]any, error) {
+			token, err := mintGeminiLiveToken(c, geminiBase, s.store.CredentialAPIKey("google"))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"token": token, "model": geminiLiveModel, "provider": "google", "transport": "gemini-live"}, nil
+		},
+	},
+	{
+		ID: "deepgram", Label: "Deepgram Voice Agent",
+		Available:      func(s *Server) bool { return s.credentialHasCapability("deepgram", "voice") },
+		UnavailableMsg: "this Deepgram key hasn't verified the voice capability — add a Deepgram key in Settings → Keys",
+		Mint: func(s *Server, c *http.Client) (map[string]any, error) {
+			token, expiresIn, err := mintDeepgramToken(c, deepgramBase, s.store.CredentialAPIKey("deepgram"))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"token": token, "expires_in": expiresIn, "provider": "deepgram", "transport": "deepgram-agent", "agent_url": deepgramAgentURL}, nil
+		},
+	},
+}
+
+func findVoiceProvider(id string) *voiceProvider {
+	for i := range voiceProviderRegistry {
+		if voiceProviderRegistry[i].ID == id {
+			return &voiceProviderRegistry[i]
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
 	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
 	if provider == "" {
 		provider = "openai"
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	switch provider {
-	case "openai":
-		key := s.store.CredentialAPIKey("openai")
-		if key == "" {
-			if settings, _ := s.store.GetAllSettings(); settings != nil {
-				key = firstNonEmptySetting(settings, "openai_api_key")
-			}
-		}
-		if key == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no OpenAI credential — add an OpenAI key in Settings → Keys"})
-			return
-		}
-		token, expiresAt, err := mintRealtimeToken(client, openAIRealtimeBase, key, defaultRealtimeModel)
-		if err != nil {
-			writeServerError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"token": token, "expires_at": expiresAt, "model": defaultRealtimeModel,
-			"provider": "openai", "transport": "webrtc",
-		})
-	case "google":
-		// Gate on the VERIFIED "voice" capability, not mere key presence: a Gemini
-		// key serves Gemini Live (voice) but NOT Google Cloud TTS, so it must not
-		// imply a capability it can't serve.
-		if !s.credentialHasCapability("google", "voice") {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this Google key hasn't verified the voice (Gemini Live) capability"})
-			return
-		}
-		key := s.store.CredentialAPIKey("google")
-		if key == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no Google credential — add a Google (Gemini) key in Settings → Keys"})
-			return
-		}
-		token, err := mintGeminiLiveToken(client, geminiBase, key)
-		if err != nil {
-			writeServerError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"token": token, "model": geminiLiveModel,
-			"provider": "google", "transport": "gemini-live",
-		})
-	case "deepgram":
-		// Gate on the VERIFIED "voice" capability (probed), not mere key presence.
-		if !s.credentialHasCapability("deepgram", "voice") {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this Deepgram key hasn't verified the voice capability — re-save it in Settings → Keys"})
-			return
-		}
-		key := s.store.CredentialAPIKey("deepgram")
-		if key == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no Deepgram credential — add a Deepgram key in Settings → Keys"})
-			return
-		}
-		token, expiresIn, err := mintDeepgramToken(client, deepgramBase, key)
-		if err != nil {
-			writeServerError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"token": token, "expires_in": expiresIn, "provider": "deepgram",
-			"transport": "deepgram-agent", "agent_url": deepgramAgentURL,
-		})
-	default:
+	vp := findVoiceProvider(provider)
+	if vp == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice provider: " + provider})
+		return
 	}
+	if !vp.Available(s) {
+		// Legible, not silent: the user learns they haven't configured this
+		// provider, not that the feature is broken.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": vp.UnavailableMsg})
+		return
+	}
+	out, err := vp.Mint(s, &http.Client{Timeout: 15 * time.Second})
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
-// handleVoiceAvailable reports whether realtime voice can be offered — i.e. an
-// OpenAI credential resolves (vault, then the legacy setting). Cheap: no network
-// call, no token minted. The UI gates its voice entry point on this so PJ is
+// handleVoiceAvailable lists which voice providers can be offered today — each
+// provider's own availability gate (key presence or verified capability). Cheap:
+// no network, no token minted. The UI gates its voice picker on this so a user is
 // never invited to tap into a guaranteed failure.
 func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
-	openaiKey := s.store.CredentialAPIKey("openai")
-	if openaiKey == "" {
-		if settings, _ := s.store.GetAllSettings(); settings != nil {
-			openaiKey = firstNonEmptySetting(settings, "openai_api_key")
-		}
-	}
-	// providers lists what can serve realtime voice today. OpenAI Realtime works
-	// for any OpenAI key (key presence). Google/Gemini Live is gated on the
-	// VERIFIED "voice" capability — a Gemini key serves Gemini Live voice but NOT
-	// Google Cloud TTS, so it can't imply a capability it doesn't have.
 	providers := []string{}
-	if openaiKey != "" {
-		providers = append(providers, "openai")
-	}
-	if s.credentialHasCapability("google", "voice") {
-		providers = append(providers, "google")
-	}
-	// Deepgram Voice Agent — offered only when its credential VERIFIED "voice".
-	if s.credentialHasCapability("deepgram", "voice") {
-		providers = append(providers, "deepgram")
+	for i := range voiceProviderRegistry {
+		if voiceProviderRegistry[i].Available(s) {
+			providers = append(providers, voiceProviderRegistry[i].ID)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"available": len(providers) > 0,

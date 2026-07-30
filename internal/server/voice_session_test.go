@@ -221,3 +221,26 @@ func TestVoiceAvailable_DeepgramGatedOnVoiceCapability(t *testing.T) {
 		}
 	}
 }
+
+// TestVoiceProviderRegistry_AllThreeLand proves the slot is a slot: OpenAI
+// Realtime, Gemini Live and Deepgram all live in ONE registry with the same
+// shape (id/label/available/mint/legible-503), and dispatch is by lookup, not a
+// per-provider case. A fourth provider is one more entry, not new plumbing.
+func TestVoiceProviderRegistry_AllThreeLand(t *testing.T) {
+	want := map[string]string{"openai": "webrtc", "google": "gemini-live", "deepgram": "deepgram-agent"}
+	if len(voiceProviderRegistry) != len(want) {
+		t.Fatalf("registry has %d providers, want %d", len(voiceProviderRegistry), len(want))
+	}
+	for id := range want {
+		vp := findVoiceProvider(id)
+		if vp == nil {
+			t.Fatalf("provider %q not in the slot", id)
+		}
+		if vp.Label == "" || vp.Available == nil || vp.Mint == nil || vp.UnavailableMsg == "" {
+			t.Fatalf("provider %q is missing a required slot field: %+v", id, vp)
+		}
+	}
+	if findVoiceProvider("nope") != nil {
+		t.Fatal("unknown provider must return nil (→ 400)")
+	}
+}
