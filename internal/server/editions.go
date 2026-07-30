@@ -104,7 +104,16 @@ func groupEditions(books []db.Book, media string, defaultID int64) []EditionView
 		prov, kind := provenanceFor(b.Origin)
 		label := strings.TrimSpace(b.Edition)
 		if label == "" {
-			label = strings.TrimSpace(b.Album)
+			// A Kokoro TTS edition with no explicit name stores the raw voice id
+			// in Album ("af_heart"); show a friendly voice name ("Heart voice") so
+			// a listener can tell editions apart without guessing what "af_heart" is.
+			if b.Origin == "tts_kokoro" {
+				if a := strings.TrimSpace(b.Album); a != "" {
+					label = voiceLabel(a) + " voice"
+				}
+			} else {
+				label = strings.TrimSpace(b.Album)
+			}
 		}
 		if label == "" {
 			label = prov
