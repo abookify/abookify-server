@@ -413,6 +413,37 @@
        alarm. dropped_segment (Retry recovers it) + unknown (no retry). */
     .media-pill.gap-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
     .media-pill.gap-neutral:hover { background: var(--surface-2); border-color: var(--text-muted); }
+    /* Text-trust states — verified / minor / significant / unchecked. Unchecked
+       is deliberately NEUTRAL (dashed, muted), never green: unknown != clean. */
+    .media-pill.tt-verified { background: rgba(15,118,110,0.14); color: var(--success); cursor: pointer; }
+    .media-pill.tt-minor { background: rgba(240,165,0,0.16); color: #8a5a00; cursor: pointer; }
+    .media-pill.tt-significant { background: rgba(200,45,45,0.16); color: #b3261e; cursor: pointer; }
+    .media-pill.tt-unchecked { background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border); cursor: pointer; }
+    @media (prefers-color-scheme: dark) {
+      .media-pill.tt-minor { color: #fbbf24; }
+      .media-pill.tt-significant { color: #f87171; }
+    }
+    .tt-slot:empty { display: none; } /* invisible until filled from the summary */
+    .tt-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+    .tt-modal { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; max-width: 560px; width: 92%; max-height: 85vh; overflow: auto; padding: 18px 20px; box-shadow: var(--shadow); }
+    .tt-modal-head { display: flex; align-items: center; gap: 10px; }
+    .tt-modal-head h3 { flex: 1; margin: 0; font-size: 1.05rem; }
+    .tt-x { background: none; border: none; color: var(--text-muted); font-size: 1.4rem; cursor: pointer; line-height: 1; }
+    .tt-state-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+    .tt-verified .tt-state-dot { background: var(--success); }
+    .tt-minor .tt-state-dot { background: #e0a000; }
+    .tt-significant .tt-state-dot { background: #c82d2d; }
+    .tt-unchecked .tt-state-dot { background: var(--text-muted); }
+    .tt-detail { color: var(--text); line-height: 1.6; margin: 12px 0; }
+    .tt-counts { font-weight: 600; margin: 6px 0; }
+    .tt-jump, .tt-check { margin-top: 10px; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.85rem; }
+    .tt-check { background: var(--accent, #1D4ED8); color: #fff; border-color: transparent; }
+    .tt-check.secondary { background: var(--bg); color: var(--text); border-color: var(--border); }
+    .tt-ch-head { margin-top: 16px; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .tt-ch-list { margin-top: 6px; }
+    .tt-ch-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    .tt-ch-count { color: var(--text-muted); white-space: nowrap; }
+    .tt-actions { margin-top: 14px; }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3060,6 +3091,7 @@
         el.classList.remove('grouped');
         el.innerHTML = filtered.map(work => posterCardHtml(work)).join('');
       }
+      fillTextTrustBadges(el); // fill the text-trust slots once (no-op until summary loads)
     }
 
     // Group the (already filtered + sorted) works into sections by `field`
@@ -3172,6 +3204,7 @@
                 : `<span class="media-pill missing">no text</span>`}
               ${renderGapBadge(work.id)}
               ${renderAlignBadge(work)}
+              ${renderTextTrustBadge(work)}
             </div>
           </div>
         </div>`;
@@ -3506,6 +3539,120 @@
     // no detected gaps. Click → showGapDetails modal.
     // Coverage thresholds mirror the .abook diff-view (search "Tightly aligned"
      // in this file). Only renders when the work has an alignment row.
+    // ---- Text-trust (transcription confidence). The SERVER owns the wording
+    // (headline/detail); we render it VERBATIM and never paraphrase, so web +
+    // mobile can't drift into asserting suspicion as proof. Four states:
+    // verified / minor / significant / unchecked. A work absent from the summary
+    // has NEVER been checked → "not checked" (unknown), never treated as clean —
+    // conflating those is how invented words stayed invisible. Raw counts always
+    // shown so the percentage can't mislead (median affected book ~0.21%).
+    let textTrustByWork = {};
+    let textTrustLoaded = false;
+    async function loadTextTrust() {
+      try {
+        const rows = await fetch('/api/text-trust/summary').then(r => r.json());
+        const m = {};
+        (Array.isArray(rows) ? rows : []).forEach(w => { m[w.work_id] = w; });
+        textTrustByWork = m;
+      } catch { /* keep slots empty; a per-work open still works */ }
+      textTrustLoaded = true;
+      fillTextTrustBadges();
+    }
+
+    function textTrustPillFor(tt) {
+      if (!tt || tt.state === 'unchecked') {
+        return { cls: 'tt-unchecked', text: 'Text not checked',
+                 title: (tt && tt.headline) || 'Not checked against the audio' };
+      }
+      const counts = `${(tt.suspect_words || 0).toLocaleString()} of ${(tt.total_words || 0).toLocaleString()} words`;
+      const pctText = tt.total_words ? ` (${Number(tt.suspect_percent).toFixed(2)}%)` : '';
+      if (tt.state === 'verified') return { cls: 'tt-verified', text: 'Text checked ✓', title: tt.headline };
+      // minor / significant → lead with the RAW counts so scale is judgeable.
+      return { cls: tt.state === 'significant' ? 'tt-significant' : 'tt-minor',
+               text: `⚠ ${counts}${pctText}`, title: tt.headline };
+    }
+
+    // A slot rendered inline in .work-badges; filled once the summary loads, so
+    // we never flash a wrong "not checked" before we actually know the state.
+    function renderTextTrustBadge(work) {
+      return `<span class="tt-slot" data-work="${work.id}"></span>`;
+    }
+    function fillTextTrustBadges(root) {
+      if (!textTrustLoaded) return;
+      (root || document).querySelectorAll('.tt-slot').forEach(slot => {
+        const id = +slot.dataset.work;
+        const p = textTrustPillFor(textTrustByWork[id]);
+        slot.className = 'media-pill tt-slot ' + p.cls;
+        slot.setAttribute('role', 'button');
+        slot.setAttribute('tabindex', '0');
+        slot.setAttribute('title', p.title);
+        slot.setAttribute('aria-label', p.title);
+        slot.onclick = (e) => { e.stopPropagation(); openTextTrust(id); };
+        slot.textContent = p.text;
+      });
+    }
+
+    // The panel is the per-chapter breakdown's HOME: server headline + detail
+    // verbatim, raw counts, a jump to the worst passage, and worst-chapters-first
+    // so a reader can find the bad passage instead of distrusting the whole book.
+    async function openTextTrust(workId) {
+      let d;
+      try { d = await fetch(`/api/works/${workId}/text-trust`).then(r => r.json()); }
+      catch { metaStatus('Could not load the text-trust check.', true); return; }
+      let host = document.getElementById('text-trust-host');
+      if (!host) { host = document.createElement('div'); host.id = 'text-trust-host'; document.body.appendChild(host); }
+      const counts = d.total_words
+        ? `${(d.suspect_words || 0).toLocaleString()} of ${(d.total_words || 0).toLocaleString()} words (${Number(d.suspect_percent).toFixed(2)}%)`
+        : '';
+      const chapters = (d.chapters || []).filter(c => (c.suspect_words || 0) > 0);
+      const chapterRows = chapters.map(c => `
+        <div class="tt-ch-row">
+          <span class="tt-ch-title">${escapeHtml(c.title || ('Chapter ' + ((c.index || 0) + 1)))}</span>
+          <span class="tt-ch-count">${(c.suspect_words || 0).toLocaleString()} words</span>
+        </div>`).join('');
+      const worst = (d.worst_at_sec != null && d.worst_at_sec > 0)
+        ? `<button class="tt-jump" onclick="ttJumpToWorst(${workId}, ${d.worst_at_sec})">Play from the worst passage (${formatTime(d.worst_at_sec)})</button>`
+        : '';
+      const checkBtn = (d.state === 'unchecked')
+        ? `<button class="tt-check" onclick="ttCheckNow(${workId})">Check this book now</button>`
+        : `<button class="tt-check secondary" onclick="ttCheckNow(${workId})">Re-check</button>`;
+      host.innerHTML = `
+        <div class="tt-overlay" onclick="if(event.target===this) closeTextTrust()">
+          <div class="tt-modal tt-${escapeHtml(d.state || 'unchecked')}">
+            <div class="tt-modal-head">
+              <span class="tt-state-dot"></span>
+              <h3>${escapeHtml(d.headline || '')}</h3>
+              <button class="tt-x" onclick="closeTextTrust()" aria-label="Close">&times;</button>
+            </div>
+            <p class="tt-detail">${escapeHtml(d.detail || '')}</p>
+            ${counts ? `<div class="tt-counts">${counts}</div>` : ''}
+            ${worst}
+            ${chapters.length ? `<div class="tt-ch-head">Where &mdash; worst chapters first</div><div class="tt-ch-list">${chapterRows}</div>` : ''}
+            <div class="tt-actions">${checkBtn}</div>
+          </div>
+        </div>`;
+    }
+    function closeTextTrust() { const h = document.getElementById('text-trust-host'); if (h) h.innerHTML = ''; }
+    async function ttJumpToWorst(workId, sec) {
+      const work = (allWorks || []).find(w => w.id === workId);
+      closeTextTrust();
+      if (work) { try { await seekToAbsoluteBookTime(work, sec, work.title); } catch {} }
+    }
+    async function ttCheckNow(workId) {
+      metaStatus('Checking the text against the audio…');
+      try {
+        const res = await fetch(`/api/works/${workId}/text-trust/check`, { method: 'POST' });
+        if (!res.ok) { metaStatus('Check failed: ' + (await metaErr(res)), true); return; }
+        // Refresh the map from the authoritative per-work GET, update badges, reopen.
+        const fresh = await fetch(`/api/works/${workId}/text-trust`).then(r => r.json());
+        if (fresh && fresh.state && fresh.state !== 'unchecked') textTrustByWork[workId] = fresh;
+        else delete textTrustByWork[workId];
+        fillTextTrustBadges();
+        metaStatus('Text-trust check complete.');
+        openTextTrust(workId);
+      } catch (e) { metaStatus('Check failed: ' + e, true); }
+    }
+
     function renderAlignBadge(work) {
       const c = work.coverage;
       if (typeof c !== 'number') {
@@ -4367,6 +4514,7 @@
               ${work.has_text ? `<span class="media-pill text">${textFiles.length} text</span>` : `<span class="media-pill missing">no text</span>`}
               ${renderGapBadge(work.id)}
               ${renderAlignBadge(work)}
+              ${renderTextTrustBadge(work)}
             </div>
             <div class="detail-progline work-progress" id="work-progress-${work.id}" style="display:none;"></div>
             <div class="detail-cta">
@@ -4384,6 +4532,7 @@
       if (toolbar) toolbar.style.display = 'none';
       detail.style.display = '';
       window.scrollTo(0, 0);
+      fillTextTrustBadges(detail); // fill the detail's text-trust slot
       // Hydrate the panes (same work the accordion expand used to do).
       hydrateWorkDetail(work);
       hydrateWorkProgress();
@@ -7355,6 +7504,7 @@
     // Start the router AFTER works load — work/reader views read from allWorks.
     Promise.resolve(loadWorks()).then(() => AppRouter.start());
     loadExtractOnlyGlobal(); // the one global spoiler-safe answer-mode setting (#130)
+    loadTextTrust(); // text-trust badges (fills slots when the summary lands)
     loadQueue();
     loadJobs(); // populate the Processing-queue section on load
     applyWaveformVisibility();
