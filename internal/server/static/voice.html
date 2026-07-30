@@ -39,6 +39,10 @@
     conversation — it isn't grounded in a specific book yet. Uses your saved OpenAI key.</p>
 
   <div id="status" class="status">Ready.</div>
+  <label id="providerRow" hidden style="display:block; margin-bottom:12px; font-size:0.85rem; color:var(--muted);">
+    Voice provider
+    <select id="provider" style="margin-left:8px; padding:4px 8px; border-radius:6px; border:1px solid var(--line);"></select>
+  </label>
   <button id="startBtn">Start talking</button>
   <button id="stopBtn" class="secondary" hidden>Stop</button>
 
@@ -65,6 +69,7 @@
 <script>
   let pc = null, micStream = null, dc = null;
   let connected = false, iceWatchdog = null;
+  let geminiWS = null, geminiCaptureCtx = null; // Gemini Live transport (WebSocket + Web Audio)
   const $ = id => document.getElementById(id);
 
   // Book grounding (optional): when opened from a book's AI panel the URL carries
@@ -183,8 +188,10 @@
     connected = false;
     try { if (dc) dc.close(); } catch (e) {}
     try { if (pc) pc.close(); } catch (e) {}
+    try { if (geminiWS) geminiWS.close(); } catch (e) {}
+    try { if (geminiCaptureCtx) geminiCaptureCtx.close(); } catch (e) {}
     try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-    pc = dc = micStream = null;
+    pc = dc = micStream = geminiWS = geminiCaptureCtx = null;
   }
 
   async function onEvent(ev) {
@@ -233,12 +240,17 @@
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       setStatus('Getting a session…');
-      const res = await fetch('/api/voice/session', { method: 'POST' });
+      const provider = ($('provider') && $('provider').value) || 'openai';
+      const res = await fetch('/api/voice/session?provider=' + encodeURIComponent(provider), { method: 'POST' });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || ('session HTTP ' + res.status));
       }
-      const sess = await res.json(); // { token (ephemeral), model, ... } — never the real key
+      const sess = await res.json(); // { token (ephemeral), model, transport, ... } — never the real key
+
+      // Gemini Live uses a WebSocket + streamed PCM (a different transport than
+      // OpenAI's WebRTC); the model, grounding and boundary are identical.
+      if (sess.transport === 'gemini-live') { await startGemini(sess); return; }
 
       pc = new RTCPeerConnection();
       pc.ontrack = e => { $('remoteAudio').srcObject = e.streams[0]; };
@@ -330,6 +342,100 @@
       ? 'Talk about “' + BOOK.title + '”. Answers stay behind where you are in the book (spoiler-safe), same as its Q&A. Uses your saved OpenAI key.'
       : 'Talk about this book. Answers stay behind where you are in the book (spoiler-safe). Uses your saved OpenAI key.';
   }
+
+  // ---- Gemini Live transport (WebSocket + streamed PCM) ----
+  // Same grounding + boundary as the OpenAI path: the model calls search_book,
+  // we relay to /voice-context (bounded to the reading position), and only those
+  // passages go back. The audio path is manual PCM (Gemini has no WebRTC), so it
+  // is the least-validated code here — the boundary is guaranteed server-side.
+  const GROUND_INSTRUCTIONS = "You are a friendly reading companion. For ANYTHING about this book's content, characters or plot you MUST call search_book and answer ONLY from the passages it returns — never your own prior knowledge of the book. If it returns no relevant passage, say it hasn't come up yet in what they've read. Never reveal anything beyond those passages. Keep replies concise and natural.";
+  const GENERAL_INSTRUCTIONS = 'You are a warm, friendly conversation partner for someone who loves books. Keep replies concise and natural.';
+  const SEARCH_BOOK_DECL = { name: 'search_book', description: 'Search the part of the book the reader has read so far for passages relevant to their question. Returns only in-bounds passages — use them as the sole source for anything about the book.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'what to look up in the book' } }, required: ['query'] } };
+
+  function pcm16ToB64(ab) { let s = ''; const u8 = new Uint8Array(ab); for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s); }
+
+  // Decode base64 PCM16@24k into the playback context and schedule it gaplessly.
+  function enqueuePcm(ctx, b64data, playHead) {
+    const bin = atob(b64data), n = bin.length >> 1, buf = ctx.createBuffer(1, n, 24000), ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) { let v = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8); if (v >= 0x8000) v -= 0x10000; ch[i] = v / 32768; }
+    const node = ctx.createBufferSource(); node.buffer = buf; node.connect(ctx.destination);
+    const startAt = Math.max(ctx.currentTime, playHead); node.start(startAt);
+    return startAt + buf.duration;
+  }
+
+  async function handleGeminiBookSearch(ws, fc) {
+    const query = (fc.args && fc.args.query) || '';
+    let output;
+    try {
+      const r = await fetch('/api/works/' + BOOK.work + '/voice-context', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, scope_mode: 'reading', reader_book_id: BOOK.bookId, reader_chapter: BOOK.chapter }),
+      });
+      output = await r.json();
+    } catch (e) { output = { grounded: false, reason: 'the book lookup failed' }; }
+    if (ws.readyState === 1) ws.send(JSON.stringify({ toolResponse: { functionResponses: [{ id: fc.id, name: 'search_book', response: output }] } }));
+    if (output && output.grounded === false && output.reason) logLine('AI', '(' + output.reason + ')');
+  }
+
+  function startGeminiMic(ws) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    geminiCaptureCtx = ctx;
+    const src = ctx.createMediaStreamSource(micStream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1); // deprecated but simplest; AudioWorklet is the upgrade
+    proc.onaudioprocess = e => {
+      if (ws.readyState !== 1) return;
+      const f = e.inputBuffer.getChannelData(0), i16 = new Int16Array(f.length);
+      for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF; }
+      ws.send(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: pcm16ToB64(i16.buffer) } } }));
+    };
+    const mute = ctx.createGain(); mute.gain.value = 0; // route to destination without local echo
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  }
+
+  async function startGemini(sess) {
+    const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?access_token=' + encodeURIComponent(sess.token));
+    geminiWS = ws;
+    const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    let playHead = 0;
+    setStatus('Connecting to Gemini…');
+    clearWatchdog();
+    iceWatchdog = setTimeout(() => { if (!connected) networkFail(); }, 20000);
+    ws.onopen = () => {
+      const setup = { model: 'models/' + sess.model, generationConfig: { responseModalities: ['AUDIO'] }, inputAudioTranscription: {}, outputAudioTranscription: {} };
+      if (BOOK.work) { setup.systemInstruction = { parts: [{ text: GROUND_INSTRUCTIONS }] }; setup.tools = [{ functionDeclarations: [SEARCH_BOOK_DECL] }]; }
+      else { setup.systemInstruction = { parts: [{ text: GENERAL_INSTRUCTIONS }] }; }
+      ws.send(JSON.stringify({ setup }));
+    };
+    ws.onmessage = async ev => {
+      const text = (ev.data instanceof Blob) ? await ev.data.text() : ev.data;
+      let msg; try { msg = JSON.parse(text); } catch (e) { return; }
+      if (msg.setupComplete) { connected = true; clearWatchdog(); setStatus('Live — just start talking.', 'live'); $('stopBtn').hidden = false; startGeminiMic(ws); return; }
+      const sc = msg.serverContent;
+      if (sc) {
+        if (sc.inputTranscription && sc.inputTranscription.text) logLine('You', sc.inputTranscription.text.trim());
+        if (sc.outputTranscription && sc.outputTranscription.text) logLine('AI', sc.outputTranscription.text.trim());
+        for (const p of ((sc.modelTurn && sc.modelTurn.parts) || [])) if (p.inlineData && p.inlineData.data) playHead = enqueuePcm(playCtx, p.inlineData.data, playHead);
+      }
+      if (msg.toolCall && msg.toolCall.functionCalls) for (const fc of msg.toolCall.functionCalls) if (fc.name === 'search_book') await handleGeminiBookSearch(ws, fc);
+    };
+    ws.onerror = () => setStatus('Gemini voice connection error.', 'warn');
+    ws.onclose = () => { if (!connected) networkFail(); };
+  }
+
+  // Offer a provider choice only when more than one key can serve voice (from
+  // the capability-gated availability). OpenAI (WebRTC) is the default/first.
+  (async () => {
+    try {
+      const a = await fetch('/api/voice/available').then(r => r.json());
+      const provs = (a && a.providers) || [];
+      if (provs.length > 1) {
+        const sel = $('provider');
+        const label = { openai: 'OpenAI Realtime', google: 'Google Gemini Live' };
+        sel.innerHTML = provs.map(p => '<option value="' + p + '">' + (label[p] || p) + '</option>').join('');
+        $('providerRow').hidden = false;
+      }
+    } catch (e) { /* single provider or unavailable — no picker */ }
+  })();
 
   $('startBtn').onclick = start;
   $('stopBtn').onclick = stop;
