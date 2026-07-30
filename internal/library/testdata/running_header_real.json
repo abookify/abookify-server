@@ -1,0 +1,13 @@
+{
+ "note": "REAL Calibre split documents from hitchhikers_guide.epub \u2014 the source of 38 embedded title-only chunks. Do not regenerate.",
+ "docs": [
+  {
+   "file": "part1.xhtml",
+   "html": "<?xml version='1.0' encoding='utf-8'?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\n  <head>\n    <title>HH1 - Hitchhiker's Guide to the Galaxy</title>\n    <meta name=\"DC.Title\" content=\"HH1 - Hitchhiker's Guide to the Galaxy\"/>\n    <meta content=\"http://www.w3.org/1999/xhtml; charset=utf-8\" http-equiv=\"Content-Type\"/><link href=\"../stylesheet.css\" type=\"text/css\" rel=\"stylesheet\"/><style type=\"text/css\">\n\t\t@page { margin-bottom: 5.000000pt; margin-top: 5.000000pt; }</style></head>\n  <body class=\"calibre3\">\n    <div class=\"calibre4\">\n      <h1 class=\"calibre5\">HH1 - Hitchhiker's Guide to the Galaxy</h1>\n    </div>\n    <div class=\"calibre4\">\n      <p class=\"calibre4\">HH1 - Hitchhiker\u2019s Guide to the Galaxy</p>\n      <p class=\"calibre4\">By Adams, Douglas</p>\n      <p class=\"calibre4\">The Hitchhiker\u2019s Guide to the Galaxy</p>\n      <p class=\"calibre4\">PROLOGUE</p>\n      <p class=\"calibre4\">Far out in the uncharted backwaters of the unfashionable end of the western spiral arm of the Galaxy lies a small unregarded yellow sun.</p>\n      <p class=\"calibre4\">Orbiting this at a distance of roughly ninety-two million miles is an utterly insignificant little blue-green planet whose ape-descended life forms are so amazingly primitive that they still think digital watches are a pretty neat idea.</p>\n      <p class=\"calibre4\">This planet has\u00d1or rather had\u00d1a problem, which was this: most of the p"
+  },
+  {
+   "file": "part10_split_000.xhtml",
+   "html": "<?xml version='1.0' encoding='utf-8'?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\n  <head>\n    <title>HH1 - Hitchhiker's Guide to the Galaxy</title>\n    <meta name=\"DC.Title\" content=\"HH1 - Hitchhiker's Guide to the Galaxy\"/>\n    <meta content=\"http://www.w3.org/1999/xhtml; charset=utf-8\" http-equiv=\"Content-Type\"/><link href=\"../stylesheet.css\" type=\"text/css\" rel=\"stylesheet\"/><style type=\"text/css\">\n\t\t@page { margin-bottom: 5.000000pt; margin-top: 5.000000pt; }</style></head>\n  <body class=\"calibre3\">\n    <div class=\"calibre4\">\n      <h1 class=\"calibre5\">HH1 - Hitchhiker's Guide to the Galaxy</h1>\n    </div>\n    <div class=\"calibre4\">\n      </div>\n  </body>\n</html>\n"
+  }
+ ]
+}
