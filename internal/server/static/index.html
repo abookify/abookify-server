@@ -4800,7 +4800,40 @@
       };
     }
 
-    // Paint the gear-bar follow-mode indicator for the active reader source.
+    // Paint the gear-bar follow-mode indicator. `mode` is word | paragraph | none
+    // | unavailable. 'unavailable' is the HONEST state when a sync fetch failed
+    // (e.g. a 502 during a tunnel blip) — the reader says so rather than silently
+    // rendering unsynced text that never highlights.
+    function paintSyncPill(mode, opts) {
+      const el = document.getElementById('np-sync-mode');
+      if (!el) return;
+      el.style.display = '';
+      el.className = 'np-sync-mode ' + (mode === 'unavailable' ? 'none' : mode);
+      const method = opts && opts.method, unit = opts && opts.unit;
+      const pct = opts && typeof opts.confidence === 'number' ? Math.round(opts.confidence * 100) : null;
+      const cm = method ? `${method}${pct != null ? ', ' + pct + '%' : ''}` : '';
+      if (mode === 'word') {
+        el.innerHTML = '&#9834; word-by-word';
+        el.title = method === 'transcript'
+          ? 'Reading the transcript — words highlight in time with the audio.'
+          : `Word-level alignment (${cm}) — words highlight with the audio.`;
+      } else if (mode === 'paragraph') {
+        el.innerHTML = '&#182; by paragraph';
+        el.title = (unit === 'word')
+          ? `Word-level alignment (${cm}) — the reader follows by paragraph here; switch to the transcript source for word-by-word.`
+          : `Paragraph-level alignment (${cm}) — this edition doesn't match the narration word-for-word (e.g. a different translation), so the reader follows by paragraph.`;
+      } else if (mode === 'unavailable') {
+        el.innerHTML = '&#9888; sync unavailable';
+        el.title = 'Couldn’t load the audio sync for this chapter — a network hiccup, maybe. The text is showing unsynced; reopen the chapter to retry.';
+      } else {
+        el.innerHTML = '&#9711; no audio sync';
+        el.title = 'No alignment between this text and the audio here — read freely; the audio won’t follow along.';
+      }
+    }
+
+    // Paint the gear-bar follow-mode indicator for the active reader source (a
+    // work-level preview from the alignment rows; setupReaderFollow paints the
+    // authoritative per-chapter state as each chapter loads).
     async function updateSyncModeIndicator(workId, bookId) {
       const el = document.getElementById('np-sync-mode');
       if (!el) return;
@@ -4808,23 +4841,7 @@
       if (!work || bookId == null) { el.style.display = 'none'; return; }
       const aligns = await getAlignments(workId);
       const m = resolveReaderSyncMode(work, bookId, aligns);
-      el.className = 'np-sync-mode ' + m.mode;
-      el.style.display = '';
-      const pct = typeof m.confidence === 'number' ? Math.round(m.confidence * 100) : null;
-      if (m.mode === 'word') {
-        el.innerHTML = '&#9834; word-by-word';
-        el.title = m.method === 'transcript'
-          ? 'Reading the transcript — words highlight in time with the audio.'
-          : `Word-level alignment (${m.method}, ${pct}%) — words highlight with the audio.`;
-      } else if (m.mode === 'paragraph') {
-        el.innerHTML = '&#182; by paragraph';
-        el.title = (m.unit === 'word')
-          ? `Word-level alignment (${m.method}, ${pct}%) — the reader follows by paragraph here; switch to the transcript source for word-by-word.`
-          : `Paragraph-level alignment (${m.method}, ${pct}%) — this edition doesn't match the narration word-for-word (e.g. a different translation), so the reader follows by paragraph.`;
-      } else {
-        el.innerHTML = '&#9711; no audio sync';
-        el.title = 'No alignment between this text and the audio — read freely; the audio won’t follow along.';
-      }
+      paintSyncPill(m.mode, m);
     }
 
     // Paragraph-follow state (#210): for an ebook aligned to the audio only by
@@ -4842,23 +4859,34 @@
     // and set up the matching render: word-by-word karaoke for the transcript /
     // word-anchor ebooks, paragraph-follow for embedding/paragraph ebooks.
     async function setupReaderFollow(workId, bookId, chapterIdx) {
-      updateSyncModeIndicator(workId, bookId);
       currentReaderIsEbookKaraoke = false;
       const work = allWorks.find(w => w.id === workId);
-      if (!work) { clearParagraphFollow(); paraSync = null; return; }
+      if (!work) { clearParagraphFollow(); paraSync = null; paintSyncPill('none'); return; }
       const book = (work.text_files || []).find(b => b.id === bookId);
-      const aligns = await getAlignments(workId);
-      const m = resolveReaderSyncMode(work, bookId, aligns);
 
-      // Word-anchor EBOOK (not the transcript) → drive word-by-word karaoke
-      // from the composed per-word map. Render the paragraphed word spans into
-      // THIS work's reader (decoupled from the global currentWorkId, which is
-      // only set once audio is playing) and arm the karaoke loop. The tick
-      // highlights by the player clock, so it lights up once the audio plays.
-      if (m.mode === 'word' && book && !bookIsTranscript(book)) {
+      // The SERVER owns the per-chapter follow mode (word | paragraph | none) —
+      // fetch it rather than re-deriving it here (the client heuristic mis-picked
+      // paragraph over an available word map, and wasn't chapter-specific). On a
+      // FAILED fetch (e.g. a 502 while the tunnel reconnects) say so HONESTLY
+      // instead of silently rendering unsynced text that never highlights.
+      let ts;
+      try {
+        const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}`);
+        if (!res.ok) throw new Error('text-sync ' + res.status);
+        ts = await res.json();
+      } catch (e) {
+        clearParagraphFollow(); paraSync = null; paintSyncPill('unavailable'); return;
+      }
+      paintSyncPill(ts.mode || 'none', ts);
+
+      // Word-by-word karaoke from the composed per-word map. The tick highlights
+      // by the player clock, so it lights up once the audio plays.
+      if (ts.mode === 'word' && book && !bookIsTranscript(book)) {
         clearParagraphFollow(); paraSync = null;
         try {
-          const words = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}`).then(r => r.json());
+          const wres = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}`);
+          if (!wres.ok) throw new Error('word-sync ' + wres.status);
+          const words = await wres.json();
           const reader = document.getElementById('reader-' + workId);
           const built = (Array.isArray(words) && words.length && window.shared && window.shared.transcriptParagraphsFromSync)
             ? window.shared.transcriptParagraphsFromSync(words) : null;
@@ -4868,18 +4896,19 @@
             activeSyncData = words;
             currentReaderIsEbookKaraoke = true;
             startKaraoke();
+          } else {
+            paintSyncPill('unavailable'); // server said word but the map didn't render — be honest
           }
-        } catch {}
+        } catch { paintSyncPill('unavailable'); }
         return;
       }
 
-      if (m.mode !== 'paragraph') { clearParagraphFollow(); paraSync = null; return; }
-      try {
-        const ts = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}`).then(r => r.json());
-        if (ts && ts.mode === 'paragraph' && (ts.spans || []).length) {
-          paraSync = { workId, bookId, chapterIdx, spans: ts.spans, lastIdx: -2 };
-        } else { clearParagraphFollow(); paraSync = null; }
-      } catch { clearParagraphFollow(); paraSync = null; }
+      if (ts.mode === 'paragraph' && (ts.spans || []).length) {
+        paraSync = { workId, bookId, chapterIdx, spans: ts.spans, lastIdx: -2 };
+        return;
+      }
+      // mode 'none' (or paragraph with no spans) — no follow; the pill is honest.
+      clearParagraphFollow(); paraSync = null;
     }
 
     function clearParagraphFollow() {
