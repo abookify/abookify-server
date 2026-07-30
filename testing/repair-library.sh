@@ -157,7 +157,14 @@ while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
 
     # Land it before judging: the database is what the product reads, and
     # reimport-realign verifies the alignment was rewritten for the new text.
-    n=$(( $(grep -c "^$name	" "$ATTEMPTS" 2>/dev/null || echo 0) + 1 ))
+    #
+    # NOTE grep -c prints "0" AND exits 1 on no match — an `|| echo 0` here
+    # produced "0\n0", and the resulting arithmetic syntax error aborted the
+    # ENTIRE while loop (bash expansion errors kill the enclosing compound
+    # command), which then fell through to the REPAIR_COMPLETE line. The run
+    # died two books in while its progress file claimed it finished.
+    n=$(grep -c "^$name	" "$ATTEMPTS" 2>/dev/null)
+    n=$(( ${n:-0} + 1 ))
     printf '%s\tp%s\n' "$name" "$pass" >> "$ATTEMPTS"
     if [ -n "$workid" ] && [ "$workid" != "0" ]; then
       if $RI -db "$DB" -library "$LIB" -work "$workid" >> "$LOGS/$name.log" 2>&1; then
@@ -197,4 +204,14 @@ while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
     *) echo "$name" >> "$DONE" ;;
   esac
 done < "$ORDER"
-echo "REPAIR_COMPLETE" >> "$PROG"
+
+# REPAIR_COMPLETE must be EARNED, not reached. The first run wrote it after an
+# expansion error aborted the loop two books in — the crash itself produced the
+# "finished" marker. Compare what the order asked for against what was recorded.
+want=$(grep -cv '^\s*$\|^#' "$ORDER")
+have=$(sort -u "$DONE" | grep -c .)
+if [ "$have" -ge "$want" ]; then
+  echo "REPAIR_COMPLETE" >> "$PROG"
+else
+  printf 'REPAIR_EXITED_EARLY\t%s_of_%s_books_recorded\n' "$have" "$want" >> "$PROG"
+fi
