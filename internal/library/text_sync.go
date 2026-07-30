@@ -85,13 +85,20 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		return &TextSync{Mode: "none"}, nil
 	}
 
-	// The reader renders an EBOOK by paragraph-follow regardless of the row's
-	// unit: word-by-word karaoke on an ebook needs a composed word map we don't
-	// have yet, but a word-ANCHOR alignment still yields fine-grained paragraph
-	// times (many small segments → accurate anchors), so same-edition ebooks
-	// get a tight follow and cross-translation (embedding) a coarser one. The
-	// transcript source is the only word-by-word path (handled above). Method/
-	// Unit still report the underlying alignment for transparency.
+	// #210b: an EBOOK gets word-by-word karaoke when a composed per-word audio map
+	// actually exists for this chapter — a word-anchor alignment paired with the
+	// transcript, composed by BuildEbookWordSync. If that yields a non-empty map,
+	// report Mode "word" so the reader fetches the word-sync endpoint and lights up
+	// words one at a time, exactly like the transcript. (The old code hardcoded
+	// paragraph here with a stale "no composed map yet" comment — the map shipped
+	// as #210b, so the reader's mode==='word' branch could never fire for an ebook.)
+	// Fall back to paragraph-follow otherwise: a word-anchor alignment still yields
+	// fine-grained paragraph times (same-edition → tight; embedding → coarser).
+	if best.Unit == "word" {
+		if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err == nil && len(wm) > 0 {
+			return &TextSync{Mode: "word", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}, nil
+		}
+	}
 	out := &TextSync{Mode: "paragraph", Method: best.Method, Unit: best.Unit, Confidence: best.Confidence}
 
 	var p AnchorAlignmentPayload
