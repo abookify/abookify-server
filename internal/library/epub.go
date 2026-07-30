@@ -151,7 +151,11 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 	// EPUBs that put one chapter per file or use non-standard chapter titles).
 	segments := splitHTMLByHeadings(bookHTML)
 	if segments == nil {
-		return extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID)
+		perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID)
+		if err != nil {
+			return nil, err
+		}
+		return stripRunningHeaders(perFile), nil
 	}
 
 	for _, seg := range segments {
@@ -201,10 +205,10 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 	// merely because it exists. Both are cheap to compute on an epub.
 	if perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID); err == nil &&
 		len(perFile) > len(chapters) {
-		return perFile, nil
+		return stripRunningHeaders(perFile), nil
 	}
 
-	return chapters, nil
+	return stripRunningHeaders(chapters), nil
 }
 
 // Project Gutenberg wraps every ebook in a licence header and footer, fenced by
@@ -246,6 +250,125 @@ func trimGutenbergBoilerplate(html string) string {
 	}
 	return html
 }
+
+// Running-header/footer removal. Calibre and many publishers stamp a page
+// running-head — the book title, or a shortcode like "HH1 - <Title>" — into the
+// body of every section. Once tags are stripped it survives as a short line
+// repeated at the top (or bottom) of most chapters: Hitchhiker's Guide emits
+// "HH1 - Hitchhiker's Guide to the Galaxy" as a line in 35 of its 36 chapters.
+// Each such line joined a chunk, was embedded, and got retrieved + CITED as book
+// text — PJ saw a Q&A citation that was nothing but the repeated title, which is
+// worse than a cosmetic glitch because it's indistinguishable from a real one.
+//
+// isHeadingOnly (above) only drops a WHOLE chapter that is nothing but its
+// heading; a running head that LEADS a content-bearing chapter slips past it, so
+// remove it explicitly here.
+//
+// Detection keys on the single property that separates a running head from a
+// real chapter title: the running head is the SAME short line repeated across
+// most chapters, whereas chapter titles differ per chapter ("Chapter 1",
+// "Chapter 2", …). So a short line recurring in a high fraction of chapters is
+// boilerplate — and removing it can never take out a chapter's own
+// (per-chapter-distinct) title. Thresholds stay conservative so a short book or
+// an incidental repeat never trips it.
+const (
+	runHeaderMaxWords = 12  // a running head is short; real prose lines run longer
+	runHeaderMinChaps = 4   // never trigger on a handful of chapters
+	runHeaderFraction = 0.5 // must recur in at least half the chapters
+)
+
+// headerQuoteRepl folds smart quotes so "Hitchhiker's" (curly) and
+// "Hitchhiker's" (straight) — which appear in the SAME book's running head —
+// normalize to one key.
+var headerQuoteRepl = strings.NewReplacer("’", "'", "‘", "'", "“", "\"", "”", "\"")
+
+// normHeaderLine trims, folds smart quotes, and collapses internal whitespace so
+// running-head variants compare equal.
+func normHeaderLine(s string) string {
+	return strings.Join(strings.Fields(headerQuoteRepl.Replace(s)), " ")
+}
+
+// stripRunningHeaders removes detected running-header/footer lines from every
+// chapter's text (the source of chunks/embeddings/citations) and best-effort
+// from the reader HTML, then drops any chapter left empty and re-indexes.
+func stripRunningHeaders(chapters []db.Chapter) []db.Chapter {
+	if len(chapters) < runHeaderMinChaps {
+		return chapters
+	}
+	// Count, per normalized short line, how many DISTINCT chapters contain it.
+	chapCount := map[string]int{}
+	for _, ch := range chapters {
+		seen := map[string]bool{}
+		for _, line := range strings.Split(ch.Content, "\n") {
+			key := normHeaderLine(line)
+			if key == "" || len(strings.Fields(key)) > runHeaderMaxWords {
+				continue
+			}
+			if !seen[key] {
+				seen[key] = true
+				chapCount[key]++
+			}
+		}
+	}
+	threshold := runHeaderMinChaps
+	if f := int(float64(len(chapters)) * runHeaderFraction); f > threshold {
+		threshold = f
+	}
+	headers := map[string]bool{}
+	for key, n := range chapCount {
+		if n >= threshold {
+			headers[key] = true
+		}
+	}
+	if len(headers) == 0 {
+		return chapters
+	}
+
+	out := make([]db.Chapter, 0, len(chapters))
+	idx := 0
+	for _, ch := range chapters {
+		kept := make([]string, 0, 16)
+		for _, line := range strings.Split(ch.Content, "\n") {
+			if headers[normHeaderLine(line)] {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		ch.Content = strings.TrimSpace(strings.Join(kept, "\n"))
+		if ch.Content == "" {
+			continue // became empty once the boilerplate line(s) were removed
+		}
+		ch.ContentHTML = stripHeaderBlocksFromHTML(ch.ContentHTML, headers)
+		ch.WordCount = len(strings.Fields(ch.Content))
+		ch.Index = idx
+		idx++
+		out = append(out, ch)
+	}
+	return out
+}
+
+// stripHeaderBlocksFromHTML removes block elements (<p>, <h1-6>, <div>) whose
+// visible text is exactly a detected running header, so the rich reader view
+// matches the cleaned plain text. Best-effort and deliberately narrow: it only
+// touches a block whose entire (tag-stripped, normalized) text equals a header,
+// so it can't eat real prose. The plain-text strip above is the correctness fix
+// (chunks/embeddings/citations read Content); this just keeps the display tidy.
+func stripHeaderBlocksFromHTML(html string, headers map[string]bool) string {
+	if html == "" || len(headers) == 0 {
+		return html
+	}
+	return htmlBlockRe.ReplaceAllStringFunc(html, func(block string) string {
+		inner := normHeaderLine(htmlTagRe.ReplaceAllString(block, ""))
+		if headers[inner] {
+			return ""
+		}
+		return block
+	})
+}
+
+// htmlBlockRe matches a single <p>/<h1-6>/<div> … </p> block (non-greedy, no
+// nested same-tag block assumed — running heads are leaf blocks).
+var htmlBlockRe = regexp.MustCompile(`(?is)<(p|h[1-6]|div)\b[^>]*>.*?</(?:p|h[1-6]|div)>`)
 
 // extractPerSpineFile is the original one-chapter-per-spine-file extraction,
 // used when no chapter headings are detected or when the publisher's own file
