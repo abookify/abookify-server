@@ -178,12 +178,12 @@ func SettingsSchema() SettingsSchemaDoc {
 						Help: "Which device transcription runs on. Auto uses a GPU when one is present and falls back to CPU otherwise. Applies when the transcription engine (re)starts; the current device is shown below.",
 					},
 					{
-						Key: "stt_idle_timeout", Label: "Unload from memory after idle", Type: "select", Default: "60",
+						Key: "stt_idle_timeout", Label: "Unload the transcription model when idle", Type: "select", Default: "60",
 						Options: []SettingsOption{
 							{"5", "5 minutes"}, {"15", "15 minutes"}, {"30", "30 minutes"},
 							{"60", "1 hour (default)"}, {"0", "Never (always loaded)"},
 						},
-						Help: "The Whisper model uses ~3 GB of RAM (or VRAM on GPU). Unloading frees memory when not actively transcribing.",
+						Help: "Frees the Whisper speech-to-text model (~3 GB RAM, or VRAM on GPU) after it's been idle this long; it reloads automatically on the next transcription. This reclaims the transcription (STT) model ONLY — the Kokoro text-to-speech engine (~1 GB) has no unload endpoint, so it stays loaded regardless of this setting.",
 					},
 				},
 			},
