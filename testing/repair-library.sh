@@ -79,7 +79,7 @@ for f in sorted(set(out)): print(f)
 # Transcribe one book at a given pass. Pass 1 is plain; later passes escalate.
 # Multi-file books go file by file so progress survives an interruption.
 transcribe_pass() {
-  local name="$1" audio="$2" pass="$3" only="$4" extra=""
+  local name="$1" audio="$2" pass="$3" only="$4" out="$5" extra=""
   [ "$pass" -ge 2 ] && extra="-no-condition"
   [ "$pass" -ge 3 ] && extra="-no-condition -no-vad"
 
@@ -114,12 +114,21 @@ transcribe_pass() {
     return $rc
   fi
 
-  # Single file: no per-file resume to be had, the file IS the book.
-  $CLI -audio "$audio" $extra >> "$LOGS/$name.log" 2>&1
+  # Single file: no per-file resume to be had, the file IS the book. -output is
+  # explicit because the file may live INSIDE a directory named like the book,
+  # and the default (next to the input) would leave the fresh sidecar at the
+  # file-level path while findSidecar resolves the dir-level path FIRST — the
+  # import would then land the OLD decode and call it a repair.
+  $CLI -audio "$audio" -output "$out" $extra >> "$LOGS/$name.log" 2>&1
 }
 
 while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
   case "$fab" in ''|\#*) continue;; esac
+  # "-" is the empty-audiodir placeholder. It cannot be an actual empty field:
+  # tab is IFS whitespace, so read collapses consecutive tabs and an empty
+  # column shifts work_id into audiodir — every single-file book then
+  # transcribed on GPU and failed to land with NO_WORK_ID.
+  [ "$audiodir" = "-" ] && audiodir=""
   name=$(basename "$sidecar" .stt.json)
   grep -Fxq "$name" "$DONE" && continue
 
@@ -132,11 +141,23 @@ while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
       [ -f "$base.$ext" ] && { audio="$base.$ext"; break; }
     done
     # A single audio file can live INSIDE a directory named like the sidecar
-    # (Book.stt.json next to Book/01.mp3). The order file leaves audiodir empty
+    # (Book.stt.json next to Book/01.mp3). The order file leaves audiodir "-"
     # for single-file works, so the flat lookup above misses these — 9 books
     # (11,658 fabricated words) were about to be skipped as ORPHAN this way,
     # each skip recorded as if examined.
     [ -z "$audio" ] && [ -d "$base" ] && audio="$base"
+  fi
+  # A directory holding exactly ONE audio file must be repaired as that file:
+  # --bootstrap-sidecar refuses directories of fewer than two files (it exists
+  # for per-file resume, which a one-file book cannot use), and the refusal
+  # deleted the sidecar it was meant to rebuild.
+  if [ -d "$audio" ]; then
+    nfiles=$(find "$audio" -maxdepth 1 -type f \( -name '*.mp3' -o -name '*.m4a' -o -name '*.m4b' -o -name '*.flac' \) | wc -l)
+    if [ "$nfiles" -eq 1 ]; then
+      audio=$(find "$audio" -maxdepth 1 -type f \( -name '*.mp3' -o -name '*.m4a' -o -name '*.m4b' -o -name '*.flac' \))
+    elif [ "$nfiles" -eq 0 ]; then
+      audio=""
+    fi
   fi
   if [ -z "$audio" ]; then
     printf '%s\tORPHAN\t%s\t-\t-\t-\n' "$(date +%H:%M:%S)" "$name" >> "$PROG"
@@ -159,7 +180,7 @@ while IFS=$'\t' read -r fab dur sidecar audiodir workid; do
       [ -z "$only" ] && [ -d "$audio" ] && break
     fi
     used=$pass
-    transcribe_pass "$name" "$audio" "$pass" "$only"
+    transcribe_pass "$name" "$audio" "$pass" "$only" "$sidecar"
 
     # Land it before judging: the database is what the product reads, and
     # reimport-realign verifies the alignment was rewritten for the new text.

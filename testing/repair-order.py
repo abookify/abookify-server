@@ -149,7 +149,12 @@ def main():
     for y, collapsed, lowconf, dur, remaining, sc, audiodir, wid, title in rows:
         print(f"#{y:10.0f}  {collapsed:9d}  {remaining / 3600 / REALTIME:5.2f}  {title[:44]}",
               file=sys.stderr)
-        print(f"{collapsed}\t{dur}\t{sc}\t{audiodir}\t{wid}")
+        # "-" placeholder, never an empty field: the consumer reads with
+        # IFS=$'\t', and tab is IFS *whitespace*, so consecutive tabs collapse
+        # into one delimiter — an empty audiodir shifted work_id into audiodir
+        # and left work_id empty, which made every single-file book transcribe
+        # on GPU and then fail to land with NO_WORK_ID.
+        print(f"{collapsed}\t{dur}\t{sc}\t{audiodir or '-'}\t{wid}")
 
 
 if __name__ == "__main__":
