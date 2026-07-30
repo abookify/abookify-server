@@ -131,8 +131,56 @@ func mintGeminiLiveToken(client *http.Client, baseURL, apiKey string) (token str
 	return out.Name, nil
 }
 
+const deepgramBase = "https://api.deepgram.com"
+
+// deepgramAgentURL is the Voice Agent WebSocket the browser connects to with the
+// minted temporary token. Returned to the client so the transport isn't hardcoded
+// in two places.
+const deepgramAgentURL = "wss://agent.deepgram.com/v1/agent/converse"
+
+// deepgramGrantConfig is the EXACT body sent to mint a Deepgram temporary token.
+// EGRESS BOUNDARY: it carries ONLY a short TTL — NEVER any book or library text.
+// The Voice Agent config + any book grounding are set by the client on its own
+// connection, so nothing about the reader's library leaves at mint time.
+// TestVoiceSessionOutboundBoundary_NoBookText covers all three providers.
+func deepgramGrantConfig() map[string]any { return map[string]any{"ttl_seconds": 30} }
+
+// mintDeepgramToken mints a Deepgram short-lived token (POST /v1/auth/grant) from
+// the real key server-side; the browser gets ONLY the temporary token, so PJ's
+// key never reaches the client (same rule as OpenAI/Gemini). The token then auths
+// the Voice Agent WebSocket from the browser.
+func mintDeepgramToken(client *http.Client, baseURL, apiKey string) (token string, expiresIn int64, err error) {
+	body, _ := json.Marshal(deepgramGrantConfig())
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/auth/grant", bytes.NewReader(body))
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Token "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("deepgram grant failed: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", 0, fmt.Errorf("parse deepgram grant response: %w", err)
+	}
+	if out.AccessToken == "" {
+		return "", 0, fmt.Errorf("deepgram grant response had no token")
+	}
+	return out.AccessToken, out.ExpiresIn, nil
+}
+
 // handleVoiceSession mints an ephemeral realtime token for the browser, per
-// provider (?provider=openai default | google). It resolves the vendor key from
+// provider (?provider=openai default | google | deepgram). It resolves the vendor key from
 // the credentials vault (OpenAI also falls back to the legacy setting), so PJ's
 // already-stored key lights this up with no second paste, and returns ONLY the
 // ephemeral token — never the real key, for either provider.
@@ -185,6 +233,26 @@ func (s *Server) handleVoiceSession(w http.ResponseWriter, r *http.Request) {
 			"token": token, "model": geminiLiveModel,
 			"provider": "google", "transport": "gemini-live",
 		})
+	case "deepgram":
+		// Gate on the VERIFIED "voice" capability (probed), not mere key presence.
+		if !s.credentialHasCapability("deepgram", "voice") {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this Deepgram key hasn't verified the voice capability — re-save it in Settings → Keys"})
+			return
+		}
+		key := s.store.CredentialAPIKey("deepgram")
+		if key == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no Deepgram credential — add a Deepgram key in Settings → Keys"})
+			return
+		}
+		token, expiresIn, err := mintDeepgramToken(client, deepgramBase, key)
+		if err != nil {
+			writeServerError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token, "expires_in": expiresIn, "provider": "deepgram",
+			"transport": "deepgram-agent", "agent_url": deepgramAgentURL,
+		})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown voice provider: " + provider})
 	}
@@ -211,6 +279,10 @@ func (s *Server) handleVoiceAvailable(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.credentialHasCapability("google", "voice") {
 		providers = append(providers, "google")
+	}
+	// Deepgram Voice Agent — offered only when its credential VERIFIED "voice".
+	if s.credentialHasCapability("deepgram", "voice") {
+		providers = append(providers, "deepgram")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"available": len(providers) > 0,

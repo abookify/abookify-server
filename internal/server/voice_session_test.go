@@ -149,3 +149,75 @@ func TestVoiceAvailable_GoogleGatedOnVoiceCapability(t *testing.T) {
 		t.Fatal("a Gemini key must never claim tts — Google Cloud TTS is a separate product")
 	}
 }
+
+// TestDeepgramMint_NoBookText holds the SAME privacy boundary for Deepgram: the
+// grant body carries ONLY a TTL (no book/library text), the real key authorizes
+// server-side (Token header), and the caller gets only the temporary token.
+func TestDeepgramMint_NoBookText(t *testing.T) {
+	cfg := deepgramGrantConfig()
+	for k := range cfg {
+		if k != "ttl_seconds" {
+			t.Fatalf("PRIVACY BOUNDARY: deepgram grant config may carry only ttl_seconds, got field %q", k)
+		}
+	}
+	var capturedBody, capturedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v1/auth/grant") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		capturedBody = string(b)
+		capturedAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "dg_ephemeral_tok", "expires_in": 30})
+	}))
+	defer srv.Close()
+
+	tok, exp, err := mintDeepgramToken(srv.Client(), srv.URL, "dg-REAL-secret-key")
+	if err != nil {
+		t.Fatalf("deepgram mint: %v", err)
+	}
+	if tok != "dg_ephemeral_tok" || exp != 30 {
+		t.Fatalf("unexpected mint result: token=%q exp=%d", tok, exp)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(capturedBody), &body); err != nil {
+		t.Fatalf("parse captured body: %v", err)
+	}
+	for k := range body {
+		if k != "ttl_seconds" {
+			t.Fatalf("PRIVACY BOUNDARY: unexpected field %q in deepgram grant request: %s", k, capturedBody)
+		}
+	}
+	if capturedAuth != "Token dg-REAL-secret-key" {
+		t.Fatalf("real key should authorize the grant, got %q", capturedAuth)
+	}
+	if strings.Contains(tok, "dg-REAL") {
+		t.Fatal("PRIVACY BOUNDARY: the real key must never be returned to the caller")
+	}
+}
+
+// TestVoiceAvailable_DeepgramGatedOnVoiceCapability: Deepgram is offered for voice
+// ONLY once its credential verified "voice" — never on mere key presence, and it
+// must never claim stt/tts (it is voice conversation, not a karaoke STT path).
+func TestVoiceAvailable_DeepgramGatedOnVoiceCapability(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	id, err := store.UpsertProviderCredential("deepgram", "", map[string]string{"api_key": "dg-x"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if srv.credentialHasCapability("deepgram", "voice") {
+		t.Fatal("deepgram must NOT be voice-eligible before it verifies voice")
+	}
+	if err := store.SetCredentialCapabilities(id, []string{"voice"}); err != nil {
+		t.Fatalf("caps: %v", err)
+	}
+	if !srv.credentialHasCapability("deepgram", "voice") {
+		t.Fatal("deepgram should be voice-eligible once it verified voice")
+	}
+	for _, k := range []string{"stt", "tts"} {
+		if srv.credentialHasCapability("deepgram", k) {
+			t.Fatalf("deepgram voice-conversation key must never claim %q (not a karaoke STT path)", k)
+		}
+	}
+}
