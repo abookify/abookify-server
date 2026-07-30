@@ -183,7 +183,7 @@ func SettingsSchema() SettingsSchemaDoc {
 							{"5", "5 minutes"}, {"15", "15 minutes"}, {"30", "30 minutes"},
 							{"60", "1 hour (default)"}, {"0", "Never (always loaded)"},
 						},
-						Help: "Frees the Whisper speech-to-text model (~3 GB RAM, or VRAM on GPU) after it's been idle this long; it reloads automatically on the next transcription. This reclaims the transcription (STT) model ONLY — the Kokoro text-to-speech engine (~1 GB) has no unload endpoint, so it stays loaded regardless of this setting.",
+						Help: "Frees the Whisper speech-to-text model (~3.2 GB RAM, or VRAM on GPU) after it's been idle this long; the next transcription reloads it automatically at a one-time cost of about 1–2 seconds (measured on GPU; ~3 s cold). This reclaims the transcription (STT) model ONLY — the Kokoro text-to-speech engine (~1.1 GB) has no unload endpoint, so it stays loaded regardless of this setting.",
 					},
 				},
 			},
