@@ -507,6 +507,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/voice/session", s.handleVoiceSession)
 	mux.HandleFunc("GET /api/voice/available", s.handleVoiceAvailable)
 	mux.HandleFunc("GET /api/voice/gemini-relay", s.handleGeminiRelay)
+	mux.HandleFunc("GET /api/sync-health", s.handleSyncHealth)
 	// Book-grounding retrieval tool for a realtime voice turn — returns only the
 	// reading-position-bounded passages (same bound as Q&A); declines under
 	// extract-only (voice_session.go / library.VoiceContext).
