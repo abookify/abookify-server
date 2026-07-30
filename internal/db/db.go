@@ -684,6 +684,9 @@ func migrate(db *sql.DB) error {
 		// book's own text (verbatim passages, no generation), so a memorized classic
 		// can't leak plot the reader hasn't reached.
 		`ALTER TABLE qa_sessions ADD COLUMN answer_mode TEXT NOT NULL DEFAULT 'generated'`,
+		// The actual low-confidence PASSAGES (text + timestamps), so a reader can tap
+		// one, hear it, and judge — not just per-chapter counts. JSON []TrustPassage.
+		`ALTER TABLE text_trust ADD COLUMN passages_json TEXT NOT NULL DEFAULT '[]'`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -1538,6 +1541,7 @@ type TextTrustRow struct {
 	TotalWords    int    `json:"total_words"`
 	WorstAtSec    float64 `json:"worst_at_sec,omitempty"`
 	ChaptersJSON  string `json:"-"`
+	PassagesJSON  string `json:"-"`
 }
 
 // SaveTextTrust records (or replaces) a work's verdict. A clean result is stored
@@ -1550,18 +1554,22 @@ func (s *Store) SaveTextTrust(r TextTrustRow) error {
 	if r.ChaptersJSON == "" {
 		r.ChaptersJSON = "[]"
 	}
+	if r.PassagesJSON == "" {
+		r.PassagesJSON = "[]"
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO text_trust (work_id, checked_at, has_confidence, suspect_words,
-		                        total_words, worst_at_sec, chapters_json)
-		VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+		                        total_words, worst_at_sec, chapters_json, passages_json)
+		VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(work_id) DO UPDATE SET
 			checked_at     = CURRENT_TIMESTAMP,
 			has_confidence = excluded.has_confidence,
 			suspect_words  = excluded.suspect_words,
 			total_words    = excluded.total_words,
 			worst_at_sec   = excluded.worst_at_sec,
-			chapters_json  = excluded.chapters_json`,
-		r.WorkID, hc, r.SuspectWords, r.TotalWords, r.WorstAtSec, r.ChaptersJSON)
+			chapters_json  = excluded.chapters_json,
+			passages_json  = excluded.passages_json`,
+		r.WorkID, hc, r.SuspectWords, r.TotalWords, r.WorstAtSec, r.ChaptersJSON, r.PassagesJSON)
 	return err
 }
 
@@ -1570,10 +1578,10 @@ func (s *Store) GetTextTrust(workID int64) (*TextTrustRow, error) {
 	var r TextTrustRow
 	var hc int
 	err := s.db.QueryRow(`SELECT work_id, checked_at, has_confidence, suspect_words,
-	                             total_words, worst_at_sec, chapters_json
+	                             total_words, worst_at_sec, chapters_json, passages_json
 	                      FROM text_trust WHERE work_id = ?`, workID).
 		Scan(&r.WorkID, &r.CheckedAt, &hc, &r.SuspectWords, &r.TotalWords,
-			&r.WorstAtSec, &r.ChaptersJSON)
+			&r.WorstAtSec, &r.ChaptersJSON, &r.PassagesJSON)
 	if err != nil {
 		return nil, nil // never checked
 	}

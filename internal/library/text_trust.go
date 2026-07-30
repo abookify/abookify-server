@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -46,6 +47,18 @@ type TrustChapter struct {
 	SuspectWords int    `json:"suspect_words"`
 }
 
+// TrustPassage is one actual low-confidence run — the words themselves plus the
+// time to hear them — so a reader can tap it, play it, and judge for themselves
+// instead of trusting a count. This is what the chapter breakdown couldn't give.
+type TrustPassage struct {
+	ChapterIndex int     `json:"chapter_index"`
+	ChapterTitle string  `json:"chapter_title,omitempty"`
+	StartSec     float64 `json:"start_sec"`
+	EndSec       float64 `json:"end_sec"`
+	WordCount    int     `json:"word_count"`
+	Text         string  `json:"text"`
+}
+
 // TextTrust is the per-work payload.
 type TextTrust struct {
 	WorkID         int64          `json:"work_id"`
@@ -56,6 +69,7 @@ type TextTrust struct {
 	SuspectPercent float64        `json:"suspect_percent"`
 	WorstAtSec     float64        `json:"worst_at_sec,omitempty"`
 	Chapters       []TrustChapter `json:"chapters,omitempty"`
+	Passages       []TrustPassage `json:"passages,omitempty"`
 	Headline       string         `json:"headline"`
 	Detail         string         `json:"detail"`
 }
@@ -92,10 +106,12 @@ func trustCopy(state string, suspect, total int, pct float64) (string, string) {
 				"collapsed. In this library that has meant the text was invented rather than heard. "+
 				"Playback is unaffected; the reader, search and Q&A may show wording the narrator "+
 				"never said.", commaInt(suspect), commaInt(total), pct)
-	default: // minor
-		return "A few passages may not match the audio",
-			fmt.Sprintf("%s of %s words (%.2f%%) were transcribed with low confidence. Scattered "+
-				"rather than widespread, but those passages may not be what the narrator said.",
+	default: // minor — lead with the truth (nearly all matches); a low % overstated
+		// as a warning is its own dishonesty. Not shown as a banner (under 1%),
+		// available for the curious.
+		return "Nearly all of this matches the audio",
+			fmt.Sprintf("%s of %s words (%.2f%%) were transcribed with low confidence — a few "+
+				"scattered phrases that may not be exactly what the narrator said. The rest matches.",
 				commaInt(suspect), commaInt(total), pct)
 	}
 }
@@ -136,7 +152,82 @@ func BuildTextTrust(workID int64, row *db.TextTrustRow) TextTrust {
 	if row.ChaptersJSON != "" {
 		json.Unmarshal([]byte(row.ChaptersJSON), &out.Chapters)
 	}
+	if row.PassagesJSON != "" {
+		json.Unmarshal([]byte(row.PassagesJSON), &out.Passages)
+	}
 	return out
+}
+
+// maxTrustPassages caps the stored passage list — worst (longest) runs first, so
+// a reader sees the passages most likely to be wrong without an unbounded blob.
+const maxTrustPassages = 50
+
+// lowConfidencePassages returns the actual low-confidence runs as playable
+// passages: the run's own words, its [start,end] audio time, and the chapter it
+// falls in. Same single walk as the counts (cheap — no extra sidecar read), just
+// capturing the text + times instead of only tallying. Worst-first, capped, with
+// each passage's text bounded so the payload stays small.
+func lowConfidencePassages(store *db.Store, w *db.Work, words []sttWord) []TrustPassage {
+	// Chapter lookup by start time (transcript chapters carry StartSec/EndSec).
+	var chs []db.Chapter
+	for _, b := range w.TextFiles {
+		if b.Format == "transcript" || b.Origin == "whisper_transcript" {
+			chs, _ = store.ListChapters(b.ID)
+			break
+		}
+	}
+	chapterAt := func(sec float64) (int, string) {
+		for _, c := range chs {
+			if sec >= c.StartSec && (c.EndSec == 0 || sec < c.EndSec) {
+				return c.Index, c.Title
+			}
+		}
+		return -1, ""
+	}
+
+	var out []TrustPassage
+	var run []sttWord
+	flush := func() {
+		if len(run) >= minLowConfRun {
+			idx, title := chapterAt(run[0].Start)
+			out = append(out, TrustPassage{
+				ChapterIndex: idx, ChapterTitle: title,
+				StartSec: run[0].Start, EndSec: run[len(run)-1].End,
+				WordCount: len(run), Text: passageText(run),
+			})
+		}
+		run = nil
+	}
+	for _, x := range words {
+		if x.Probability < lowConfFloor {
+			run = append(run, x)
+		} else {
+			flush()
+		}
+	}
+	flush()
+
+	// Worst (longest) first, capped.
+	sort.Slice(out, func(i, j int) bool { return out[i].WordCount > out[j].WordCount })
+	if len(out) > maxTrustPassages {
+		out = out[:maxTrustPassages]
+	}
+	return out
+}
+
+// passageText joins a run's words and bounds the length so one pathological run
+// can't bloat the stored payload; the reader plays from the timestamp for the rest.
+func passageText(run []sttWord) string {
+	const maxRunes = 400
+	parts := make([]string, len(run))
+	for i, x := range run {
+		parts[i] = x.Word
+	}
+	s := strings.TrimSpace(strings.Join(parts, " "))
+	if len([]rune(s)) > maxRunes {
+		s = string([]rune(s)[:maxRunes]) + "…"
+	}
+	return s
 }
 
 // ComputeTextTrust examines a work's sidecar and persists the verdict, attributing
@@ -176,6 +267,9 @@ func ComputeTextTrust(store *db.Store, libraryRoot string, workID int64) (*TextT
 		if n > 0 {
 			if enc, e := json.Marshal(attributeToChapters(store, w, sc.Words)); e == nil {
 				row.ChaptersJSON = string(enc)
+			}
+			if enc, e := json.Marshal(lowConfidencePassages(store, w, sc.Words)); e == nil {
+				row.PassagesJSON = string(enc)
 			}
 		}
 	}
