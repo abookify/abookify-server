@@ -94,44 +94,30 @@ func (s *Server) sweepCoherence(reason string) {
 		applog.Warnf("system", "coherence sweep (%s) failed: %v", reason, err)
 		return
 	}
-	incoherent, degraded, healed := 0, 0, 0
+	incoherent, degraded := 0, 0
 	for i := range all {
 		wc := &all[i]
 		if !wc.Coherent {
+			incoherent++
+			// Loud: name the work and the disagreeing surfaces. This is the failure —
+			// the reader/Q&A/karaoke showing different text (chunks or sync). A stale
+			// trust badge is only DEGRADED, so it never reaches here.
 			surfaces := map[string]bool{}
 			for _, iss := range wc.Issues {
 				if iss.Severity == "incoherent" {
 					surfaces[iss.Surface] = true
 				}
 			}
-			// text_trust is the one derived surface a repair leaves stale that this
-			// process can safely heal itself: recompute the verdict from the current
-			// sidecar (chunks already re-chunk on import; sync is the repair's own
-			// output). Heal it, then drop the flag if that was the only disagreement,
-			// so a repaired book becomes coherent WITHOUT anyone re-checking by hand.
-			if surfaces["text_trust"] && s.LibraryDir != "" {
-				if _, err := library.ComputeTextTrust(s.store, s.LibraryDir, wc.WorkID); err == nil {
-					healed++
-					delete(surfaces, "text_trust")
-				}
-			}
-			if len(surfaces) == 0 {
-				continue // healed clean
-			}
-			incoherent++
 			applog.Warnf("system", "COHERENCE: work %d %q is INCOHERENT — %s disagree with the reader text (repaired book landed with stale derived data)",
 				wc.WorkID, wc.Title, strings.Join(sortedKeys(surfaces), "+"))
 		} else if wc.Degraded {
 			degraded++
 		}
 	}
-	if healed > 0 {
-		applog.Infof("system", "coherence sweep (%s): healed %d stale text-trust verdict(s)", reason, healed)
-	}
 	if incoherent > 0 {
 		applog.Warnf("system", "coherence sweep (%s): %d INCOHERENT, %d degraded, of %d works", reason, incoherent, degraded, len(all))
 	} else {
-		applog.Infof("system", "coherence sweep (%s): all %d works coherent (%d degraded, %d trust-healed)", reason, len(all), degraded, healed)
+		applog.Infof("system", "coherence sweep (%s): all %d works coherent (%d degraded)", reason, len(all), degraded)
 	}
 }
 

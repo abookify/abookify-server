@@ -184,12 +184,16 @@ func CheckWorkCoherence(store *db.Store, workID int64) (*WorkCoherence, error) {
 		}
 	}
 
-	// Sync stream vs the transcript text (work-level). The sync stream spans every
-	// narrated edition, so it reconciles against the SUM of all transcript editions'
-	// words — a repaired transcript that grew/shrank with stale sync diverges far
-	// past the tolerance; a coexisting second edition does not.
+	// The sync stream (word timing) — loaded once; feeds both the sync check and the
+	// text-trust freshness check, which share the sidecar word basis.
+	syncWords, _ := LoadWorkSyncWords(store, workID)
+
+	// Sync stream vs the transcript text (work-level, INCOHERENT — karaoke lands on
+	// the wrong words). The sync stream spans every narrated edition, so it
+	// reconciles against the SUM of all transcript editions' words — a repaired
+	// transcript that grew/shrank with stale sync diverges far past the tolerance;
+	// a coexisting second edition does not.
 	if totalTransWords > 0 {
-		syncWords, _ := LoadWorkSyncWords(store, workID)
 		switch {
 		case len(syncWords) == 0:
 			add(CoherenceIssue{
@@ -204,25 +208,22 @@ func CheckWorkCoherence(store *db.Store, workID int64) (*WorkCoherence, error) {
 		}
 	}
 
-	// Text-trust verdict vs the transcript text (work-level). The verdict is
-	// computed from ONE edition's sidecar, so it's fresh if its word count still
-	// matches ANY current transcript edition within tolerance; only if it matches
-	// none has the text moved out from under a stale verdict.
-	if len(transWordCounts) > 0 {
-		if row, _ := store.GetTextTrust(workID); row != nil && row.TotalWords > 0 {
-			fresh := false
-			for _, n := range transWordCounts {
-				if n > 0 && !countDivergesBeyond(row.TotalWords, n, trustWordCountTolerance) {
-					fresh = true
-					break
-				}
-			}
-			if !fresh {
-				add(CoherenceIssue{
-					Surface: "text_trust", Severity: coherenceSeverityIncoherent, BookID: transcriptBookID, Chapter: -1,
-					Detail: fmt.Sprintf("trust verdict was computed over %d words but no current transcript edition matches (now %d) — the badge reflects an old version of the text", row.TotalWords, totalTransWords),
-				})
-			}
+	// Text-trust verdict freshness (work-level, DEGRADED — it's a badge, not the
+	// reader/Q&A text). The verdict's word count comes from the sidecar; compare it
+	// against the sync stream, which shares that sidecar basis (comparing against the
+	// chapter-content count instead cross-basis-mismatches by a few percent even when
+	// fresh). If it diverges, the badge predates the latest repair — its sidecar
+	// hasn't caught up with the imported transcript, so it can't be healed here (a
+	// re-check reads the same stale sidecar); it refreshes when transcription
+	// re-writes the sidecar. Soft, because a slightly-old suspect % isn't the product
+	// showing the reader different words — that's what the chunk + sync checks catch.
+	if len(syncWords) > 0 {
+		if row, _ := store.GetTextTrust(workID); row != nil && row.TotalWords > 0 &&
+			countDivergesBeyond(row.TotalWords, len(syncWords), trustWordCountTolerance) {
+			add(CoherenceIssue{
+				Surface: "text_trust", Severity: coherenceSeverityDegraded, BookID: transcriptBookID, Chapter: -1,
+				Detail: fmt.Sprintf("trust verdict covers %d words but the current narration has %d — the trust badge predates the latest transcript (sidecar not yet caught up)", row.TotalWords, len(syncWords)),
+			})
 		}
 	}
 

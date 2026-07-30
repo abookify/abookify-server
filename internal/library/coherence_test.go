@@ -66,10 +66,29 @@ func TestWorkCoherence(t *testing.T) {
 	store.SaveSyncData(workID, transID, 0, `[{"w":"the","s":0,"e":1}]`) // 1 word vs 6
 	assertIncoherent(t, store, workID, "sync")
 
-	// Restore sync, then stale the trust verdict (wrong total_words) → incoherent text_trust.
+	// Restore sync, then stale the trust verdict (word count far from the sync
+	// stream) → DEGRADED text_trust (a badge lag, not the reader showing wrong text).
 	store.SaveSyncData(workID, transID, 0, `[{"w":"the","s":0,"e":1},{"w":"creature","s":1,"e":2},{"w":"was","s":2,"e":3},{"w":"gentle","s":3,"e":4},{"w":"and","s":4,"e":5},{"w":"kind","s":5,"e":6}]`)
 	store.SaveTextTrust(db.TextTrustRow{WorkID: workID, HasConfidence: true, TotalWords: 999})
-	assertIncoherent(t, store, workID, "text_trust")
+	wc2, err2 := CheckWorkCoherence(store, workID)
+	if err2 != nil {
+		t.Fatalf("check: %v", err2)
+	}
+	if !wc2.Coherent {
+		t.Fatalf("stale trust should be DEGRADED not incoherent, got incoherent: %+v", wc2.Issues)
+	}
+	if !wc2.Degraded {
+		t.Fatal("stale trust should flag degraded")
+	}
+	found := false
+	for _, iss := range wc2.Issues {
+		if iss.Surface == "text_trust" && iss.Severity == coherenceSeverityDegraded {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a degraded text_trust issue, got %+v", wc.Issues)
+	}
 }
 
 func assertIncoherent(t *testing.T, store *db.Store, workID int64, surface string) {
