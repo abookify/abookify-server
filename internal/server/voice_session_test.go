@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestVoiceSessionOutboundBoundary_NoBookText enforces the privacy stance in
@@ -84,8 +85,12 @@ func TestRealtimeSessionConfig_MinimalShape(t *testing.T) {
 // Live provider: the mint body carries no book/library text, the real key stays
 // in the query server-side, and the caller gets only the ephemeral token (name).
 func TestGeminiLiveMint_NoBookText(t *testing.T) {
-	if len(geminiLiveTokenConfig()) != 0 {
-		t.Fatalf("gemini mint config must be empty (no book/library text), got %v", geminiLiveTokenConfig())
+	// The mint body carries ONLY token-lifetime fields — never book/library text.
+	allowed := map[string]bool{"uses": true, "expireTime": true, "newSessionExpireTime": true}
+	for k := range geminiLiveTokenConfig(time.Unix(0, 0)) {
+		if !allowed[k] {
+			t.Fatalf("PRIVACY BOUNDARY: gemini mint config may carry only token-lifetime fields, got %q", k)
+		}
 	}
 	var capturedBody, capturedQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +112,14 @@ func TestGeminiLiveMint_NoBookText(t *testing.T) {
 	if tok != "auth_tokens/ephemeral-xyz" {
 		t.Fatalf("expected the ephemeral token name, got %q", tok)
 	}
-	if strings.TrimSpace(capturedBody) != "{}" {
-		t.Fatalf("PRIVACY BOUNDARY: gemini mint body must be empty session config, got %q", capturedBody)
+	var gbody map[string]any
+	if err := json.Unmarshal([]byte(capturedBody), &gbody); err != nil {
+		t.Fatalf("parse gemini mint body: %v", err)
+	}
+	for k := range gbody {
+		if !allowed[k] {
+			t.Fatalf("PRIVACY BOUNDARY: gemini mint body may carry only token-lifetime fields, got %q in %s", k, capturedBody)
+		}
 	}
 	if !strings.Contains(capturedQuery, "AIza-REAL-google-key") {
 		t.Fatalf("real key should authorize the mint via query, got %q", capturedQuery)

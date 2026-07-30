@@ -93,18 +93,26 @@ const geminiBase = "https://generativelanguage.googleapis.com"
 const geminiLiveModel = "gemini-2.5-flash-native-audio-latest"
 
 // geminiLiveTokenConfig is the EXACT body sent to mint a Gemini Live ephemeral
-// token. EGRESS BOUNDARY: an empty session config — NEVER book/library text. The
-// model + any book grounding are set by the client on its Live connection, so
-// nothing about the reader's library leaves at mint time.
-// TestVoiceSessionOutboundBoundary_NoBookText covers both providers.
-func geminiLiveTokenConfig() map[string]any { return map[string]any{} }
+// token. EGRESS BOUNDARY: token-LIFETIME config ONLY (single use + short expiry)
+// — NEVER book/library text. An empty-config token is rejected by the Live WS
+// with a 1008 "unregistered caller" (confirmed with a real key), so these fields
+// are required; none of them carry reader content. The model + any book grounding
+// are set by the client on its Live connection. TestGeminiLiveMint_NoBookText
+// locks the allowed field set.
+func geminiLiveTokenConfig(now time.Time) map[string]any {
+	return map[string]any{
+		"uses":                 1,
+		"expireTime":           now.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+		"newSessionExpireTime": now.Add(1 * time.Minute).UTC().Format(time.RFC3339),
+	}
+}
 
 // mintGeminiLiveToken mints a Gemini Live ephemeral token (POST
 // /v1alpha/auth_tokens — pinned live 2026-07-29: 200, returns {"name": token}).
 // The real Google key is used ONLY here, server-side; the browser gets only the
 // ephemeral token, so PJ's key never reaches the client (same rule as OpenAI).
 func mintGeminiLiveToken(client *http.Client, baseURL, apiKey string) (token string, err error) {
-	body, _ := json.Marshal(geminiLiveTokenConfig())
+	body, _ := json.Marshal(geminiLiveTokenConfig(time.Now()))
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1alpha/auth_tokens?key="+url.QueryEscape(apiKey), bytes.NewReader(body))
 	if err != nil {
 		return "", err
