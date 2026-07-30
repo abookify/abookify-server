@@ -190,8 +190,10 @@
     try { if (pc) pc.close(); } catch (e) {}
     try { if (geminiWS) geminiWS.close(); } catch (e) {}
     try { if (geminiCaptureCtx) geminiCaptureCtx.close(); } catch (e) {}
+    try { if (deepgramWS) deepgramWS.close(); } catch (e) {}
+    try { if (deepgramCaptureCtx) deepgramCaptureCtx.close(); } catch (e) {}
     try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-    pc = dc = micStream = geminiWS = geminiCaptureCtx = null;
+    pc = dc = micStream = geminiWS = geminiCaptureCtx = deepgramWS = deepgramCaptureCtx = null;
   }
 
   async function onEvent(ev) {
@@ -251,6 +253,9 @@
       // Gemini Live uses a WebSocket + streamed PCM (a different transport than
       // OpenAI's WebRTC); the model, grounding and boundary are identical.
       if (sess.transport === 'gemini-live') { await startGemini(sess); return; }
+      // Deepgram Voice Agent — WebSocket + raw linear16 PCM (its own transport);
+      // same grounding + boundary (search_book → /voice-context).
+      if (sess.transport === 'deepgram-agent') { await startDeepgram(sess); return; }
 
       pc = new RTCPeerConnection();
       pc.ontrack = e => { $('remoteAudio').srcObject = e.streams[0]; };
@@ -422,6 +427,110 @@
     ws.onclose = () => { if (!connected) networkFail(); };
   }
 
+  // ---- Deepgram Voice Agent transport (WebSocket + raw linear16 PCM) ----
+  // Same grounding + boundary as OpenAI/Gemini: the agent calls search_book and we
+  // relay to /voice-context (bounded to the reader's position), so only that turn's
+  // audio + the returned in-bounds passages ever leave. The real key never reaches
+  // here — the server minted a short-lived token (sess.token). The think model is
+  // Deepgram-hosted so the ONLY third party in the chain is Deepgram (the one the
+  // user chose), not a second LLM vendor — one explicit boundary, not two.
+  //
+  // Protocol per Deepgram's Voice Agent docs; the exact Settings shape (audio
+  // encodings, think model, function-call event names) + the temp-token WS
+  // subprotocol want a live confirmation with a real key (flagged in the handoff).
+  let deepgramWS = null, deepgramCaptureCtx = null;
+
+  // Play a raw linear16 PCM chunk (ArrayBuffer, mono) at sampleRate, gaplessly.
+  function enqueuePcmBuffer(ctx, arrayBuf, playHead, sampleRate) {
+    const i16 = new Int16Array(arrayBuf), n = i16.length;
+    if (!n) return playHead;
+    const buf = ctx.createBuffer(1, n, sampleRate), ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = i16[i] / 32768;
+    const node = ctx.createBufferSource(); node.buffer = buf; node.connect(ctx.destination);
+    const startAt = Math.max(ctx.currentTime, playHead); node.start(startAt);
+    return startAt + buf.duration;
+  }
+
+  async function handleDeepgramFunctionCall(ws, fn) {
+    let args = {}; try { args = JSON.parse(fn.arguments || '{}'); } catch (e) {}
+    let output;
+    try {
+      const r = await fetch('/api/works/' + BOOK.work + '/voice-context', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: args.query || '', scope_mode: 'reading', reader_book_id: BOOK.bookId, reader_chapter: BOOK.chapter }),
+      });
+      output = await r.json();
+    } catch (e) { output = { grounded: false, reason: 'the book lookup failed' }; }
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: 'search_book', content: JSON.stringify(output) }));
+    if (output && output.grounded === false && output.reason) logLine('AI', '(' + output.reason + ')');
+  }
+
+  function startDeepgramMic(ws) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    deepgramCaptureCtx = ctx;
+    const src = ctx.createMediaStreamSource(micStream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = e => {
+      if (ws.readyState !== 1) return;
+      const f = e.inputBuffer.getChannelData(0), i16 = new Int16Array(f.length);
+      for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF; }
+      ws.send(i16.buffer); // raw linear16 binary — Deepgram takes raw audio, not JSON-wrapped
+    };
+    const mute = ctx.createGain(); mute.gain.value = 0;
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  }
+
+  async function startDeepgram(sess) {
+    // Deepgram authenticates a browser WS via Sec-WebSocket-Protocol; a minted
+    // temporary token uses the "bearer" subprotocol.
+    const ws = new WebSocket(sess.agent_url, ['bearer', sess.token]);
+    ws.binaryType = 'arraybuffer';
+    deepgramWS = ws;
+    const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    let playHead = 0;
+    setStatus('Connecting to Deepgram…');
+    clearWatchdog();
+    iceWatchdog = setTimeout(() => { if (!connected) networkFail(); }, 20000);
+    ws.onopen = () => {
+      const settings = {
+        type: 'Settings',
+        audio: {
+          input: { encoding: 'linear16', sample_rate: 16000 },
+          output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
+        },
+        agent: {
+          language: 'en',
+          listen: { provider: { type: 'deepgram', model: 'nova-3' } },
+          think: {
+            provider: { type: 'deepgram' }, // Deepgram-hosted — no second LLM vendor
+            prompt: BOOK.work ? GROUND_INSTRUCTIONS : GENERAL_INSTRUCTIONS,
+            functions: BOOK.work ? [SEARCH_BOOK_DECL] : [],
+          },
+          speak: { provider: { type: 'deepgram', model: 'aura-2-thalia-en' } },
+        },
+      };
+      ws.send(JSON.stringify(settings));
+    };
+    ws.onmessage = async ev => {
+      if (ev.data instanceof ArrayBuffer) { playHead = enqueuePcmBuffer(playCtx, ev.data, playHead, 24000); return; }
+      let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      switch (msg.type) {
+        case 'Welcome':
+        case 'SettingsApplied':
+          if (!connected) { connected = true; clearWatchdog(); setStatus('Live — just start talking.', 'live'); $('stopBtn').hidden = false; startDeepgramMic(ws); }
+          break;
+        case 'ConversationText':
+          if (msg.role && msg.content) logLine(msg.role === 'user' ? 'You' : 'AI', String(msg.content).trim());
+          break;
+        case 'FunctionCallRequest':
+          for (const fn of (msg.functions || [])) if (fn.name === 'search_book') await handleDeepgramFunctionCall(ws, fn);
+          break;
+      }
+    };
+    ws.onerror = () => setStatus('Deepgram voice connection error.', 'warn');
+    ws.onclose = () => { if (!connected) networkFail(); };
+  }
+
   // Offer a provider choice only when more than one key can serve voice (from
   // the capability-gated availability). OpenAI (WebRTC) is the default/first.
   (async () => {
@@ -430,7 +539,7 @@
       const provs = (a && a.providers) || [];
       if (provs.length > 1) {
         const sel = $('provider');
-        const label = { openai: 'OpenAI Realtime', google: 'Google Gemini Live' };
+        const label = { openai: 'OpenAI Realtime', google: 'Google Gemini Live', deepgram: 'Deepgram Voice Agent' };
         sel.innerHTML = provs.map(p => '<option value="' + p + '">' + (label[p] || p) + '</option>').join('');
         $('providerRow').hidden = false;
       }
