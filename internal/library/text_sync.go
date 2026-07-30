@@ -61,7 +61,17 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		}
 	}
 	if transIDs[bookID] {
-		return &TextSync{Mode: "word", Method: "transcript", Unit: "word", Confidence: 1}, nil
+		// A transcript is word-timed STT output, so its default mode is word-by-word.
+		// But only claim mode=word when this chapter ACTUALLY has retrievable word
+		// timing — a chapter with an empty map is a lie the reader silently swallows
+		// (text-sync promises karaoke, the map endpoint delivers nothing). Today every
+		// live transcript chapter has timing, so this is a guard against a future
+		// wordless/imported transcript rather than a live repair — but the endpoint
+		// must never promise word level it can't deliver.
+		if wm, _ := BuildTranscriptWordSync(store, workID, bookID, chapterIdx); len(wm) > 0 {
+			return &TextSync{Mode: "word", Method: "transcript", Unit: "word", Confidence: 1}, nil
+		}
+		return &TextSync{Mode: "none", Method: "transcript", Unit: "word"}, nil
 	}
 
 	aligns, err := store.ListAlignmentsForWork(workID)
@@ -360,6 +370,102 @@ const (
 	minWordsForRateCheck    = 30 // don't rate-check tiny maps (a heading / one-line page)
 	maxPlausibleWordsPerSec = 8  // above this the per-word times are collapsed/garbage (real narration ~2–3)
 )
+
+// BuildTranscriptWordSync composes the per-word audio map for one chapter of a
+// displayed TRANSCRIPT (the Whisper output itself). The transcript's word timing
+// lives in sync_data (keyed by audio book) as one continuous blob on the same
+// audio timeline as the transcript chapters' start/end secs; this returns the
+// words whose timestamps fall inside the chapter's [start,end) window — exactly
+// the slice the reader filters out of the blob per chapter. Empty (nil) when the
+// work has no sync_data or this chapter has no words, so callers can tell an
+// honest "no word timing here" from a real map. This is the transcript
+// counterpart to BuildEbookWordSync so BOTH word-mode sources answer the same
+// /word-sync endpoint with a real map (mobile hit an empty map calling that
+// endpoint for a transcript, since BuildEbookWordSync deliberately bails).
+func BuildTranscriptWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
+	chapters, err := store.ListChapters(bookID)
+	if err != nil {
+		return nil, err
+	}
+	var start, end float64
+	found := false
+	for _, ch := range chapters {
+		if ch.Index == chapterIdx {
+			start, end, found = ch.StartSec, ch.EndSec, true
+			break
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	all, err := LoadWorkSyncWords(store, workID)
+	if err != nil || len(all) == 0 {
+		return nil, nil
+	}
+	return SliceTranscriptChapter(all, start, end), nil
+}
+
+// LoadWorkSyncWords parses every sync_data row for a work into one continuous
+// []SyncWord (the transcript's word timeline). Parsing the (potentially large)
+// blob is the expensive step, so callers that inspect many chapters of the same
+// transcript should load ONCE and reuse it with SliceTranscriptChapter rather
+// than calling BuildTranscriptWordSync per chapter (which re-parses each time).
+func LoadWorkSyncWords(store *db.Store, workID int64) ([]SyncWord, error) {
+	rows, err := store.ListSyncForWork(workID)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	var all []SyncWord
+	for _, r := range rows {
+		var ws []SyncWord
+		if json.Unmarshal([]byte(r.Timestamps), &ws) != nil {
+			continue
+		}
+		all = append(all, ws...)
+	}
+	return all, nil
+}
+
+// SliceTranscriptChapter returns the words overlapping a chapter's [start,end)
+// audio window. A single-chapter transcript carries no per-chapter bounds
+// (start==end==0) — then the whole blob IS the chapter. Returns nil when nothing
+// overlaps, the honest "no word timing here" signal.
+func SliceTranscriptChapter(all []SyncWord, start, end float64) []SyncWord {
+	if len(all) == 0 {
+		return nil
+	}
+	if end <= start {
+		return all
+	}
+	out := make([]SyncWord, 0, len(all))
+	for _, w := range all {
+		if w.E > start && w.S < end {
+			out = append(out, w)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// BuildDisplayWordSync returns the per-word audio map for ANY displayed word-mode
+// source — the transcript (BuildTranscriptWordSync) or a word-anchor ebook
+// (BuildEbookWordSync) — so the /word-sync endpoint delivers a real map whichever
+// source the reader shows. Empty (nil) when the source has no per-word timing for
+// the chapter, which is the honest "fall back to paragraph / none" signal.
+func BuildDisplayWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
+	work, err := store.GetWork(workID)
+	if err != nil || work == nil {
+		return nil, err
+	}
+	for _, b := range work.TextFiles {
+		if b.ID == bookID && (b.Origin == "whisper_transcript" || b.Format == "transcript") {
+			return BuildTranscriptWordSync(store, workID, bookID, chapterIdx)
+		}
+	}
+	return BuildEbookWordSync(store, workID, bookID, chapterIdx)
+}
 
 func clamp01(f float64) float64 {
 	if f < 0 {
