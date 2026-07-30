@@ -966,11 +966,13 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEbookWordSync returns a composed per-word audio map for one chapter of
-// a word-anchor-aligned ebook (#210b) — the same {w,s,e} shape as the
-// transcript sync_data, so the reader drives ebook word-by-word karaoke
-// through the identical path. `[]` (not 404) when the source isn't a
-// word-anchor ebook or the chapter has no per-word timing, so the client
-// cleanly falls back to paragraph-follow.
+// ANY displayed word-mode source — a word-anchor-aligned ebook (#210b) OR the
+// transcript itself — in the same {w,s,e} shape as sync_data, so the reader
+// drives word-by-word karaoke through the identical path whichever source is
+// shown. `[]` (not 404) when the source has no per-word timing for the chapter,
+// so the client cleanly falls back to paragraph-follow. (A transcript book used
+// to return `[]` here because the ebook builder bailed on transcripts — the
+// promise/deliver mismatch mobile hit; BuildDisplayWordSync now serves both.)
 func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
@@ -987,7 +989,7 @@ func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
 		return
 	}
-	words, err := library.BuildEbookWordSync(s.store, id, bookID, chapterIdx)
+	words, err := library.BuildDisplayWordSync(s.store, id, bookID, chapterIdx)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
