@@ -336,8 +336,30 @@ func BuildEbookWordSync(store *db.Store, workID, bookID int64, chapterIdx int) (
 		}
 		out[i] = SyncWord{W: words[i], S: times[i], E: end}
 	}
+
+	// Plausibility guard. A failed alignment (near-zero confidence) can still
+	// produce a NON-EMPTY word map whose per-word times are collapsed into a tiny
+	// range — Plato's Republic aligns 20k words into <1s, and every chapter reads
+	// ~12–25,000 words/sec. Word-by-word karaoke on those times is worse than none:
+	// it "highlights" nonsensically. If the composed map implies an impossible
+	// narration rate, reject it (return empty) so BuildTextSync falls back to
+	// paragraph, then to an honest mode "none". Real narration is ~2–3 words/sec; a
+	// SLOW map (sparse anchors over a long chapter) is fine — only collapsed/too-fast
+	// is garbage. (Counterpart to the mode-precedence fix: prefer the word map, but
+	// only when it's actually usable.)
+	if n >= minWordsForRateCheck {
+		span := out[n-1].S - out[0].S
+		if span <= 0 || float64(n)/span > maxPlausibleWordsPerSec {
+			return nil, nil
+		}
+	}
 	return out, nil
 }
+
+const (
+	minWordsForRateCheck    = 30 // don't rate-check tiny maps (a heading / one-line page)
+	maxPlausibleWordsPerSec = 8  // above this the per-word times are collapsed/garbage (real narration ~2–3)
+)
 
 func clamp01(f float64) float64 {
 	if f < 0 {
