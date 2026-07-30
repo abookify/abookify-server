@@ -453,6 +453,9 @@
     .tt-pass-body { min-width: 0; }
     .tt-pass-text { font-size: 0.92rem; line-height: 1.4; overflow-wrap: anywhere; }
     .tt-pass-where { color: var(--text-muted); font-size: 0.78rem; margin-top: 2px; }
+    .meld-play { margin-left: 8px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.7rem; white-space: nowrap; }
+    .tt-review-head { display: flex; align-items: center; gap: 8px; font-size: 0.98rem; }
+    .tt-review-head .tt-state-dot { flex: 0 0 auto; }
     .media-pill.align-good { background: rgba(52,211,153,0.15); color: var(--success); }
     .media-pill.align-warn { background: rgba(245,158,11,0.15); color: var(--ebook-only); }
     .media-pill.align-bad  { background: rgba(233,69,96,0.15);  color: var(--danger); }
@@ -3609,7 +3612,7 @@
             slot.setAttribute('tabindex', '0');
             slot.setAttribute('title', title);
             slot.setAttribute('aria-label', title);
-            slot.onclick = (e) => { e.stopPropagation(); openTextTrust(id); };
+            slot.onclick = (e) => { e.stopPropagation(); openAbookSummary(id); };
             slot.textContent = tt.state === 'verified' ? 'Text ✓' : 'Text · details';
           } else {
             slot.className = 'tt-slot';
@@ -3627,7 +3630,7 @@
         slot.setAttribute('tabindex', '0');
         slot.setAttribute('title', p.title);
         slot.setAttribute('aria-label', p.title);
-        slot.onclick = (e) => { e.stopPropagation(); openTextTrust(id); };
+        slot.onclick = (e) => { e.stopPropagation(); openAbookSummary(id); };
         slot.textContent = p.text;
       });
     }
@@ -3693,6 +3696,13 @@
       closeTextTrust();
       if (work) { try { await seekToAbsoluteBookTime(work, sec, work.title); } catch {} }
     }
+    // Play from an audio moment WITHOUT closing the review, so a reader can hear
+    // one passage/divergence after another and judge by ear. Used by the review's
+    // passages and the meld divergence cards.
+    async function reviewPlayAt(workId, sec) {
+      const work = (allWorks || []).find(w => w.id === workId);
+      if (work) { try { await seekToAbsoluteBookTime(work, sec, work.title); } catch {} }
+    }
     async function ttCheckNow(workId) {
       metaStatus('Checking the text against the audio…');
       try {
@@ -3704,7 +3714,7 @@
         else delete textTrustByWork[workId];
         fillTextTrustBadges();
         metaStatus('Text-trust check complete.');
-        openTextTrust(workId);
+        openAbookSummary(workId); // reopen the review with the fresh verdict + passages
       } catch (e) { metaStatus('Check failed: ' + e, true); }
     }
 
@@ -4290,17 +4300,19 @@
       ensureAbookSummaryHost();
       const body = document.getElementById('abs-body');
 
-      let work, alignments = [];
+      let work, alignments = [], trust = null;
       try {
-        const [wRes, aRes] = await Promise.all([
+        const [wRes, aRes, tRes] = await Promise.all([
           fetch(`/api/works/${workId}`),
           fetch(`/api/works/${workId}/alignments`),
+          fetch(`/api/works/${workId}/text-trust`).catch(() => null),
         ]);
         if (!wRes.ok) throw new Error('book ' + wRes.status);
         work = await wRes.json();
         if (aRes.ok) alignments = (await aRes.json()) || [];
+        if (tRes && tRes.ok) trust = await tRes.json();
       } catch (e) {
-        body.innerHTML = `<p style="color:var(--danger)">Couldn't load the .abook summary.</p>`;
+        body.innerHTML = `<p style="color:var(--danger)">Couldn't load this book's review.</p>`;
         return;
       }
 
@@ -4350,13 +4362,46 @@
       body.innerHTML = `
         <h2 style="margin:0 0 0.15rem">${escapeHtml(work.title || 'Untitled')}</h2>
         <div style="color:var(--muted);font-size:0.85rem">${escapeHtml(work.author || 'Unknown author')}</div>
-        <p class="abs-intro">How this .abook is put together — its sources and how closely the audio and ebook line up.</p>
+        <p class="abs-intro">Check this book against itself — how closely the narration matches the text, and any passages worth hearing for yourself.</p>
+        ${renderReviewTrust(workId, trust)}
+        ${alignmentHtml}
         <div class="abs-section">
           <div class="abs-label">Sources</div>
           ${sources || '<div class="abs-empty">No sources.</div>'}
           <div class="abs-total">${nSources} ${nSources === 1 ? 'source' : 'sources'}${totalBytes > 0 ? ` · ${formatSize(totalBytes)} total` : ''}</div>
-        </div>
-        ${alignmentHtml}`;
+        </div>`;
+    }
+
+    // The trust section that leads the review: the server's plain-language verdict
+    // plus the actual suspect passages, each a ▶ to hear it and judge by ear. This
+    // is the benefit-first answer to "can I trust this book", not a diagnostics
+    // console. Hidden entirely when the book was never transcribed (nothing to check).
+    function renderReviewTrust(workId, trust) {
+      if (!trust || !trust.state) return '';
+      const passages = (trust.passages || []);
+      const passageRows = passages.map(p => {
+        const where = escapeHtml(p.chapter_title || (p.chapter_index >= 0 ? ('Chapter ' + (p.chapter_index + 1)) : ''));
+        return `<div class="tt-pass-row">
+          <button class="tt-pass-play" onclick="reviewPlayAt(${workId}, ${p.start_sec})" title="Play from ${formatTime(p.start_sec)}">&#9654; ${formatTime(p.start_sec)}</button>
+          <div class="tt-pass-body"><div class="tt-pass-text">${escapeHtml(p.text || '')}</div>${where ? `<div class="tt-pass-where">${where}</div>` : ''}</div>
+        </div>`;
+      }).join('');
+      const counts = trust.total_words
+        ? `${(trust.suspect_words || 0).toLocaleString()} of ${(trust.total_words || 0).toLocaleString()} words (${Number(trust.suspect_percent || 0).toFixed(2)}%)`
+        : '';
+      const recheck = (trust.state === 'unchecked')
+        ? `<button class="tt-check" onclick="ttCheckNow(${workId})">Check this book now</button>`
+        : `<button class="tt-check secondary" onclick="ttCheckNow(${workId})">Re-check</button>`;
+      return `<div class="abs-section tt-${escapeHtml(trust.state)}">
+        <div class="abs-label">Can you trust this text?</div>
+        <div class="tt-review-head"><span class="tt-state-dot"></span><strong>${escapeHtml(trust.headline || '')}</strong></div>
+        <p class="tt-detail" style="margin:.3rem 0 .2rem">${escapeHtml(trust.detail || '')}</p>
+        ${counts ? `<div class="tt-counts">${counts}</div>` : ''}
+        ${passages.length
+          ? `<div class="abs-label" style="margin-top:.7rem">The passages worth hearing — tap &#9654; to judge for yourself</div><div class="tt-pass-list">${passageRows}</div>`
+          : ''}
+        <div class="tt-actions">${recheck}</div>
+      </div>`;
     }
 
     function closeAbookSummary(e) {
@@ -4481,16 +4526,20 @@
         const at = s.a_text ? escapeHtml(s.a_text) : '';
         const bt = s.b_text ? escapeHtml(s.b_text) : '';
         const loc = `${Math.round((s.a_pct || 0) * 100)}% in`;
+        // Time-anchored → a ▶ to hear the narration right there and judge by ear.
+        const play = (s.start_sec > 0)
+          ? `<button class="meld-play" onclick="reviewPlayAt(${workId}, ${s.start_sec})" title="Play from ${formatTime(s.start_sec)}">&#9654; ${formatTime(s.start_sec)}</button>`
+          : '';
         if (s.kind === 'ebook-only') {
-          rows.push(`<div class="meld-card ebook"><div class="meld-tag ebook">Skipped in audio · ${loc}</div><div class="meld-text">${at}</div></div>`);
+          rows.push(`<div class="meld-card ebook"><div class="meld-tag ebook">Skipped in audio · ${loc}${play}</div><div class="meld-text">${at}</div></div>`);
         } else if (s.kind === 'trans-only') {
-          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Not in ebook · ${loc}</div><div class="meld-text">${bt}</div></div>`);
+          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Not in ebook · ${loc}${play}</div><div class="meld-text">${bt}</div></div>`);
         } else { // replace
           // Word-level diff so the actual change pops out of two otherwise
           // near-identical paragraphs. Skipped for large blocks (different
           // content, not a rewording) to bound the O(n·m) LCS.
           const dh = wordDiffHtml(s.a_text || '', s.b_text || '');
-          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Differs · ${loc}</div>
+          rows.push(`<div class="meld-card trans"><div class="meld-tag trans">Differs · ${loc}${play}</div>
             <div class="meld-pair"><div class="meld-side"><span class="meld-side-label">Ebook</span>${dh.a || '<em>—</em>'}</div>
             <div class="meld-side"><span class="meld-side-label">Audio</span>${dh.b || '<em>—</em>'}</div></div></div>`);
         }
