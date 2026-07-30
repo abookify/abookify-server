@@ -596,6 +596,23 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 		}
 	}
 
+	// The transcript's chapters have just been rewritten, so its RAG chunks now
+	// describe text that is no longer there. Nothing else re-chunks a transcript:
+	// the ebook path has cmd/rechunk (which skips non-epub books) and the server
+	// only chunks at scan time, so a re-imported sidecar left Q&A retrieving and
+	// citing the OLD words indefinitely.
+	//
+	// Found by repairing Free Will end to end: the reader showed the corrected
+	// text while the chunks still held a sentence the narrator never said. Fixing
+	// the sidecar is not the same as fixing what the product says.
+	//
+	// ChunkBook is a no-op when the chunks still match, so this costs nothing on a
+	// re-import that changed nothing. New chunks carry empty embeddings, which the
+	// server's embed pass fills.
+	if err := ChunkBook(store, textBookID); err != nil {
+		log.Printf("sidecar-import: re-chunk transcript book %d failed: %v", textBookID, err)
+	}
+
 	return nil
 }
 
