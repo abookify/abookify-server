@@ -17,6 +17,7 @@
 //   - Segments: aligned / ebook-only / trans-only / replace spans (global
 //     offsets). Divergences are the non-aligned segments.
 //   - Coverage + Divergence: summary numbers for the per-work indicator.
+//
 // To get an audio timestamp for an ebook range: map it through the aligned
 // segments to a transcript global offset, use TransChapters to get
 // (transcript chapter, local word), then the existing sync_data path
@@ -36,10 +37,10 @@ import (
 // DivergenceSummary is the per-work reporting the UI surfaces: how much of
 // the ebook the audio covers, and the largest mismatches.
 type DivergenceSummary struct {
-	AlignedSegs   int `json:"aligned_segs"`
-	EbookOnlySegs int `json:"ebook_only_segs"`
-	TransOnlySegs int `json:"trans_only_segs"`
-	ReplaceSegs   int `json:"replace_segs"`
+	AlignedSegs    int `json:"aligned_segs"`
+	EbookOnlySegs  int `json:"ebook_only_segs"`
+	TransOnlySegs  int `json:"trans_only_segs"`
+	ReplaceSegs    int `json:"replace_segs"`
 	EbookOnlyWords int `json:"ebook_only_words"` // ebook words with no audio (skipped/boilerplate)
 	TransOnlyWords int `json:"trans_only_words"` // transcript words with no ebook (intros/ad-libs)
 	// Biggest divergent segments (by combined word span), for the UI to list.
@@ -52,14 +53,14 @@ type DivergenceSummary struct {
 // this row (no sync_data, no recompute). See SESSION_HANDOFF.md for the
 // contract the diff-view/reader build against.
 type AnchorAlignmentPayload struct {
-	Method        string            `json:"method"` // mirrors the row: "anchor" | "embedding"
-	Unit          string            `json:"unit"`   // "word" | "paragraph" → reader render mode
-	EbookChapters []ChapterSpan     `json:"ebook_chapters"`
-	TransChapters []ChapterSpan     `json:"trans_chapters"`
-	Segments      []Segment         `json:"segments"`
-	EbookWords    int               `json:"ebook_words"`
-	TransWords    int               `json:"trans_words"`
-	Coverage      float64           `json:"coverage"`
+	Method        string        `json:"method"` // mirrors the row: "anchor" | "embedding"
+	Unit          string        `json:"unit"`   // "word" | "paragraph" → reader render mode
+	EbookChapters []ChapterSpan `json:"ebook_chapters"`
+	TransChapters []ChapterSpan `json:"trans_chapters"`
+	Segments      []Segment     `json:"segments"`
+	EbookWords    int           `json:"ebook_words"`
+	TransWords    int           `json:"trans_words"`
+	Coverage      float64       `json:"coverage"`
 	// MatchQuality is the mean cosine similarity of the matched chain, set
 	// only by the embedding path (Method="embedding"). High ⇒ same work in a
 	// different translation; low everywhere ⇒ genuinely different texts. 0 for
@@ -79,32 +80,78 @@ const anchorNGram = 4
 
 // ComputeAnchorAlignment aligns a work's ebook against its transcript with
 // the anchor aligner and upserts the result into the alignments table.
-// Returns the coverage ratio. No-op (coverage 0, nil) if the work lacks
-// either an ebook or a transcript peer.
+// Returns the coverage ratio of the authority pair. No-op (coverage 0, nil)
+// if the work lacks either an ebook or a transcript peer.
+//
+// Beyond the authority pair, every EXISTING anchor row between a publisher
+// ebook and a transcript of the work is recomputed too. Re-importing a
+// transcript invalidates every alignment row that points at it, not just the
+// authority pair's — a work can carry a second epub edition (All Quiet held
+// two) or a second transcript (Call of the Wild) — and a row left behind
+// describes text that no longer exists, which surfaces as karaoke silently
+// broken for whoever displays that pairing. Only rows already present are
+// refreshed; no new cross-edition pairs are invented.
 func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 	work, err := store.GetWork(workID)
 	if err != nil || work == nil {
 		return 0, err
 	}
 
-	var ebook, transcript *db.Book
+	publishers := map[int64]*db.Book{}
+	transcripts := map[int64]*db.Book{}
+	var authority, firstTranscript *db.Book
 	for i := range work.TextFiles {
 		b := &work.TextFiles[i]
 		switch b.Origin {
 		case "whisper_transcript":
-			if transcript == nil {
-				transcript = b
+			transcripts[b.ID] = b
+			if firstTranscript == nil {
+				firstTranscript = b
 			}
 		case "publisher_epub", "publisher_mobi", "publisher_pdf":
-			if ebook == nil || db.OriginAuthority(b.Origin) > db.OriginAuthority(ebook.Origin) {
-				ebook = b
+			publishers[b.ID] = b
+			if authority == nil || db.OriginAuthority(b.Origin) > db.OriginAuthority(authority.Origin) {
+				authority = b
 			}
 		}
 	}
-	if ebook == nil || transcript == nil {
+	if authority == nil || firstTranscript == nil {
 		return 0, nil // nothing to align
 	}
 
+	type bookPair struct{ ebook, trans *db.Book }
+	pairs := []bookPair{{authority, firstTranscript}}
+	seen := map[[2]int64]bool{{authority.ID, firstTranscript.ID}: true}
+	if rows, err := store.ListAlignmentsForWork(workID); err == nil {
+		for _, a := range rows {
+			e, t := publishers[a.FromBookID], transcripts[a.ToBookID]
+			key := [2]int64{a.FromBookID, a.ToBookID}
+			if a.Method != "anchor" || e == nil || t == nil || seen[key] {
+				continue
+			}
+			seen[key] = true
+			pairs = append(pairs, bookPair{e, t})
+		}
+	}
+
+	timelines := loadTranscriptTimelines(store, work)
+	var primary float64
+	for i, p := range pairs {
+		cov, err := anchorAlignPair(store, workID, p.ebook, p.trans, timelines)
+		if err != nil {
+			return primary, err
+		}
+		if i == 0 {
+			primary = cov
+		}
+	}
+	return primary, nil
+}
+
+// anchorAlignPair aligns one (publisher ebook, transcript) pair and upserts
+// its alignments row. timelines holds every sync blob of the work; the one
+// matching this transcript is picked by word count.
+func anchorAlignPair(store *db.Store, workID int64, ebook, transcript *db.Book, timelines [][]db.SyncTimestamp) (float64, error) {
 	ebookChapters, err := loadContentChapters(store, ebook.ID, true)
 	if err != nil {
 		return 0, fmt.Errorf("load ebook chapters: %w", err)
@@ -126,8 +173,12 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 	// Bake the audio timeline. The anchor transcript stream is in Tokenize
 	// basis; sync_data is in the transcript's whitespace-word (Fields) basis,
 	// so map Tokenize offsets → Fields offsets before the timeline lookup.
-	if timeline := loadTranscriptTimeline(store, work); len(timeline) > 0 {
-		tokToFields := buildTokToFields(transChapters)
+	tokToFields := buildTokToFields(transChapters)
+	fieldCount := 0
+	if n := len(tokToFields); n > 0 {
+		fieldCount = tokToFields[n-1] + 1
+	}
+	if timeline := pickTimeline(timelines, fieldCount); len(timeline) > 0 {
 		bakeSegmentTimes(aln.Segments, timeline, tokToFields, true)
 	}
 
@@ -222,11 +273,14 @@ func summarizeAnchorDivergence(segs []Segment) DivergenceSummary {
 	return d
 }
 
-// loadTranscriptTimeline returns the transcript's word timestamps in reading
-// order (whitespace-word / "Fields" basis — the order sync_data stores). The
-// sidecar writes the whole transcript as one continuous sync_data blob keyed
-// to an audio book at chapter 0, so this finds + decodes that single row.
-func loadTranscriptTimeline(store *db.Store, work *db.Work) []db.SyncTimestamp {
+// loadTranscriptTimelines returns every word-timestamp timeline of the work,
+// in reading order (whitespace-word / "Fields" basis — the order sync_data
+// stores). The sidecar writes each edition's whole transcript as one
+// continuous sync_data blob keyed to that edition's first audio book at
+// chapter 0, so a single-edition work yields one timeline and a multi-edition
+// work one per edition.
+func loadTranscriptTimelines(store *db.Store, work *db.Work) [][]db.SyncTimestamp {
+	var out [][]db.SyncTimestamp
 	for _, ab := range work.AudioFiles {
 		raw, _ := store.GetSyncData(work.ID, ab.ID, 0)
 		if raw == "" {
@@ -234,10 +288,30 @@ func loadTranscriptTimeline(store *db.Store, work *db.Work) []db.SyncTimestamp {
 		}
 		var ts []db.SyncTimestamp
 		if json.Unmarshal([]byte(raw), &ts) == nil && len(ts) > 0 {
-			return ts
+			out = append(out, ts)
 		}
 	}
-	return nil
+	return out
+}
+
+// pickTimeline chooses the timeline belonging to a transcript of the given
+// whitespace-word count. Nothing ties a sync blob to its transcript book
+// directly, but each blob has exactly one timestamp per transcript word, so
+// the closest word count is the matching edition. With one timeline this is
+// the old single-timeline behavior.
+func pickTimeline(timelines [][]db.SyncTimestamp, fieldCount int) []db.SyncTimestamp {
+	var best []db.SyncTimestamp
+	bestDiff := -1
+	for _, ts := range timelines {
+		diff := len(ts) - fieldCount
+		if diff < 0 {
+			diff = -diff
+		}
+		if bestDiff < 0 || diff < bestDiff {
+			best, bestDiff = ts, diff
+		}
+	}
+	return best
 }
 
 // buildTokToFields maps each Tokenize-token index (the anchor stream's basis)

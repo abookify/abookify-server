@@ -102,7 +102,7 @@ func ComputeEmbeddingAlignment(store *db.Store, embedder ChunkEmbedder, workID i
 
 	// Bake paragraph audio times. Embedding chunk offsets are already in the
 	// transcript's Fields/sync basis, so no Tokenize→Fields remap (nil).
-	if timeline := loadTranscriptTimeline(store, work); len(timeline) > 0 {
+	if timeline := pickTimeline(loadTranscriptTimelines(store, work), trWords); len(timeline) > 0 {
 		bakeSegmentTimes(segs, timeline, nil, false)
 	}
 

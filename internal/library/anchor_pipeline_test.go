@@ -1,6 +1,7 @@
 package library
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pj/abookify/internal/db"
@@ -91,7 +92,7 @@ func TestMapEbookToTrans(t *testing.T) {
 func TestSummarizeAnchorDivergence(t *testing.T) {
 	segs := []Segment{
 		{EbookStart: 0, EbookEnd: 100, TransStart: 0, TransEnd: 100, Kind: SegAligned},
-		{EbookStart: 100, EbookEnd: 100, TransStart: 100, TransEnd: 130, Kind: SegTransOnly}, // +30 trans
+		{EbookStart: 100, EbookEnd: 100, TransStart: 100, TransEnd: 130, Kind: SegTransOnly},  // +30 trans
 		{EbookStart: 100, EbookEnd: 5100, TransStart: 130, TransEnd: 130, Kind: SegEbookOnly}, // +5000 ebook (biggest)
 		{EbookStart: 5100, EbookEnd: 5110, TransStart: 130, TransEnd: 145, Kind: SegReplace},  // +10/+15
 	}
@@ -159,5 +160,67 @@ func TestBakeSegmentTimes_TokenizeBasis(t *testing.T) {
 	bakeSegmentTimes(segs, tl, tok2f, false)
 	if segs[0].StartSec != 10 || segs[0].EndSec != 12.5 {
 		t.Errorf("ss/se = %v/%v, want 10/12.5", segs[0].StartSec, segs[0].EndSec)
+	}
+}
+
+// Re-importing a transcript invalidates EVERY alignment row that points at it.
+// Work 108 (All Quiet) carried two epubs; realigning only the authority pair
+// left the second epub's row describing the previous decode — caught by
+// reimport-realign's freshness check, which then refused to land the book.
+// Every existing (publisher ebook → transcript) anchor row must be recomputed,
+// and no new cross pairs invented for ebooks that never had one.
+func TestComputeAnchorAlignmentRefreshesAllExistingPairs(t *testing.T) {
+	store := testStoreForLib(t)
+
+	wid, err := store.CreateWork("Two Epubs", "")
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	text := strings.Repeat("the quick brown fox jumps over the lazy dog again and again ", 30)
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/ebooks/a.epub",
+		Filename: "a.epub", Format: "epub", MediaType: "text", Origin: "publisher_epub"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/ebooks/b.epub",
+		Filename: "b.epub", Format: "epub", MediaType: "text", Origin: "publisher_epub"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "generated://transcript/w",
+		Filename: "T", Format: "transcript", MediaType: "text", Origin: "whisper_transcript"})
+	books, _ := store.ListBooks()
+	var epubs []int64
+	var trans int64
+	for _, b := range books {
+		switch b.Format {
+		case "epub":
+			epubs = append(epubs, b.ID)
+		case "transcript":
+			trans = b.ID
+		}
+	}
+	for _, id := range append(epubs, trans) {
+		store.InsertChapter(db.Chapter{BookID: id, Index: 0, Title: "ch",
+			Content: text, WordCount: 330})
+	}
+
+	// The second epub already has a row against the transcript, holding a
+	// payload from a previous decode.
+	if err := store.SaveAlignment(db.Alignment{WorkID: wid, FromBookID: epubs[1],
+		ToBookID: trans, Unit: "word", Method: "anchor", Pairs: "STALE"}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+
+	if _, err := ComputeAnchorAlignment(store, wid); err != nil {
+		t.Fatalf("align: %v", err)
+	}
+
+	rows, err := store.ListAlignmentsForWork(wid)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (authority pair + the pre-existing pair, no invented cross pairs)", len(rows))
+	}
+	for _, a := range rows {
+		if a.Pairs == "STALE" {
+			t.Errorf("row %d→%d still holds the previous decode's payload — a stale "+
+				"alignment reads as karaoke silently broken", a.FromBookID, a.ToBookID)
+		}
 	}
 }
