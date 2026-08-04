@@ -65,6 +65,38 @@ the book being played, like the per-file waveform.
 - Bound concurrency (one scan per file at a time; single-flight) so a burst of
   first-touches can't stack N ffprobes.
 
+## 3.5 MEASURED — the A″ header-injection caveat, answered before prototyping
+Mobile confirmed (A) is impossible (expo-audio 1.1.1 exposes only
+`seekTo(seconds)`; no byte seek) and asked to prototype **A″** (inject a real VBR
+seek header so ExoPlayer's native seek becomes accurate). Meta's caveat: is a
+100-point Xing TOC accurate enough? I measured it on real VBR speech (synthesized
+60-min, 33 kbps, 100k frames; exact frame map from `ffprobe`; faithful ExoPlayer
+`XingSeeker` interpolation):
+
+| Header | error mean | p95 | max | >1 s | table size |
+|---|---|---|---|---|---|
+| **Xing (100-pt, 8-bit fractions)** | **2.4 s** | 5.7 s | **7.9 s** | 75 % | 100 B |
+| VBRI-style, 100 pts (real byte offsets) | 0.38 s | 1.2 s | 3.0 s | 7 % | ~200 B |
+| VBRI-style, 360 pts (~10 s/pt) | 0.21 s | 0.56 s | 1.8 s | 1 % | ~720 B |
+| VBRI-style, 1800 pts (~2 s/pt) | 0.12 s | 0.33 s | **0.6 s** | 0 % | ~3.6 KB |
+
+**Conclusions (hard):**
+- **Classic Xing is DEAD for audiobooks — and it's structural, not content-luck.**
+  The Xing TOC stores each point as an **8-bit byte-fraction (0–255) of the file**,
+  so its quantization floor is **≈ duration/256** (independent of bitrate): ~14 s
+  for a 60-min file, worse for longer files. No interpolation beats that floor.
+  **Do NOT build a Xing prototype — the math already rules it out.**
+- **VBRI reaches word-level with a tiny table** (~2 KB / ~1800 pts → max 0.6 s)
+  because it stores **real byte offsets**, not 8-bit fractions. So A″ is viable
+  **only via VBRI, not Xing.**
+- **Two unknowns remain for VBRI, both needing the prototype:** (1) I must **write
+  the VBRI header myself** — ffmpeg/LAME emit Xing/Info, never VBRI (Fraunhofer
+  format); (2) mobile must confirm **ExoPlayer's `VbriSeeker` actually honours it**
+  in-emulator. If either fails → **fall back to B**.
+- **Reliable non-header alternative if VBRI proves flaky: CBR re-encode.** ExoPlayer's
+  CBR seek map is exact by construction (constant frame size). It's transcoding
+  (quality/CPU/size cost, cached once) but zero header/parse risk and fixes web too.
+
 ## 4. THE CONSUMPTION QUESTION — mobile must confirm before I finalize
 The index is **time→byte**. But expo-audio's high-level `seekTo(seconds)` does not
 accept a byte offset, and the client can't read back the true byte ExoPlayer landed
