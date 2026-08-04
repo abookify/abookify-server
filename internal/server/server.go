@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -762,6 +763,36 @@ func (s *Server) handleStreamBook(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/epub+zip"
 	case "pdf":
 		contentType = "application/pdf"
+	}
+
+	// Seek B (#seek): ?t=<seconds float> anchors the stream at an accurate MP3
+	// frame boundary so a client that cannot byte-seek (expo-audio exposes only
+	// seekTo(seconds)) seeks by RELOADING the source at ?t=. Only meaningful for
+	// headerless-VBR MP3 — m4b/m4a/opus are natively seekable, so t is ignored
+	// there. Contract (see docs/seek-index-design.md): absent t → whole file;
+	// t<=0 → whole file; malformed → 400; t past end → 416; valid → 206/200 from
+	// the frame at/just before t, with X-Audio-Start-Sec = that frame's true time
+	// (the client reports position as t + player.currentTime, exact to <1 frame).
+	if tStr := r.URL.Query().Get("t"); tStr != "" && book.Format == "mp3" {
+		t, perr := strconv.ParseFloat(tStr, 64)
+		if perr != nil || math.IsNaN(t) || math.IsInf(t, 0) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid t: want seconds as a float"})
+			return
+		}
+		if t > 0 {
+			startByte, actualSec, ok := frameOffsetAtTime(book.Path, t)
+			if !ok {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", stat.Size()))
+				writeJSON(w, http.StatusRequestedRangeNotSatisfiable, map[string]string{"error": "t is past the end of the audio"})
+				return
+			}
+			w.Header().Set("X-Audio-Start-Sec", strconv.FormatFloat(actualSec, 'f', 3, 64))
+			w.Header().Set("Access-Control-Expose-Headers", "X-Audio-Start-Sec")
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Accept-Ranges", "bytes")
+			http.ServeContent(w, r, book.Filename, stat.ModTime(), io.NewSectionReader(f, startByte, stat.Size()-startByte))
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", contentType)
