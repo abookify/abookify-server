@@ -97,6 +97,37 @@ seek header so ExoPlayer's native seek becomes accurate). Meta's caveat: is a
   CBR seek map is exact by construction (constant frame size). It's transcoding
   (quality/CPU/size cost, cached once) but zero header/parse risk and fixes web too.
 
+## 3.6 VBRI prototype — go/no-go artifact + a granularity ceiling (2026-08-04)
+Mobile confirmed (A) impossible and shipped B; VBRI (A″) is the "no-rebuffer +
+web-native" upgrade. Findings:
+- **Prior is positive:** media3/ExoPlayer HAS a `VbriSeeker` and *prefers* Xing/VBRI
+  headers over the CBR fallback. So it *should* honour an injected VBRI — the only
+  real unknown is streaming mode + expo's bundled version, which is mobile's test.
+- **Built a valid VBRI-injected file** (hand-written injector; `scratchpad/vbri_test.mp3`):
+  ffprobe now reads the **correct duration (3600 s)** from the injected header vs the
+  5246 s headerless estimate — a reference demuxer parses it, so it's well-formed and
+  a mobile "no" would be ExoPlayer-specific, not a malformed header. Served to mobile
+  as **book 3 on the :7699 instance** (book 1 = the headerless control).
+- **⚠ Granularity ceiling — a real limit, not a tuning knob.** The VBRI TOC must fit
+  in the first frame. This audio is MPEG2/16 kHz → max 720 B/frame → **~320 TOC
+  entries**. Measured on the 60-min file: **mean 0.23 s / p95 0.62 s / max 2.76 s**
+  (mostly word-level). BUT entries are fixed at ~320 regardless of length, so a
+  **multi-hour file (Hardcore History) degrades ~linearly → tens of seconds/entry →
+  NOT word-level.** MPEG1/44.1 kHz files allow ~690 entries (1440 B/frame), better but
+  still capped. **So VBRI — even if honoured — is LESS accurate than B on long files;**
+  B is byte-exact at every position and every length. VBRI's only edge is no-rebuffer +
+  native web seeking.
+- **CBR re-encode — the zero-parse-risk fallback (recorded so it isn't rediscovered):**
+  if VBRI is flaky OR its granularity ceiling matters, **re-encode the file to CBR**.
+  ExoPlayer's CBR seek map is exact by construction (constant frame size ⇒ byte = time ×
+  const), so native `seekTo` is accurate with no header parsing and no client change,
+  and it fixes web too. Cost: transcoding (quality/CPU/size), cached once per file.
+- **Honest cost/benefit:** B is shipped, byte-exact everywhere, costs a rebuffer per
+  seek. VBRI is hand-written, streaming-unverified, and *less accurate than B on long
+  files*. **If mobile reports B's rebuffer acceptable, bank B** — VBRI's narrowed
+  benefit (no rebuffer) does not justify a less-accurate seek + a hand-maintained
+  binary header. Ruling it in/out is still worth the artifact.
+
 ## 4. THE CONSUMPTION QUESTION — mobile must confirm before I finalize
 The index is **time→byte**. But expo-audio's high-level `seekTo(seconds)` does not
 accept a byte offset, and the client can't read back the true byte ExoPlayer landed
