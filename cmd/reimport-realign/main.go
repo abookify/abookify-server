@@ -58,7 +58,11 @@ func main() {
 	}
 	fmt.Printf("reimported sidecar: %s\n", sidecar)
 
-	if err := embedWork(store, *workID); err != nil {
+	rag, ragErr := buildRAG(store)
+	if ragErr != nil {
+		log.Printf("WARNING: no RAG client (%v) — embeddings depend on the server's backfill", ragErr)
+	}
+	if err := embedWork(store, rag, *workID); err != nil {
 		// Not fatal: the text is already correct and the server's own backfill will
 		// fill these in. Loud, because until then Q&A is retrieval-blind on this book.
 		log.Printf("WARNING: embeddings not filled for work %d: %v — Q&A vector search "+
@@ -70,6 +74,29 @@ func main() {
 		log.Fatalf("realign work %d: %v", *workID, err)
 	}
 	fmt.Printf("anchor coverage after re-align: %.4f\n", cov)
+
+	// A cross-translation work carries an embedding/paragraph row alongside the
+	// anchor row (Republic, Meditations, Iliad, Hero with a Thousand Faces). That
+	// row points at the transcript too, so the reimport staled it just the same —
+	// left alone it fails the freshness check below, and rightly: paragraph-follow
+	// karaoke would run on the dead text. Refresh it when present.
+	if rows, err := store.ListAlignmentsForWork(*workID); err == nil {
+		for _, a := range rows {
+			if a.Method != "embedding" {
+				continue
+			}
+			var embedder library.ChunkEmbedder
+			if rag != nil {
+				embedder = rag
+			}
+			ecov, quality, err := library.ComputeEmbeddingAlignment(store, embedder, *workID)
+			if err != nil {
+				log.Fatalf("embedding realign work %d: %v", *workID, err)
+			}
+			fmt.Printf("embedding alignment refreshed: coverage %.4f quality %.2f\n", ecov, quality)
+			break
+		}
+	}
 
 	// Local-first sync contract: content_version must move on ANY data change,
 	// or mobile's update-check never re-fetches the work. The post-STT hook in
@@ -122,14 +149,12 @@ func verifyAlignmentFresh(store *db.Store, workID int64, started time.Time) erro
 	return nil
 }
 
-// embedWork fills embeddings for every text book of the work, building the RAG
-// client from settings exactly as the server's ReloadLLM does (vault credential
-// first, then the legacy inline key, then env). EmbedBook only touches chunks whose
-// embedding is empty, so this is cheap when nothing changed.
-func embedWork(store *db.Store, workID int64) error {
+// buildRAG builds the RAG client from settings exactly as the server's
+// ReloadLLM does (vault credential first, then the legacy inline key, then env).
+func buildRAG(store *db.Store) (*llm.RAG, error) {
 	settings, err := store.GetAllSettings()
 	if err != nil {
-		return fmt.Errorf("read settings: %w", err)
+		return nil, fmt.Errorf("read settings: %w", err)
 	}
 	provider, apiKey := settings["llm_provider"], settings["llm_api_key"]
 	if provider != "" && provider != "ollama" {
@@ -145,12 +170,18 @@ func embedWork(store *db.Store, workID int64) error {
 		}
 	}
 	if provider == "" || (provider != "ollama" && apiKey == "") {
-		return fmt.Errorf("no LLM provider configured")
+		return nil, fmt.Errorf("no LLM provider configured")
 	}
+	return llm.NewRAG(store, llm.NewClient(llm.Provider(provider),
+		apiKey, settings["llm_model"], settings["llm_base_url"])), nil
+}
 
-	rag := llm.NewRAG(store, llm.NewClient(llm.Provider(provider),
-		apiKey, settings["llm_model"], settings["llm_base_url"]))
-
+// embedWork fills embeddings for every text book of the work. EmbedBook only
+// touches chunks whose embedding is empty, so this is cheap when nothing changed.
+func embedWork(store *db.Store, rag *llm.RAG, workID int64) error {
+	if rag == nil {
+		return fmt.Errorf("no RAG client")
+	}
 	w, err := store.GetWork(workID)
 	if err != nil || w == nil {
 		return fmt.Errorf("get work: %w", err)
