@@ -97,8 +97,23 @@ seek header so ExoPlayer's native seek becomes accurate). Meta's caveat: is a
   CBR seek map is exact by construction (constant frame size). It's transcoding
   (quality/CPU/size cost, cached once) but zero header/parse risk and fixes web too.
 
-## 3.6 VBRI prototype — go/no-go artifact + a granularity ceiling (2026-08-04)
-Mobile confirmed (A) impossible and shipped B; VBRI (A″) is the "no-rebuffer +
+## 3.6 VBRI prototype — INVESTIGATED & DECLINED (2026-08-04). Ship = B.
+**DECISION: B is the ship; VBRI is declined.** Mobile validated `?t=` (B) on book
+45094 — PJ's exact repro: seeks land at the tapped position, label + waveform +
+reader all agree (Ch17 @ 2:50:27, Ch6 @ 1:31:46), the "label says X / audio at Y"
+divergence is gone (both derive from one anchor), and the rebuffer measured ~1 s
+(a brief acceptable beat, not a stutter). B is byte-exact at every position and
+every length; VBRI, even if honoured, is *less accurate* on long files (below) and
+is hand-written + streaming-unverified. **Do not reopen VBRI as "unexplored" — it
+was built, validated as well-formed, and declined for the reason below.**
+**REVISIT TRIGGER (write it down, don't leave it a feeling):** B's ~1 s rebuffer
+was measured on a LOCAL TUNNEL; it will be proportionally worse on slow/cellular
+links. If real-world seek-rebuffer on slow connections becomes a complaint, THAT
+is what justifies revisiting — reach first for CBR re-encode (exact, no granularity
+ceiling) over VBRI. The go/no-go artifact + injector below are kept for that case.
+
+Original investigation (kept for the record):
+Mobile confirmed (A) impossible and shipped B; VBRI (A″) was the "no-rebuffer +
 web-native" upgrade. Findings:
 - **Prior is positive:** media3/ExoPlayer HAS a `VbriSeeker` and *prefers* Xing/VBRI
   headers over the CBR fallback. So it *should* honour an injected VBRI — the only
