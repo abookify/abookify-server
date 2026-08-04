@@ -1736,8 +1736,18 @@
     .prov-badge.personal { border-color: var(--text-muted); color: var(--text-muted); }
     .job-item.failed .job-spinner { display: none; }
 
-    .empty { text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
+    .empty { grid-column: 1 / -1; text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
     .empty h2 { font-size: 1.2rem; margin-bottom: 0.5rem; color: var(--text); }
+    .empty p { max-width: 34rem; margin: 0 auto 0.4rem; line-height: 1.5; }
+    .empty a { color: var(--accent); }
+    .fr-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 1.5rem; }
+    .fr-btn { font: inherit; font-size: 0.9rem; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+    .fr-btn:hover { border-color: var(--accent); background: var(--surface-hover); }
+    .fr-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .fr-btn.primary:hover { filter: brightness(0.94); background: var(--accent); }
+    .fr-btn:disabled { opacity: 0.6; cursor: default; }
+    .fr-hint { font-size: 0.82rem; color: var(--text-muted); margin-top: 1.1rem; }
+    .fr-nudge { font-size: 0.85rem; margin: 1.5rem auto 0; padding: 0.8rem 1rem; border: 1px dashed var(--border); border-radius: 8px; max-width: 34rem; color: var(--text); }
 
     .chapter-list::-webkit-scrollbar { width: 5px; }
     .chapter-list::-webkit-scrollbar-track { background: transparent; }
@@ -2313,6 +2323,61 @@
       } catch {
         transcriptionGapsByWork = {};
       }
+    }
+
+    // First-run welcome — shown when the library is genuinely empty. Action-first
+    // so a newcomer can add a book with ONE click (the picker routes through the
+    // same upload path as drag-drop); no folder path is shown because under Docker
+    // that's an in-container mount, not the user's real path. Reading/importing
+    // work with no speech engine, so the engine setup is a nudge, not a gate.
+    function firstRunWelcomeHtml() {
+      return `<div class="empty">
+        <h2>Your library is empty — let's add your first book</h2>
+        <p>Abookify turns your own audiobooks and ebooks into a synced, read-along library. Add a file and it shows up right here.</p>
+        <div class="fr-actions">
+          <button class="fr-btn primary" onclick="openFilePicker()">Choose files to add</button>
+          <button class="fr-btn" onclick="rescanNow(this)">Rescan library folder</button>
+          <button class="fr-btn" onclick="openSettings()">Settings</button>
+        </div>
+        <p class="fr-hint">Or drag audio &amp; ebook files anywhere onto this window — MP3, M4B, EPUB, and more. PDFs? Convert to EPUB first with <a href="https://calibre-ebook.com/" target="_blank" rel="noopener">Calibre</a>.</p>
+        <div id="fr-nudge"></div>
+      </div>`;
+    }
+
+    // Fill the optional engine nudge on the first-run screen from /api/setup. When
+    // no speech engine is usable, say so plainly and point at Settings — this is
+    // the "nothing configured" copy a stranger sees, framed as optional (reading
+    // and importing need no engine; narration/transcripts do).
+    async function hydrateFirstRunSetup() {
+      try {
+        const r = await fetch('/api/setup');
+        if (!r.ok) return;
+        const s = await r.json();
+        const nudge = document.getElementById('fr-nudge');
+        if (!nudge) return;
+        if (s.needs_setup) {
+          nudge.className = 'fr-nudge';
+          nudge.innerHTML = `Want spoken narration or transcripts too? No speech engine is set up yet — add one (a local engine or your own API key) in <a href="#" onclick="openSettings();return false;">Settings</a>. Reading and importing books work without it.`;
+        }
+      } catch { /* the welcome stands on its own without the nudge */ }
+    }
+
+    // Rescan the library folder, then reload. For a user who dropped files into
+    // the folder outside the app and wants them picked up without restarting.
+    async function rescanNow(btn) {
+      if (btn) { btn.disabled = true; btn.textContent = 'Rescanning…'; }
+      try { await fetch('/api/library/rescan', { method: 'POST' }); } catch { /* loadWorks surfaces any error */ }
+      await loadWorks();
+    }
+
+    // Reset every filter + the search box back to "All" and re-render — the way
+    // out of a no-match state.
+    function clearAllFilters() {
+      activeFilter = 'all';
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
+      const box = document.getElementById('search');
+      if (box) box.value = '';
+      render();
     }
 
     async function loadWorks() {
@@ -3092,7 +3157,18 @@
 
       if (filtered.length === 0) {
         el.classList.remove('grouped');
-        el.innerHTML = `<div class="empty"><h2>No books found</h2><p>Add audiobooks and ebooks to your library folder.</p></div>`;
+        // Two very different zero-states: a genuinely empty library (first run —
+        // a stranger's first screen, must not be a dead end) vs a filter/search
+        // that matched nothing (offer a way back). allWorks, not filtered, tells
+        // them apart.
+        if (allWorks.length === 0) {
+          el.innerHTML = firstRunWelcomeHtml();
+          hydrateFirstRunSetup();
+        } else {
+          el.innerHTML = `<div class="empty"><h2>No books match</h2>`
+            + `<p>Nothing here fits the current search or filter.</p>`
+            + `<div class="fr-actions"><button class="fr-btn" onclick="clearAllFilters()">Clear filters &amp; search</button></div></div>`;
+        }
         return;
       }
 
@@ -8659,6 +8735,33 @@
     (function initDropUpload() {
       const overlay = document.getElementById('drop-overlay');
       let dragCounter = 0; // track nested enter/leave from child elements
+
+      const SUPPORTED = /\.(mp3|m4b|m4a|flac|aac|ogg|opus|epub|mobi|azw3|azw|txt|pdf)$/i;
+
+      // Click-to-add: a hidden file input that routes through the SAME upload path
+      // as drag-drop, exposed globally so the first-run welcome's "Choose files"
+      // button works for people who don't think to drag a file onto a web page.
+      // Loose files become one timestamped work (mirrors the loose-drop grouping).
+      const picker = document.createElement('input');
+      picker.type = 'file';
+      picker.multiple = true;
+      picker.accept = '.mp3,.m4b,.m4a,.flac,.aac,.ogg,.opus,.epub,.mobi,.azw3,.azw,.txt,.pdf';
+      picker.style.display = 'none';
+      document.body.appendChild(picker);
+      picker.addEventListener('change', async () => {
+        const chosen = Array.from(picker.files || []);
+        picker.value = ''; // let the same file be re-picked later
+        const box = overlay.querySelector('.drop-box');
+        overlay.classList.add('active');
+        const wanted = chosen.filter(f => SUPPORTED.test(f.name)).map(f => ({ blob: f, name: f.name }));
+        if (!wanted.length) return dropError(box, chosen.length
+          ? `Selected ${chosen.length} file${chosen.length !== 1 ? 's' : ''} but none are supported audio/ebook types.`
+          : 'No files selected.');
+        const batch = 'upload-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        for (const f of wanted) f.path = batch + '/' + f.name;
+        await uploadDropped(box, wanted);
+      });
+      window.openFilePicker = () => picker.click();
 
       document.addEventListener('dragenter', (e) => {
         e.preventDefault();
