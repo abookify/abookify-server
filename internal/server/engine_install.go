@@ -30,6 +30,8 @@ import (
 const (
 	engineExpectedBytesCPU  int64 = 2_100_000_000 // ~2.1 GB CPU stack (no torch+CUDA)
 	engineExpectedBytesCUDA int64 = 6_300_000_000 // ~6.3 GB with torch+CUDA+cuDNN
+	modelExpectedBytes      int64 = 3_000_000_000 // ~3 GB whisper large-v3 (CT2)
+	modelPresentThreshold   int64 = 2_500_000_000 // the model dir is "big enough" = present
 )
 
 type engineInstallState struct {
@@ -38,6 +40,7 @@ type engineInstallState struct {
 	done      bool
 	failed    bool
 	variant   string // "cpu" | "cuda"
+	phase     string // "engine" | "model" — which half of the first-run download
 	targetDir string
 	logPath   string
 	errMsg    string
@@ -72,7 +75,8 @@ func (s *Server) engineTargetDir() string {
 	return filepath.Join(s.DataDir, "engine")
 }
 
-// engineInstalled reports whether a usable engine launcher already exists.
+// engineInstalled reports whether a usable engine launcher already exists (this is
+// what the Tauri shell resolves on next launch).
 func (s *Server) engineInstalled() bool {
 	t := s.engineTargetDir()
 	if t == "" {
@@ -80,6 +84,26 @@ func (s *Server) engineInstalled() bool {
 	}
 	fi, err := os.Stat(filepath.Join(t, "abookify-engine"))
 	return err == nil && !fi.IsDir()
+}
+
+// whisperCacheDir matches stt_server.py's WHISPER_CACHE (MODELS_DIR/whisper), so a
+// prefetch lands exactly where the engine loads from — no double download.
+func (s *Server) whisperCacheDir() string {
+	if s.ModelsDir == "" {
+		return ""
+	}
+	return filepath.Join(s.ModelsDir, "whisper")
+}
+
+// modelPresent reports whether the whisper model has been fetched (its dir is big).
+func (s *Server) modelPresent() bool {
+	c := s.whisperCacheDir()
+	return c != "" && dirSize(c) > modelPresentThreshold
+}
+
+// firstRunComplete = both halves present, so after a restart narration just works.
+func (s *Server) firstRunComplete() bool {
+	return s.engineInstalled() && s.modelPresent()
 }
 
 // detectEngineVariant mirrors build.sh: an explicit ABOOKIFY_ENGINE_VARIANT wins,
@@ -106,9 +130,9 @@ func (s *Server) handleInstallLocalEngine(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{"state": "running", "note": "install already in progress"})
 		return
 	}
-	if s.engineInstalled() {
+	if s.firstRunComplete() {
 		st.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"state": "done", "note": "engine already installed"})
+		writeJSON(w, http.StatusOK, map[string]any{"state": "done", "note": "engine + model already installed"})
 		return
 	}
 	script := s.installEngineSrc()
@@ -123,9 +147,9 @@ func (s *Server) handleInstallLocalEngine(w http.ResponseWriter, r *http.Request
 	variant := detectEngineVariant()
 	// Disk pre-check: refuse before a doomed multi-GB download rather than failing
 	// with a stack trace partway. Need the engine + headroom for models later.
-	need := engineExpectedBytesCPU
+	need := engineExpectedBytesCPU + modelExpectedBytes
 	if variant == "cuda" {
-		need = engineExpectedBytesCUDA
+		need = engineExpectedBytesCUDA + modelExpectedBytes
 	}
 	if free := fsFreeBytes(target); free > 0 && free < need {
 		st.mu.Unlock()
@@ -149,7 +173,7 @@ func (s *Server) handleInstallLocalEngine(w http.ResponseWriter, r *http.Request
 	cmd.Stdout = logF
 	cmd.Stderr = logF
 	st.running, st.done, st.failed = true, false, false
-	st.variant, st.targetDir, st.logPath, st.errMsg = variant, target, logPath, ""
+	st.variant, st.phase, st.targetDir, st.logPath, st.errMsg = variant, "engine", target, logPath, ""
 	st.startedAt = time.Now()
 	st.mu.Unlock()
 
@@ -162,21 +186,62 @@ func (s *Server) handleInstallLocalEngine(w http.ResponseWriter, r *http.Request
 		writeServerError(w, r, err)
 		return
 	}
-	go func() {
-		err := cmd.Wait()
-		logF.Close()
-		st.mu.Lock()
-		st.running = false
-		if err != nil {
-			st.failed, st.errMsg = true, lastLogLines(logPath, 3)
-			applog.Warnf("system", "engine install FAILED: %v", err)
-		} else {
-			st.done = true
-			applog.Infof("system", "engine install DONE -> %s (restart the app / next shell launch spawns it)", target)
-		}
-		st.mu.Unlock()
-	}()
+	go s.runEngineInstall(cmd, logF, logPath, target)
 	writeJSON(w, http.StatusOK, map[string]any{"state": "running", "variant": variant})
+}
+
+// runEngineInstall drives the two phases of the first-run download to completion:
+// phase 1 = the engine (build.sh, already started as `cmd`), phase 2 = the whisper
+// model prefetched into WHISPER_CACHE so the engine finds it local on startup (no
+// silent blocking download later). Both resume: build.sh caches its wheels, and
+// huggingface_hub resumes partial model snapshots. Model failure is non-fatal to
+// the engine (the engine would still fetch it on first use) but we surface it.
+func (s *Server) runEngineInstall(cmd *exec.Cmd, logF *os.File, logPath, target string) {
+	st := &s.engineInstall
+	err := cmd.Wait()
+	logF.Close()
+	if err != nil {
+		st.mu.Lock()
+		st.running, st.failed, st.errMsg = false, true, lastLogLines(logPath, 3)
+		st.mu.Unlock()
+		applog.Warnf("system", "engine install FAILED (engine phase): %v", err)
+		return
+	}
+	// Phase 2: prefetch the whisper model into the exact dir the engine loads from.
+	st.mu.Lock()
+	st.phase = "model"
+	st.mu.Unlock()
+	cache := s.whisperCacheDir()
+	if !s.modelPresent() && cache != "" {
+		_ = os.MkdirAll(cache, 0o755)
+		py := filepath.Join(target, "python", "bin", "python3")
+		lf, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if lf != nil {
+			_, _ = lf.WriteString("\n--- downloading the speech model (large-v3, ~3 GB)\n")
+		}
+		// Path passed via env so an odd data-dir path can't break the -c string.
+		mcmd := exec.Command(py, "-c",
+			"import os; from faster_whisper import download_model; download_model('large-v3', cache_dir=os.environ['ABOOKIFY_WHISPER_CACHE'])")
+		mcmd.Env = append(os.Environ(), "ABOOKIFY_WHISPER_CACHE="+cache, "ABOOKIFY_MODELS_DIR="+s.ModelsDir)
+		if lf != nil {
+			mcmd.Stdout, mcmd.Stderr = lf, lf
+		}
+		merr := mcmd.Run()
+		if lf != nil {
+			lf.Close()
+		}
+		if merr != nil {
+			st.mu.Lock()
+			st.running, st.failed, st.errMsg = false, true, "speech model download failed: "+lastLogLines(logPath, 3)
+			st.mu.Unlock()
+			applog.Warnf("system", "engine install: model prefetch failed: %v", merr)
+			return
+		}
+	}
+	st.mu.Lock()
+	st.running, st.done = false, true
+	st.mu.Unlock()
+	applog.Infof("system", "engine install DONE (engine + model) -> %s (restart / next shell launch spawns it)", target)
 }
 
 // handleInstallLocalEngineStatus (GET /api/engines/install-local/status) reports
@@ -186,7 +251,7 @@ func (s *Server) handleInstallLocalEngineStatus(w http.ResponseWriter, r *http.R
 	st := &s.engineInstall
 	st.mu.Lock()
 	running, done, failed := st.running, st.done, st.failed
-	variant, target, logPath, errMsg := st.variant, st.targetDir, st.logPath, st.errMsg
+	variant, phase, target, logPath, errMsg := st.variant, st.phase, st.targetDir, st.logPath, st.errMsg
 	st.mu.Unlock()
 
 	if variant == "" {
@@ -195,42 +260,52 @@ func (s *Server) handleInstallLocalEngineStatus(w http.ResponseWriter, r *http.R
 	if target == "" {
 		target = s.engineTargetDir()
 	}
-	total := engineExpectedBytesCPU
+	engineTotal := engineExpectedBytesCPU
 	if variant == "cuda" {
-		total = engineExpectedBytesCUDA
+		engineTotal = engineExpectedBytesCUDA
 	}
-	installed := s.engineInstalled()
+	// ONE download from the user's side: the engine + the speech model, one bar.
+	total := engineTotal + modelExpectedBytes
+	doneBytes := dirSize(target) + dirSize(s.whisperCacheDir())
+	complete := s.firstRunComplete()
+
 	state := "idle"
 	switch {
 	case running:
 		state = "running"
 	case failed:
 		state = "failed"
-	case done || installed:
+	case done || complete:
 		state = "done"
-	case target != "" && dirSize(target) > 0:
+	case doneBytes > 0:
 		state = "partial" // a prior attempt left bytes → resumable
 	}
-	done_ := dirSize(target)
 	pct := 0
 	if total > 0 {
-		if p := int(done_ * 100 / total); p < 100 {
+		if p := int(doneBytes * 100 / total); p < 100 {
 			pct = p
 		} else {
-			pct = 99 // never claim 100% until the launcher actually exists
+			pct = 99 // never claim 100% until both halves are actually present
 		}
 	}
-	if installed {
+	if complete {
 		pct = 100
+	}
+	// The step: during the model phase, name it plainly (build.sh's log is done);
+	// otherwise the latest engine build step.
+	step := lastStep(logPath)
+	if running && phase == "model" {
+		step = "Downloading the speech model (large-v3)"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"state":       state,
 		"variant":     variant,
-		"bytes_done":  done_,
+		"phase":       phase,
+		"bytes_done":  doneBytes,
 		"bytes_total": total,
 		"percent":     pct,
-		"step":        lastStep(logPath),
-		"installed":   installed,
+		"step":        step,
+		"installed":   complete,
 		"free_bytes":  fsFreeBytes(target),
 		"error":       errMsg,
 	})
