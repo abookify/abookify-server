@@ -2179,7 +2179,7 @@
       </select>
       <button onclick="addBookmark()" title="Add bookmark" aria-label="Add bookmark" style="background:none;border:1px solid var(--border);border-radius:4px;color:#f0a500;cursor:pointer;padding:0.15rem 0.4rem;font-size:0.75rem;">&#9733;</button>
       <button onclick="toggleBookmarks(currentWorkId)" title="Show bookmarks" aria-label="Show bookmarks" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">&#128278;</button>
-      <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;">Sleep</button>
+      <button onclick="toggleSleepTimer()" id="sleep-btn" title="Sleep timer" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;padding:0.15rem 0.4rem;font-size:0.7rem;min-width:3.4em;text-align:center;font-variant-numeric:tabular-nums;">Sleep</button>
     </div>
   </div>
 
@@ -7059,43 +7059,68 @@
     })();
 
     // Sleep timer with "end of chapter" option + smart resume.
-    let sleepTimeout = null;
+    // Countdown is derived from a TARGET TIMESTAMP, not a ticking counter, so it
+    // survives tab backgrounding (throttled timers): the label is recomputed from
+    // (target - now) each tick, and the pause fires whenever now >= target \u2014
+    // checked BOTH on a 1s interval AND on the audio's timeupdate (which keeps
+    // firing while audio plays even when the tab is backgrounded), so playback
+    // stops on time regardless of throttling. (Web-only "Ch" = end-of-chapter mode
+    // has no mobile counterpart yet \u2014 see the handoff note to mobile; keep it.)
+    let sleepTarget = 0;          // ms epoch to pause at; 0 = off
+    let sleepTick = null;         // 1s interval that repaints the countdown label
     let sleepAtChapterEnd = false;
     const sleepLabels = ['Off', '5m', '15m', '30m', '60m', 'Ch'];
     const sleepMins   = [0, 5, 15, 30, 60, -1]; // -1 = end of chapter
     let sleepIdx = 0;
 
+    function sleepReset() {
+      sleepTarget = 0; sleepAtChapterEnd = false; sleepIdx = 0;
+      if (sleepTick) { clearInterval(sleepTick); sleepTick = null; }
+      const btn = document.getElementById('sleep-btn');
+      btn.textContent = 'Sleep';
+      btn.style.color = 'var(--text-muted)';
+    }
+    function sleepFire() {
+      document.getElementById('audio-player').pause();
+      sleepReset();
+    }
+    function sleepFmt(ms) {
+      const s = Math.max(0, Math.round(ms / 1000));
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }
     function toggleSleepTimer() {
       sleepIdx = (sleepIdx + 1) % sleepLabels.length;
       const mins = sleepMins[sleepIdx];
       const btn = document.getElementById('sleep-btn');
-      clearTimeout(sleepTimeout);
+      if (sleepTick) { clearInterval(sleepTick); sleepTick = null; }
       sleepAtChapterEnd = false;
+      sleepTarget = 0;
       if (mins === 0) {
         btn.textContent = 'Sleep';
         btn.style.color = 'var(--text-muted)';
       } else if (mins === -1) {
-        // End-of-chapter mode: set a flag; the timeupdate handler checks.
+        // End-of-chapter mode: flag-based; the timeupdate handler checks endSec.
         sleepAtChapterEnd = true;
         btn.textContent = 'Ch\u23F8';
         btn.style.color = '#f0a500';
       } else {
-        btn.textContent = mins + 'm';
+        sleepTarget = Date.now() + mins * 60 * 1000;
         btn.style.color = '#f0a500';
-        sleepTimeout = setTimeout(() => {
-          const p = document.getElementById('audio-player');
-          // Fade volume briefly for a gentle stop.
-          p.pause();
-          btn.textContent = 'Sleep';
-          btn.style.color = 'var(--text-muted)';
-          sleepIdx = 0;
-        }, mins * 60 * 1000);
+        const paint = () => {
+          if (!sleepTarget) return;
+          if (Date.now() >= sleepTarget) { sleepFire(); return; }
+          btn.textContent = sleepFmt(sleepTarget - Date.now()); // live countdown
+        };
+        paint();
+        sleepTick = setInterval(paint, 1000);
       }
     }
 
-    // Check end-of-chapter sleep: if we've crossed the current chapter's
-    // endSec, pause. Runs inside the timeupdate event on the player.
-    document.getElementById('audio-player').addEventListener('timeupdate', function checkSleepChapter() {
+    // Runs inside the audio's timeupdate (fires while playing, even backgrounded).
+    document.getElementById('audio-player').addEventListener('timeupdate', function checkSleep() {
+      // Timed sleep: pause precisely on the target even if the interval was throttled.
+      if (sleepTarget && Date.now() >= sleepTarget) { sleepFire(); return; }
+      // End-of-chapter sleep: pause once we cross the current chapter's endSec.
       if (!sleepAtChapterEnd) return;
       const p = document.getElementById('audio-player');
       const chapters = currentPlayingId ? audioChapterCache[currentPlayingId] : null;
@@ -7103,11 +7128,7 @@
       const ch = chapters.find(c => c.index === currentAudioIndex);
       if (ch && ch.end_sec > 0 && p.currentTime >= ch.end_sec - 0.5) {
         p.pause();
-        sleepAtChapterEnd = false;
-        const btn = document.getElementById('sleep-btn');
-        btn.textContent = 'Sleep';
-        btn.style.color = 'var(--text-muted)';
-        sleepIdx = 0;
+        sleepReset();
       }
     });
 
