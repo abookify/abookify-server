@@ -2355,11 +2355,65 @@
         const s = await r.json();
         const nudge = document.getElementById('fr-nudge');
         if (!nudge) return;
-        if (s.needs_setup) {
-          nudge.className = 'fr-nudge';
-          nudge.innerHTML = `Want spoken narration or transcripts too? No speech engine is set up yet — add one (a local engine or your own API key) in <a href="#" onclick="openSettings();return false;">Settings</a>. Reading and importing books work without it.`;
-        }
+        if (!s.needs_setup) return;
+        nudge.className = 'fr-nudge';
+        nudge.innerHTML =
+          `<div style="margin-bottom:8px;"><strong>Want word-for-word narration on your own audiobooks?</strong> Set up the on-device speech engine — a one-time download, then narration &amp; transcripts run offline on your machine. Reading and importing work without it.</div>`
+          + `<button class="fr-btn primary" id="eng-install-btn" onclick="startEngineInstall()">Set up on-device narration &amp; transcripts</button>`
+          + `<div id="eng-install-box" hidden style="margin-top:12px;text-align:left;"></div>`
+          + `<div style="margin-top:8px;font-size:0.8rem;color:var(--text-muted);">Prefer the cloud? Add your own API key in <a href="#" onclick="openSettings();return false;">Settings</a> instead.</div>`;
+        // If a prior install is running or was interrupted, surface it immediately.
+        engineInstallPoll(true);
       } catch { /* the welcome stands on its own without the nudge */ }
+    }
+
+    // --- On-device engine install: a real, triggered, VISIBLE, resumable install
+    // (index.html) driving the server's /api/engines/install-local. Honest byte
+    // progress, benefit-first copy, and resume-where-it-left-off on failure.
+    let engineInstallTimer = null;
+    async function startEngineInstall() {
+      const btn = document.getElementById('eng-install-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+      try { await fetch('/api/engines/install-local', { method: 'POST' }); } catch {}
+      engineInstallPoll();
+    }
+    function fmtGB(bytes) { return (Math.max(0, bytes) / 1e9).toFixed(1) + ' GB'; }
+    async function engineInstallPoll(quiet) {
+      const box = document.getElementById('eng-install-box');
+      const btn = document.getElementById('eng-install-btn');
+      let s;
+      try { s = await (await fetch('/api/engines/install-local/status')).json(); }
+      catch { return; }
+      if (!box) return;
+      // On a fresh first-run (nothing started yet), keep the plain button.
+      if (quiet && !['running', 'partial', 'failed'].includes(s.state)) return;
+      box.hidden = false;
+      const cpuNote = s.variant === 'cpu'
+        ? `<div style="font-size:0.8rem;color:var(--text-muted);margin-top:6px;">No graphics card detected — transcription runs on your CPU. It works, but a long audiobook can take a few hours. Prefer speed? Add a cloud key in Settings.</div>`
+        : '';
+      if (s.state === 'running') {
+        if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
+        box.innerHTML =
+          `<div style="font-weight:600;">Downloading the speech engine — ${fmtGB(s.bytes_done)} of ~${fmtGB(s.bytes_total)}</div>`
+          + `<div style="height:8px;background:var(--surface-hover);border-radius:4px;overflow:hidden;margin:6px 0;"><div style="height:100%;width:${s.percent}%;background:var(--accent);transition:width .4s;"></div></div>`
+          + `<div style="font-size:0.8rem;color:var(--text-muted);">${s.step ? escapeHtml(s.step) : 'working…'} · You can close this — it picks up where it left off.</div>`
+          + `<div style="font-size:0.82rem;margin-top:8px;">Your speech engine is installing. Meanwhile, add books and start reading — narration and transcripts light up when it's done.</div>`
+          + cpuNote;
+        clearTimeout(engineInstallTimer);
+        engineInstallTimer = setTimeout(() => engineInstallPoll(), 2000);
+      } else if (s.state === 'done') {
+        if (btn) btn.style.display = 'none';
+        box.innerHTML = `<div style="font-weight:600;color:#2a9d5c;">✓ On-device narration &amp; transcripts are installed.</div>`
+          + `<div style="font-size:0.85rem;margin-top:4px;">Restart Abookify to turn them on. (Reading and playback already work now.)</div>`;
+      } else if (s.state === 'failed') {
+        if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
+        box.innerHTML = `<div style="font-weight:600;color:#c0392b;">The install didn't finish.</div>`
+          + `<div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px;">${escapeHtml(s.error || 'unknown error')}</div>`
+          + `<div style="font-size:0.8rem;margin-top:4px;">Retrying picks up where it stopped — you won't re-download what you already have.</div>`;
+      } else if (s.state === 'partial') {
+        if (btn) { btn.disabled = false; btn.textContent = 'Resume install'; }
+        box.innerHTML = `<div>An earlier install was interrupted (${fmtGB(s.bytes_done)} downloaded). Resuming picks up from there.</div>`;
+      }
     }
 
     // Rescan the library folder, then reload. For a user who dropped files into
