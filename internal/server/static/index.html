@@ -2412,8 +2412,9 @@
         engineInstallTimer = setTimeout(() => engineInstallPoll(), 2000);
       } else if (s.state === 'done') {
         if (btn) btn.style.display = 'none';
-        box.innerHTML = `<div style="font-weight:600;color:#2a9d5c;">✓ On-device narration &amp; transcripts are installed.</div>`
-          + `<div style="font-size:0.85rem;margin-top:4px;">Restart Abookify to turn them on. (Reading and playback already work now.)</div>`;
+        box.innerHTML = `<div style="font-weight:600;color:#2a9d5c;">✓ Speech engine &amp; model installed.</div>`
+          + `<div id="eng-ready-line" style="font-size:0.85rem;margin-top:4px;">Starting narration… (no restart needed)</div>`;
+        pollEngineReady();
       } else if (s.state === 'failed') {
         if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
         box.innerHTML = `<div style="font-weight:600;color:#c0392b;">The install didn't finish.</div>`
@@ -2423,6 +2424,22 @@
         if (btn) { btn.disabled = false; btn.textContent = 'Resume install'; }
         box.innerHTML = `<div>An earlier install was interrupted (${fmtGB(s.bytes_done)} downloaded). Resuming picks up from there.</div>`;
       }
+    }
+    // After install, the server starts the engine itself. Probe until it truly
+    // answers before claiming "ready" — a premature flag then an error is worse
+    // than waiting a few more seconds.
+    async function pollEngineReady() {
+      const line = document.getElementById('eng-ready-line');
+      if (!line) return;
+      try {
+        const st = await (await fetch('/api/engines/status')).json();
+        if (st.stt && st.stt.reachable && st.tts && st.tts.reachable) {
+          line.textContent = '✓ Narration & transcripts are ready — no restart needed.';
+          line.style.color = '#2a9d5c';
+          return;
+        }
+      } catch {}
+      setTimeout(pollEngineReady, 3000);
     }
 
     // Rescan the library folder, then reload. For a user who dropped files into
