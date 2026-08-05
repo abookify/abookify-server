@@ -110,6 +110,9 @@ type Server struct {
 	coherenceRunning bool
 	coherenceDirty   bool
 
+	// engineInstall tracks the first-run on-device engine build (engine_install.go).
+	engineInstall engineInstallState
+
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
 	alignMu       sync.Mutex
@@ -409,6 +412,8 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/setup", s.handleSetup)
 	mux.HandleFunc("GET /api/engines/status", s.handleEnginesStatus)
 	mux.HandleFunc("POST /api/engines/install", s.handleEnginesInstall)
+	mux.HandleFunc("POST /api/engines/install-local", s.handleInstallLocalEngine)
+	mux.HandleFunc("GET /api/engines/install-local/status", s.handleInstallLocalEngineStatus)
 	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
