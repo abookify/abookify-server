@@ -40,7 +40,11 @@ LIB=./testdata/library
 MAXPASS=3
 AT=atrium
 RPROJ=/home/pj/projects/jarvis/abookify/engineering/server
-SSH="ssh -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+# -n is load-bearing: every ssh here runs INSIDE a while-read loop, and ssh
+# without -n slurps the loop's stdin. The first launch banked one file of a
+# four-file book and then exited after one book — both loops drained by ssh —
+# while every individual command reported success.
+SSH="ssh -n -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
 mkdir -p "$BK" "$LOGS"; touch "$DONE" "$FILEDONE" "$PROG" "$ATTEMPTS"
 
 collapsed() {
@@ -179,12 +183,14 @@ transcribe_pass() {
 
 pull_sidecar() {
   local rsidecar="$1" local_sc="$2"
-  rsync -a --timeout=60 "$AT:$rsidecar" "$local_sc"
+  # rsync spawns its own ssh, which also eats loop stdin — hence /dev/null.
+  rsync -a --timeout=60 "$AT:$rsidecar" "$local_sc" < /dev/null
 }
 
 CONF_CHECKED=0
 
-while IFS=$'\t' read -r fab dur sidecar raudio workid; do
+# Order is read on FD 3, not stdin, so no child can drain it.
+while IFS=$'\t' read -r -u3 fab dur sidecar raudio workid; do
   case "$fab" in ''|\#*) continue;; esac
   name=$(basename "$sidecar" .stt.json)
   grep -Fxq "$name" "$DONE" && continue
@@ -279,7 +285,7 @@ while IFS=$'\t' read -r fab dur sidecar raudio workid; do
     LAND_RETRY_PENDING|TRANSCRIBE_INCOMPLETE|PULL_FAILED) : ;;  # not done — a later run retries
     *) echo "$name" >> "$DONE" ;;
   esac
-done < "$ORDER"
+done 3< "$ORDER"
 
 want=$(grep -cv '^\s*$\|^#' "$ORDER")
 have=$(sort -u "$DONE" | grep -c .)
