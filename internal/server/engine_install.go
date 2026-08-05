@@ -241,7 +241,9 @@ func (s *Server) runEngineInstall(cmd *exec.Cmd, logF *os.File, logPath, target 
 	st.mu.Lock()
 	st.running, st.done = false, true
 	st.mu.Unlock()
-	applog.Infof("system", "engine install DONE (engine + model) -> %s (restart / next shell launch spawns it)", target)
+	applog.Infof("system", "engine install DONE (engine + model) -> %s — starting it now (no restart needed)", target)
+	// Zero-restart: start the engine right now so narration works this session.
+	s.startInstalledEngine()
 }
 
 // handleInstallLocalEngineStatus (GET /api/engines/install-local/status) reports

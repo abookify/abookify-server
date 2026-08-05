@@ -478,6 +478,9 @@ func main() {
 	case s := <-sig:
 		log.Printf("received %s — shutting down gracefully", s)
 		applog.Info("system", "shutting down")
+		// Tear down a server-spawned engine (post-install zero-restart) so a
+		// deliberate quit/restart never orphans it (belt to its Pdeathsig).
+		srv.StopInstalledEngine()
 		// Drain in-flight HTTP requests (bounded), then let the deferred
 		// watcher/ingest/store closers run as main returns.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

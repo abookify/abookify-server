@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"os/exec"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -112,6 +113,10 @@ type Server struct {
 
 	// engineInstall tracks the first-run on-device engine build (engine_install.go).
 	engineInstall engineInstallState
+	// engineChild is a server-spawned engine started right after a first-run
+	// install (engine_spawn.go), so narration works without a restart. Guarded by
+	// engineInstall.mu.
+	engineChild *exec.Cmd
 
 	// alignment dedupe — same shape as embedInFlight; protects against two
 	// post-STT auto-align goroutines racing on the same work.
