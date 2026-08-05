@@ -2357,8 +2357,16 @@
         if (!nudge) return;
         if (!s.needs_setup) return;
         nudge.className = 'fr-nudge';
+        // State the REAL total (engine + speech model, varies CPU vs GPU) up front —
+        // a ~5 GB download is not something to discover at 40%.
+        let sizeLine = 'a one-time download', cpuUp = '';
+        try {
+          const st = await (await fetch('/api/engines/install-local/status')).json();
+          if (st.bytes_total) sizeLine = `a one-time ~${Math.round(st.bytes_total / 1e9)} GB download (the speech engine + its model)`;
+          if (st.variant === 'cpu') cpuUp = ' No graphics card? It still works — transcription runs on your CPU, slower on long books.';
+        } catch {}
         nudge.innerHTML =
-          `<div style="margin-bottom:8px;"><strong>Want word-for-word narration on your own audiobooks?</strong> Set up the on-device speech engine — a one-time download, then narration &amp; transcripts run offline on your machine. Reading and importing work without it.</div>`
+          `<div style="margin-bottom:8px;"><strong>Want word-for-word narration on your own audiobooks?</strong> Set up the on-device speech engine — ${sizeLine}, then narration &amp; transcripts run offline on your machine.${cpuUp} Reading and importing work without it.</div>`
           + `<button class="fr-btn primary" id="eng-install-btn" onclick="startEngineInstall()">Set up on-device narration &amp; transcripts</button>`
           + `<div id="eng-install-box" hidden style="margin-top:12px;text-align:left;"></div>`
           + `<div style="margin-top:8px;font-size:0.8rem;color:var(--text-muted);">Prefer the cloud? Add your own API key in <a href="#" onclick="openSettings();return false;">Settings</a> instead.</div>`;
@@ -2393,8 +2401,9 @@
         : '';
       if (s.state === 'running') {
         if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
+        const what = s.phase === 'model' ? 'the speech model' : 'the speech engine';
         box.innerHTML =
-          `<div style="font-weight:600;">Downloading the speech engine — ${fmtGB(s.bytes_done)} of ~${fmtGB(s.bytes_total)}</div>`
+          `<div style="font-weight:600;">Downloading ${what} — ${fmtGB(s.bytes_done)} of ~${fmtGB(s.bytes_total)}</div>`
           + `<div style="height:8px;background:var(--surface-hover);border-radius:4px;overflow:hidden;margin:6px 0;"><div style="height:100%;width:${s.percent}%;background:var(--accent);transition:width .4s;"></div></div>`
           + `<div style="font-size:0.8rem;color:var(--text-muted);">${s.step ? escapeHtml(s.step) : 'working…'} · You can close this — it picks up where it left off.</div>`
           + `<div style="font-size:0.82rem;margin-top:8px;">Your speech engine is installing. Meanwhile, add books and start reading — narration and transcripts light up when it's done.</div>`
