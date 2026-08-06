@@ -827,6 +827,19 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
 		AlignmentMethod string   `json:"alignment_method,omitempty"`
+		// Directional coverage for the redesigned card (#199/#200), deliberately
+		// named so QUALITY and SCOPE can never be rendered interchangeably: QUALITY
+		// (audio_to_ebook) is narration backed by text — the TRUST signal; SCOPE
+		// (ebook_to_audio) is how much of the book is narrated — CONTEXT, where a
+		// low value is normal for an abridgement or a collection and is NEVER an
+		// error. Both *float64+omitempty: a work with no alignment has neither
+		// (nil), which is distinct from a real 0.
+		Quality *float64 `json:"quality,omitempty"`
+		Scope   *float64 `json:"scope,omitempty"`
+		// Edition is the verdict bucket: "same_edition" | "different_edition" |
+		// "unknown". A string, not a number, so UNKNOWN (absence of signal) can
+		// never be mistaken downstream for a low score. Empty = no verdict at all.
+		Edition string `json:"edition,omitempty"`
 		// HasWordSync is true when the work has word-level sync_data (TTS→Whisper)
 		// but no cross-source alignment, so there's no coverage% to show. Lets the
 		// UI render a neutral "Word-level sync" chip — informational, NOT an error
@@ -844,6 +857,24 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			cov := ba.Confidence
 			out[i].Coverage = &cov
 			out[i].AlignmentMethod = ba.Method
+			// Surface the directional pair + edition verdict so the card can render
+			// QUALITY/SCOPE/edition without an N+1 per-work fetch. Only aligned works
+			// hit this (best[] present). Pick the pair with the highest QUALITY (the
+			// trust signal) as the one the card leads with.
+			if wc, err := library.BuildCoverage(s.store, wk.ID); err == nil && len(wc.Pairs) > 0 {
+				bp := wc.Pairs[0]
+				for _, p := range wc.Pairs[1:] {
+					if p.AudioToEbook > bp.AudioToEbook {
+						bp = p
+					}
+				}
+				q, sc := bp.AudioToEbook, bp.EbookToAudio
+				out[i].Quality = &q
+				out[i].Scope = &sc
+				if bp.Verdict != nil {
+					out[i].Edition = bp.Verdict.Bucket
+				}
+			}
 		}
 		out[i].HasWordSync = synced[wk.ID]
 	}
