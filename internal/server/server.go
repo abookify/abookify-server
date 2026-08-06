@@ -577,7 +577,7 @@ func New(store *db.Store, port string) *Server {
 		// auth is innermost so every request is still logged + CORS-
 		// decorated, and OPTIONS preflight is handled by cors before it
 		// reaches the gate (#197).
-		Handler: accessLogMiddleware(corsMiddleware(s.authMiddleware(mux))),
+		Handler: accessLogMiddleware(s.corsMiddleware(s.authMiddleware(mux))),
 	}
 
 	return s
@@ -3337,11 +3337,21 @@ func clientIP(remoteAddr string) string {
 	return remoteAddr
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	ver := s.Version
+	if ver == "" {
+		ver = "dev"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// Server identity on EVERY response (incl. 401 and health), so a client can
+		// tell "this is an abookify server" apart from "unreachable" and "some other
+		// server that also 401s" without guessing. Exposed for browser fetch; native
+		// clients can read it directly.
+		w.Header().Set("X-Abookify", ver)
+		w.Header().Set("Access-Control-Expose-Headers", "X-Abookify, X-Audio-Start-Sec")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)

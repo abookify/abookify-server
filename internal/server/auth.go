@@ -113,7 +113,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		// server:"abookify" lets a client distinguish a real auth challenge from
+		// this server (re-login) from a 401 off some unrelated host — pairs with the
+		// X-Abookify response header set in corsMiddleware.
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required", "server": "abookify"})
 	})
 }
 
