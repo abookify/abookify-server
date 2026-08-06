@@ -101,6 +101,10 @@ type PairCoverage struct {
 	Method     string     `json:"method"`
 	Unit       string     `json:"unit"`
 	DirectionalCoverage
+	// Verdict classifies the pairing (same edition / different edition /
+	// different text / unknown) with the raw signal alongside — see
+	// edition_verdict.go. Never nil for emitted pairs.
+	Verdict *EditionVerdict `json:"verdict,omitempty"`
 }
 
 // WorkCoverage is the GET /api/works/{id}/coverage payload (#199): per-pair
@@ -378,6 +382,24 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Embedding rows aren't emitted as pairs (paragraph offsets aren't word
+	// counts) but they carry the edition-verdict signal for their pair: the
+	// mean matched cosine plus the share of narration matched at all.
+	type embSignal struct{ quality, share float64 }
+	embFor := map[[2]int64]embSignal{}
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Method != "embedding" {
+			continue
+		}
+		var p AnchorAlignmentPayload
+		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+			continue
+		}
+		d := directionalFrom(p, 0, 0)
+		embFor[[2]int64{a.FromBookID, a.ToBookID}] = embSignal{quality: p.MatchQuality, share: d.AudioToEbook}
+	}
+
 	out := &WorkCoverage{WorkID: workID, Pairs: []PairCoverage{}}
 	for i := range aligns {
 		a := &aligns[i]
@@ -390,12 +412,15 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		}
 		ebook, _ := store.GetBook(a.FromBookID)
 		trans, _ := store.GetBook(a.ToBookID)
+		dir := directionalFrom(p, 0, 0)
+		emb, hasEmb := embFor[[2]int64{a.FromBookID, a.ToBookID}]
 		out.Pairs = append(out.Pairs, PairCoverage{
 			Ebook:               DiffSource{BookID: a.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
 			Transcript:          DiffSource{BookID: a.ToBookID, Origin: originOf(trans), Label: bookLabel(trans)},
 			Method:              a.Method,
 			Unit:                a.Unit,
-			DirectionalCoverage: directionalFrom(p, 0, 0),
+			DirectionalCoverage: dir,
+			Verdict:             computeEditionVerdict(dir.AudioToEbook, hasEmb, emb.quality, emb.share),
 		})
 	}
 	return out, nil
