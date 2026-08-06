@@ -1273,6 +1273,30 @@ func (s *Store) FindWorkByTitleAuthor(title, author string) (id int64, contentVe
 	return id, contentVersion, true, nil
 }
 
+// WorkContentVersions returns a workID -> content_version snapshot — the cheap
+// query the coherence content-watcher polls to notice a repaired book landing.
+// A repair runs as a SEPARATE process and writes the SQLite DB directly, so no
+// fs-watcher event fires; content_version is the generation stamp a repair bumps,
+// and it is writer-agnostic (reflects DB state regardless of which machine wrote
+// it), so parallel repairs on two hosts are both observed.
+func (s *Store) WorkContentVersions() (map[int64]string, error) {
+	rows, err := s.db.Query(`SELECT id, content_version FROM works`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]string)
+	for rows.Next() {
+		var id int64
+		var cv string
+		if err := rows.Scan(&id, &cv); err != nil {
+			return nil, err
+		}
+		out[id] = cv
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`
 		SELECT id, work_id, path, filename, format, media_type, size_bytes, title, author, album, duration, origin, visibility, edition, start_sec, created_at, updated_at

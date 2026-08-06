@@ -155,6 +155,10 @@ func (s *Server) SweepCoherenceAsync(reason string) {
 // look. The rescan path also sweeps immediately (handleLibraryRescan), so a
 // manual "rescan now" gets an instant verdict; this ticker covers watcher-landed
 // books that never pass through a rescan.
+//
+// It ALSO starts the content-watcher (watchContentVersions): the event-driven
+// path that fires a sweep the moment a repaired book actually lands, instead of
+// waiting up to 30 min for the ticker. The ticker stays as the backstop.
 func (s *Server) StartCoherenceSweeper() {
 	go func() {
 		time.Sleep(90 * time.Second) // let the boot pipeline settle first
@@ -165,6 +169,54 @@ func (s *Server) StartCoherenceSweeper() {
 			s.sweepCoherence("periodic")
 		}
 	}()
+	go s.watchContentVersions()
+}
+
+// watchContentVersions is the event-driven coherence trigger — it fires a sweep
+// the moment a book's content changes in the DB, which is how a repaired book
+// "lands." This is the path that was DEAD: SweepCoherenceAsync had no caller, and
+// the fs-watcher it claimed to hang off never sees the repair's writes (the repair
+// is a SEPARATE process — now running on two machines in parallel — writing the
+// SQLite DB directly, so no filesystem event fires). We poll content_version
+// instead: it's the generation stamp a repair bumps, and it's writer-agnostic by
+// construction (it reflects committed DB state, not who wrote it), so tank and
+// atrium banking books concurrently are both caught, each on the next tick. A
+// burst of landings collapses into one sweep via SweepCoherenceAsync's single
+// flight. The 30-min ticker remains the backstop for anything a poll might miss.
+func (s *Server) watchContentVersions() {
+	prev, err := s.store.WorkContentVersions()
+	if err != nil {
+		applog.Warnf("system", "coherence content-watcher: initial snapshot failed (backstop ticker still covers it): %v", err)
+		prev = map[int64]string{}
+	}
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		cur, err := s.store.WorkContentVersions()
+		if err != nil {
+			applog.Warnf("system", "coherence content-watcher: poll failed: %v", err)
+			continue
+		}
+		if changed := changedWorkIDs(prev, cur); len(changed) > 0 {
+			applog.Infof("system", "coherence content-watcher: %d work(s) changed %v (content_version moved — a repaired book landed) → firing sweep", len(changed), changed)
+			s.SweepCoherenceAsync("library changed")
+		}
+		prev = cur
+	}
+}
+
+// changedWorkIDs returns the work ids that are new or whose content_version moved
+// between two snapshots, sorted. Deletions are intentionally ignored: a removed
+// work needs no coherence check, and orphan cleanup is the boot sweep's job.
+func changedWorkIDs(prev, cur map[int64]string) []int64 {
+	var changed []int64
+	for id, cv := range cur {
+		if old, ok := prev[id]; !ok || old != cv {
+			changed = append(changed, id)
+		}
+	}
+	sort.Slice(changed, func(a, b int) bool { return changed[a] < changed[b] })
+	return changed
 }
 
 func sortedKeys(m map[string]bool) []string {
