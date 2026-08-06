@@ -112,3 +112,23 @@ func TestWriteBootstrapSidecar_ProducesReadableV3(t *testing.T) {
 		t.Errorf("stub should have no words, got %d", len(sc.Words))
 	}
 }
+
+// Filenames containing commas ("Adams, Douglas -- ...Disc 1 of 5.mp3") must
+// resolve as ONE file; comma-separated lists of real names must still split.
+// The comma-split-first behavior failed all five Hitchhiker's Guide files in
+// seconds while reading as a bad request.
+func TestResolveRedoNamesCommaFilename(t *testing.T) {
+	idx := map[string]int{
+		"Adams, Douglas -- Disc 1 of 5.mp3": 0,
+		"plain-a.mp3":                       1,
+		"plain-b.mp3":                       2,
+	}
+	got := resolveRedoNames("Adams, Douglas -- Disc 1 of 5.mp3", idx)
+	if len(got) != 1 || got[0] != "Adams, Douglas -- Disc 1 of 5.mp3" {
+		t.Errorf("comma filename split apart: %v", got)
+	}
+	got = resolveRedoNames("plain-a.mp3,plain-b.mp3", idx)
+	if len(got) != 2 {
+		t.Errorf("real comma list no longer splits: %v", got)
+	}
+}

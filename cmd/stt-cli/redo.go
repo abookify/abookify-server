@@ -142,8 +142,10 @@ func retranscribeAndMerge(client *stt.Client, files []string, durations []float6
 	}
 
 	// Resolve the redo list to (file index, base filename, time range).
+	//
+	names := resolveRedoNames(redoFiles, indexByBase)
 	var redo []redoEntry
-	for _, raw := range strings.Split(redoFiles, ",") {
+	for _, raw := range names {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
@@ -317,4 +319,17 @@ func redoFilesSummary(redo []redoEntry) string {
 		names = append(names, r.base)
 	}
 	return strings.Join(names, ", ")
+}
+
+// resolveRedoNames interprets the --redo-files argument. The whole argument
+// is tried as ONE filename before comma-splitting: real audiobook files
+// contain commas ("Adams, Douglas -- ...Disc 1 of 5.mp3"), and splitting
+// first turned every such file into "Adams" — not found, every redo failing
+// in seconds while looking like a bad request.
+func resolveRedoNames(redoFiles string, indexByBase map[string]int) []string {
+	whole := strings.TrimSpace(redoFiles)
+	if _, ok := indexByBase[whole]; ok || !strings.Contains(redoFiles, ",") {
+		return []string{whole}
+	}
+	return strings.Split(redoFiles, ",")
 }
