@@ -515,6 +515,17 @@ func migrate(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 
+		-- Multi-user (household) accounts. One library, many readers; each reader
+		-- gets their own playback position, bookmarks and Q&A. A single-credential
+		-- install (#197) migrates to a single row here (id=1) below, and all its
+		-- existing user-scoped rows backfill to user 1, so nobody loses progress.
+		CREATE TABLE IF NOT EXISTS users (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			username      TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL DEFAULT '',
+			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
 		-- Q&A chat sessions: a session is a multi-turn conversation
 		-- scoped to one work. A book can have many parallel sessions
 		-- (one per topic, draft, or open tab). Title is auto-derived
@@ -687,6 +698,15 @@ func migrate(db *sql.DB) error {
 		// The actual low-confidence PASSAGES (text + timestamps), so a reader can tap
 		// one, hear it, and judge — not just per-chapter counts. JSON []TrustPassage.
 		`ALTER TABLE text_trust ADD COLUMN passages_json TEXT NOT NULL DEFAULT '[]'`,
+		// Multi-user: user-scoped tables gain a user_id. DEFAULT 1 backfills every
+		// existing row to the migrated single-credential user (seeded below), so a
+		// pre-multi-user install keeps all its progress under user 1.
+		// (playback_positions is rebuilt separately — its PRIMARY KEY must widen to
+		// (work_id, user_id), which ALTER can't do.)
+		`ALTER TABLE playback_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE bookmarks       ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE qa_sessions     ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE auth_sessions   ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
@@ -720,6 +740,49 @@ func migrate(db *sql.DB) error {
 		for _, s := range steps {
 			if _, err := db.Exec(s); err != nil {
 				return fmt.Errorf("chapter_links widen migration: %w", err)
+			}
+		}
+	}
+
+	// Multi-user: seed user 1 from the single-credential settings so the rows
+	// backfilled to user_id=1 above belong to a real, loginable account. No-op
+	// once seeded, or on an install that never configured auth (seeded when the
+	// first user is created instead).
+	db.Exec(`INSERT INTO users (id, username, password_hash)
+		SELECT 1,
+		       (SELECT value FROM settings WHERE key='auth_username'),
+		       (SELECT value FROM settings WHERE key='auth_password_hash')
+		WHERE (SELECT value FROM settings WHERE key='auth_username') IS NOT NULL
+		  AND (SELECT value FROM settings WHERE key='auth_username') <> ''
+		  AND NOT EXISTS (SELECT 1 FROM users)`)
+
+	// playback_positions PRIMARY KEY (work_id) -> (work_id, user_id): ALTER can't
+	// widen a PK, so recreate (same one-time, gated pattern as chapter_links).
+	// Existing rows carry to user 1. The gate matches the OLD single-column PK
+	// only, so it never re-runs.
+	var ppSQL string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='playback_positions'`).Scan(&ppSQL)
+	if strings.Contains(ppSQL, "PRIMARY KEY (work_id)") {
+		steps := []string{
+			`CREATE TABLE playback_positions_new (
+				work_id       INTEGER NOT NULL,
+				user_id       INTEGER NOT NULL DEFAULT 1,
+				book_id       INTEGER NOT NULL,
+				file_index    INTEGER NOT NULL DEFAULT 0,
+				position_secs REAL NOT NULL DEFAULT 0,
+				updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				device_id     TEXT NOT NULL DEFAULT '',
+				device_name   TEXT NOT NULL DEFAULT '',
+				PRIMARY KEY (work_id, user_id)
+			)`,
+			`INSERT INTO playback_positions_new (work_id, user_id, book_id, file_index, position_secs, updated_at, device_id, device_name)
+			 SELECT work_id, 1, book_id, file_index, position_secs, updated_at, device_id, device_name FROM playback_positions`,
+			`DROP TABLE playback_positions`,
+			`ALTER TABLE playback_positions_new RENAME TO playback_positions`,
+		}
+		for _, s := range steps {
+			if _, err := db.Exec(s); err != nil {
+				return fmt.Errorf("playback_positions user-scope migration: %w", err)
 			}
 		}
 	}
