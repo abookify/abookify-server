@@ -1985,6 +1985,22 @@
     </div>
   </div>
 
+  <!-- Engine-install modal: surfaced when a returning user (no speech engine)
+       asks for narration/transcripts on the generate path, so the install flow
+       is reachable from where they actually want it — not only on first-run. -->
+  <div id="eng-install-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:120; align-items:center; justify-content:center;">
+    <div role="dialog" aria-modal="true" aria-label="Set up on-device narration" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; max-width:520px; width:94%; max-height:90vh; overflow:auto;">
+      <h3 style="margin:0 0 6px; color:var(--text);">Set up on-device narration &amp; transcripts</h3>
+      <div id="eng-modal-copy" style="font-size:0.86rem; color:var(--text-soft); margin-bottom:12px;"></div>
+      <button class="fr-btn primary" id="eng-install-btn" onclick="startEngineInstall()">Set up on-device narration &amp; transcripts</button>
+      <div id="eng-install-box" hidden style="margin-top:12px; text-align:left;"></div>
+      <div style="margin-top:14px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <span style="font-size:0.78rem; color:var(--text-muted);">Prefer the cloud? Add your own API key in <a href="#" onclick="closeEngineInstallModal(); openSettings(); return false;">Settings</a>.</span>
+        <button onclick="closeEngineInstallModal()" style="background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:6px; padding:6px 14px; cursor:pointer;">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="merge-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center;">
     <div role="dialog" aria-modal="true" aria-label="Merge books" style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; max-width:420px; width:90%;">
       <h3 style="margin:0 0 16px; color:var(--text);">Merge books</h3>
@@ -2373,6 +2389,30 @@
         // If a prior install is running or was interrupted, surface it immediately.
         engineInstallPoll(true);
       } catch { /* the welcome stands on its own without the nudge */ }
+    }
+
+    // Reachable install: a returning user with no speech engine asked for
+    // narration/transcripts (503 on the generate path). Surface the SAME install
+    // flow from where they asked, so the way to enable it is never a dead alert.
+    async function openEngineInstallModal() {
+      const modal = document.getElementById('eng-install-modal');
+      const copy = document.getElementById('eng-modal-copy');
+      const btn = document.getElementById('eng-install-btn');
+      if (!modal) return;
+      let sizeLine = 'a one-time download', cpuUp = '';
+      try {
+        const st = await (await fetch('/api/engines/install-local/status')).json();
+        if (st.bytes_total) sizeLine = `a one-time ~${Math.round(st.bytes_total / 1e9)} GB download (the speech engine + its model)`;
+        if (st.variant === 'cpu') cpuUp = ' No graphics card? It still works — transcription runs on your CPU, slower on long books.';
+      } catch {}
+      if (copy) copy.innerHTML = `Narration and transcripts of your own audiobooks run on a speech engine on <em>your</em> machine — ${sizeLine}, then everything runs offline.${cpuUp} Keep reading while it installs; it turns on by itself when it's done.`;
+      if (btn) { btn.disabled = false; btn.style.display = ''; btn.textContent = 'Set up on-device narration & transcripts'; }
+      modal.style.display = 'flex';
+      engineInstallPoll(true); // if an install is already running/interrupted, show it
+    }
+    function closeEngineInstallModal() {
+      const m = document.getElementById('eng-install-modal');
+      if (m) m.style.display = 'none';
     }
 
     // --- On-device engine install: a real, triggered, VISIBLE, resumable install
@@ -3089,6 +3129,8 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ voice, text_book_id: textBookId, edition }),
       });
+      // No speech engine yet → send them to the install flow instead of a dead error.
+      if (res.status === 503) { closeTTSWizard(); openEngineInstallModal(); return; }
       if (!res.ok) { ttsWizStatus('Failed: ' + (await metaErr(res)), true); return; }
       closeTTSWizard();
       loadJobs(); // surface it in the processing queue immediately
@@ -8128,6 +8170,8 @@
         const res = await fetch(`/api/works/${workId}/generate-audio`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
         const data = await res.json();
         if (res.status === 409) { if (btn) btn.innerHTML = '<span class="spinner"></span>Already running'; loadJobs(); return; }
+        // No speech engine yet → don't dead-end on a raw error; open the install flow.
+        if (res.status === 503) { if (btn) { btn.disabled = false; btn.textContent = 'Generate with TTS'; } openEngineInstallModal(); return; }
         if (!res.ok) { alert('Error: ' + (data.error || 'unknown')); if (btn) { btn.disabled = false; btn.textContent = 'Generate with TTS'; } return; }
         loadJobs(); // Immediately show in jobs bar
       } catch(e) { alert('Request failed'); if (btn) { btn.disabled = false; btn.textContent = 'Generate with TTS'; } }
@@ -8140,6 +8184,8 @@
         const res = await fetch(`/api/works/${workId}/transcribe`, { method: 'POST' });
         const data = await res.json();
         if (res.status === 409) { if (btn) btn.innerHTML = '<span class="spinner"></span>Already running'; loadJobs(); return; }
+        // No speech engine yet → open the install flow instead of a dead error.
+        if (res.status === 503) { if (btn) { btn.disabled = false; btn.textContent = 'Generate transcript'; } openEngineInstallModal(); return; }
         if (!res.ok) { alert('Error: ' + (data.error || 'unknown')); if (btn) { btn.disabled = false; btn.textContent = 'Generate transcript'; } return; }
         loadJobs(); // Immediately show in jobs bar
       } catch(e) { alert('Request failed'); if (btn) { btn.disabled = false; btn.textContent = 'Generate transcript'; } }
