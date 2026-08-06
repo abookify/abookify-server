@@ -1,6 +1,10 @@
 package library
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pj/abookify/internal/db"
+)
 
 // Every case here is a REAL measured pairing from the 2026-08-06 library sweep
 // (values in the handoff), so a threshold change that flips a known-true
@@ -66,5 +70,45 @@ func TestEditionVerdictAbridgedDetail(t *testing.T) {
 	generic := computeEditionVerdict(0.049, true, 0.774, 0.930)
 	if v.Detail == generic.Detail {
 		t.Errorf("abridged-edition case must carry a distinct detail from the plain different-edition case")
+	}
+}
+
+// An embedding row written before match_quality existed carries 0. Zero is
+// absence of signal, not evidence of difference — Hero With a Thousand Faces
+// briefly read "different_text" off its own July row that way. Such a pair
+// must report unknown.
+func TestBuildCoverageTreatsZeroMatchQualityAsNoSignal(t *testing.T) {
+	store := testStoreForLib(t)
+	wid, err := store.CreateWork("Old Embedding Row", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/ebooks/x.epub",
+		Filename: "x.epub", Format: "epub", MediaType: "text", Origin: "publisher_epub"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "generated://transcript/x",
+		Filename: "T", Format: "transcript", MediaType: "text", Origin: "whisper_transcript"})
+	books, _ := store.ListBooks()
+	var eb, tr int64
+	for _, b := range books {
+		if b.Format == "epub" {
+			eb = b.ID
+		} else {
+			tr = b.ID
+		}
+	}
+	// Anchor row with low quality; embedding row WITHOUT match_quality.
+	store.SaveAlignment(db.Alignment{WorkID: wid, FromBookID: eb, ToBookID: tr, Unit: "word",
+		Method: "anchor", Pairs: `{"method":"anchor","unit":"word","ebook_words":100,"trans_words":100,` +
+			`"divergence":{"ebook_only_words":80,"trans_only_words":80}}`})
+	store.SaveAlignment(db.Alignment{WorkID: wid, FromBookID: eb, ToBookID: tr, Unit: "paragraph",
+		Method: "embedding", Pairs: `{"method":"embedding","unit":"paragraph","ebook_words":100,"trans_words":100,` +
+			`"divergence":{"ebook_only_words":50,"trans_only_words":50}}`})
+
+	cov, err := BuildCoverage(store, wid)
+	if err != nil || len(cov.Pairs) != 1 {
+		t.Fatalf("cov=%+v err=%v", cov, err)
+	}
+	if got := cov.Pairs[0].Verdict.Bucket; got != VerdictUnknown {
+		t.Errorf("bucket = %s, want %s — a quality-less embedding row is no signal, not a difference verdict", got, VerdictUnknown)
 	}
 }

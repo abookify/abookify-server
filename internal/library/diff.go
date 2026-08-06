@@ -396,6 +396,12 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
 			continue
 		}
+		// Rows written before match_quality existed carry 0 — that is absence
+		// of signal, not evidence of difference (a real matched chain can't
+		// average below the 0.6 similarity floor). Treat as no embedding row.
+		if p.MatchQuality == 0 {
+			continue
+		}
 		d := directionalFrom(p, 0, 0)
 		embFor[[2]int64{a.FromBookID, a.ToBookID}] = embSignal{quality: p.MatchQuality, share: d.AudioToEbook}
 	}
