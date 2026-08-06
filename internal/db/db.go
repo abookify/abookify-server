@@ -825,27 +825,29 @@ type PlaybackPosition struct {
 	UpdatedAt    string  `json:"updated_at"`
 }
 
-func (s *Store) SavePosition(pos PlaybackPosition) error {
+// SavePosition upserts the reading position for (work, user). Multi-user: two
+// readers keep separate positions for the same book (PK is (work_id, user_id)).
+func (s *Store) SavePosition(pos PlaybackPosition, userID int64) error {
 	_, err := s.db.Exec(`
-		INSERT INTO playback_positions (work_id, book_id, file_index, position_secs, device_id, device_name, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(work_id) DO UPDATE SET
+		INSERT INTO playback_positions (work_id, user_id, book_id, file_index, position_secs, device_id, device_name, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(work_id, user_id) DO UPDATE SET
 			book_id = excluded.book_id,
 			file_index = excluded.file_index,
 			position_secs = excluded.position_secs,
 			device_id = CASE WHEN excluded.device_id != '' THEN excluded.device_id ELSE playback_positions.device_id END,
 			device_name = CASE WHEN excluded.device_name != '' THEN excluded.device_name ELSE playback_positions.device_name END,
 			updated_at = CURRENT_TIMESTAMP
-	`, pos.WorkID, pos.BookID, pos.FileIndex, pos.PositionSecs, pos.DeviceID, pos.DeviceName)
+	`, pos.WorkID, userID, pos.BookID, pos.FileIndex, pos.PositionSecs, pos.DeviceID, pos.DeviceName)
 	return err
 }
 
-func (s *Store) GetPosition(workID int64) (*PlaybackPosition, error) {
+func (s *Store) GetPosition(workID, userID int64) (*PlaybackPosition, error) {
 	var pos PlaybackPosition
 	err := s.db.QueryRow(`
 		SELECT work_id, book_id, file_index, position_secs, device_id, device_name, updated_at
-		FROM playback_positions WHERE work_id = ?
-	`, workID).Scan(&pos.WorkID, &pos.BookID, &pos.FileIndex, &pos.PositionSecs, &pos.DeviceID, &pos.DeviceName, &pos.UpdatedAt)
+		FROM playback_positions WHERE work_id = ? AND user_id = ?
+	`, workID, userID).Scan(&pos.WorkID, &pos.BookID, &pos.FileIndex, &pos.PositionSecs, &pos.DeviceID, &pos.DeviceName, &pos.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -859,11 +861,11 @@ func (s *Store) GetPosition(workID int64) (*PlaybackPosition, error) {
 
 // RecordPlayback logs a listening event (e.g. "played 300 seconds of work 9").
 // Events are bucketed by date for daily/weekly/monthly aggregation.
-func (s *Store) RecordPlayback(workID int64, event string, seconds float64) error {
+func (s *Store) RecordPlayback(workID int64, event string, seconds float64, userID int64) error {
 	_, err := s.db.Exec(`
-		INSERT INTO playback_events (work_id, event, seconds)
-		VALUES (?, ?, ?)
-	`, workID, event, seconds)
+		INSERT INTO playback_events (work_id, user_id, event, seconds)
+		VALUES (?, ?, ?, ?)
+	`, workID, userID, event, seconds)
 	return err
 }
 
@@ -2172,38 +2174,40 @@ type Bookmark struct {
 
 // UpdateBookmark updates the mutable fields on an existing bookmark
 // (note, color). Immutable fields like position/word range stay.
-func (s *Store) UpdateBookmark(id int64, note, color string) error {
+// OWNERSHIP: the `AND user_id = ?` guard means a reader can only edit their own
+// bookmark — an id belonging to another reader matches 0 rows (no change).
+func (s *Store) UpdateBookmark(id int64, note, color string, userID int64) error {
 	if note != "" && color != "" {
-		_, err := s.db.Exec(`UPDATE bookmarks SET note = ?, color = ? WHERE id = ?`, note, color, id)
+		_, err := s.db.Exec(`UPDATE bookmarks SET note = ?, color = ? WHERE id = ? AND user_id = ?`, note, color, id, userID)
 		return err
 	}
 	if note != "" {
-		_, err := s.db.Exec(`UPDATE bookmarks SET note = ? WHERE id = ?`, note, id)
+		_, err := s.db.Exec(`UPDATE bookmarks SET note = ? WHERE id = ? AND user_id = ?`, note, id, userID)
 		return err
 	}
 	if color != "" {
-		_, err := s.db.Exec(`UPDATE bookmarks SET color = ? WHERE id = ?`, color, id)
+		_, err := s.db.Exec(`UPDATE bookmarks SET color = ? WHERE id = ? AND user_id = ?`, color, id, userID)
 		return err
 	}
 	return nil
 }
 
-func (s *Store) CreateBookmark(b Bookmark) (int64, error) {
+func (s *Store) CreateBookmark(b Bookmark, userID int64) (int64, error) {
 	res, err := s.db.Exec(`
-		INSERT INTO bookmarks (work_id, book_id, type, chapter_idx, position_secs, start_word, end_word, text_snippet, note, color)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, b.WorkID, b.BookID, b.Type, b.ChapterIdx, b.PositionSecs, b.StartWord, b.EndWord, b.TextSnippet, b.Note, b.Color)
+		INSERT INTO bookmarks (work_id, user_id, book_id, type, chapter_idx, position_secs, start_word, end_word, text_snippet, note, color)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, b.WorkID, userID, b.BookID, b.Type, b.ChapterIdx, b.PositionSecs, b.StartWord, b.EndWord, b.TextSnippet, b.Note, b.Color)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (s *Store) ListBookmarks(workID int64) ([]Bookmark, error) {
+func (s *Store) ListBookmarks(workID, userID int64) ([]Bookmark, error) {
 	rows, err := s.db.Query(`
 		SELECT id, work_id, book_id, type, chapter_idx, position_secs, start_word, end_word, text_snippet, note, color, created_at
-		FROM bookmarks WHERE work_id = ? ORDER BY created_at DESC
-	`, workID)
+		FROM bookmarks WHERE work_id = ? AND user_id = ? ORDER BY created_at DESC
+	`, workID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -2221,8 +2225,10 @@ func (s *Store) ListBookmarks(workID int64) ([]Bookmark, error) {
 	return bookmarks, rows.Err()
 }
 
-func (s *Store) DeleteBookmark(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM bookmarks WHERE id = ?`, id)
+// DeleteBookmark removes a bookmark the reader owns. OWNERSHIP: the
+// `AND user_id = ?` guard means an id belonging to another reader deletes nothing.
+func (s *Store) DeleteBookmark(id, userID int64) error {
+	_, err := s.db.Exec(`DELETE FROM bookmarks WHERE id = ? AND user_id = ?`, id, userID)
 	return err
 }
 

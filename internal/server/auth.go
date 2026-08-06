@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -11,6 +12,27 @@ import (
 
 	"github.com/pj/abookify/internal/db"
 )
+
+// Request-scoped current reader (multi-user). The middleware stashes the
+// session's user_id here; handlers read it via userIDFromContext to scope
+// per-user rows (positions, bookmarks, Q&A).
+type ctxKey int
+
+const userIDKey ctxKey = 0
+
+// userIDFromContext returns the authenticated reader's id, defaulting to 1 —
+// the single implicit user for an auth-disabled install or a dev/exempt request.
+// Every user-scoped query MUST use this rather than assuming a global row.
+func userIDFromContext(r *http.Request) int64 {
+	if v, ok := r.Context().Value(userIDKey).(int64); ok && v > 0 {
+		return v
+	}
+	return 1
+}
+
+func withUserID(r *http.Request, uid int64) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), userIDKey, uid))
+}
 
 // Optional username/password auth (#197). When a password hash is set
 // the whole server is gated behind a login; when it's absent the
@@ -109,8 +131,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if _, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
-			next.ServeHTTP(w, r)
+		if uid, _, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
+			next.ServeHTTP(w, withUserID(r, uid))
 			return
 		}
 		// server:"abookify" lets a client distinguish a real auth challenge from
@@ -135,7 +157,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	if s.devAuthOK(r) {
 		resp["authenticated"] = true
 		resp["username"] = "dev"
-	} else if user, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
+	} else if _, user, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
 		resp["authenticated"] = true
 		resp["username"] = user
 	}
@@ -158,14 +180,15 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	storedUser, _ := s.store.GetSetting("auth_username")
-	hash, _ := s.store.GetSetting("auth_password_hash")
-
-	// Always run the bcrypt compare even on username mismatch so login
-	// timing doesn't reveal whether the username was right.
-	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(storedUser)) == 1
+	// Resolve the reader from the users table (multi-user). Always run bcrypt —
+	// against the real hash or a dummy on unknown username — so login timing
+	// doesn't reveal whether the username exists.
+	id, hash, found := s.store.GetUserByUsername(req.Username)
+	if !found {
+		hash = string(dummyBcryptHash)
+	}
 	pwOK := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) == nil
-	if !userOK || !pwOK {
+	if !found || !pwOK {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 		return
 	}
@@ -175,13 +198,17 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token mint failed"})
 		return
 	}
-	if err := s.store.CreateAuthSession(token, storedUser, db.DefaultSessionTTL); err != nil {
+	if err := s.store.CreateAuthSession(token, id, req.Username, db.DefaultSessionTTL); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
 	s.setSessionCookie(w, r, token, db.DefaultSessionTTL)
-	writeJSON(w, http.StatusOK, map[string]string{"token": token, "username": storedUser})
+	writeJSON(w, http.StatusOK, map[string]string{"token": token, "username": req.Username})
 }
+
+// dummyBcryptHash is compared against on an unknown username so a login attempt
+// takes the same bcrypt time whether or not the user exists (no timing oracle).
+var dummyBcryptHash, _ = bcrypt.GenerateFromPassword([]byte("x"), bcrypt.DefaultCost)
 
 // handleAuthLogout invalidates the presented token and clears the
 // cookie. Only the current token is dropped — other devices (e.g. a

@@ -350,7 +350,8 @@ func copyBookmarks(bdb *sql.DB, store *db.Store, workID int64, remap map[int64]i
 		}
 		bm.WorkID = workID
 		bm.BookID = remap[oldBook]
-		if _, err := store.CreateBookmark(bm); err != nil {
+		// Imported annotations land with the primary reader (user 1).
+		if _, err := store.CreateBookmark(bm, 1); err != nil {
 			return fmt.Errorf("create bookmark: %w", err)
 		}
 	}

@@ -38,7 +38,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	sessions, err := s.store.ListSessions(workID)
+	sessions, err := s.store.ListSessions(workID, userIDFromContext(r))
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -60,12 +60,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Scope string `json:"scope"` // "reading" (default, spoiler-safe) | "book"
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	id, err := s.store.CreateSession(workID, req.Title, req.Scope)
+	id, err := s.store.CreateSession(workID, req.Title, req.Scope, userIDFromContext(r))
 	if err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-	sess, _ := s.store.GetSession(id)
+	sess, _ := s.store.GetSession(id, userIDFromContext(r))
 	writeJSON(w, http.StatusOK, sess)
 }
 
@@ -82,11 +82,11 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.store.RenameSession(id, req.Title); err != nil {
+	if err := s.store.RenameSession(id, req.Title, userIDFromContext(r)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-	sess, _ := s.store.GetSession(id)
+	sess, _ := s.store.GetSession(id, userIDFromContext(r))
 	writeJSON(w, http.StatusOK, sess)
 }
 
@@ -105,11 +105,11 @@ func (s *Server) handleSetSessionScope(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.store.SetSessionScope(id, req.Scope); err != nil {
+	if err := s.store.SetSessionScope(id, req.Scope, userIDFromContext(r)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-	sess, _ := s.store.GetSession(id)
+	sess, _ := s.store.GetSession(id, userIDFromContext(r))
 	writeJSON(w, http.StatusOK, sess)
 }
 
@@ -119,7 +119,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	if err := s.store.DeleteSession(id); err != nil {
+	if err := s.store.DeleteSession(id, userIDFromContext(r)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -163,6 +163,12 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
+	// OWNERSHIP: only the session's owner may read its messages — a guessed id
+	// belonging to another reader must not leak their private chat.
+	if sess, _ := s.store.GetSession(sessionID, userIDFromContext(r)); sess == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
 	msgs, err := s.store.ListMessages(sessionID)
 	if err != nil {
 		writeServerError(w, r, err)
@@ -185,7 +191,8 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	sess, err := s.store.GetSession(sessionID)
+	// OWNERSHIP: GetSession scoped to the reader → a non-owned id returns nil → 404.
+	sess, err := s.store.GetSession(sessionID, userIDFromContext(r))
 	if err != nil || sess == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -256,7 +263,7 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 	// Auto-name the session from its first user message if it's still the
 	// placeholder "New chat".
 	if len(history) == 0 && sess.Title == "New chat" {
-		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content))
+		_ = s.store.RenameSession(sessionID, library.DeriveSessionTitle(req.Content), userIDFromContext(r))
 	}
 
 	answer, err := library.AskInSession(s.store, rag, sess.WorkID, history, req.Content, scope, extractOnly)

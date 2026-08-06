@@ -43,13 +43,13 @@ func normalizeScope(scope string) string {
 	return "reading"
 }
 
-func (s *Store) CreateSession(workID int64, title, scope string) (int64, error) {
+func (s *Store) CreateSession(workID int64, title, scope string, userID int64) (int64, error) {
 	if title == "" {
 		title = "New chat"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO qa_sessions (work_id, title, scope) VALUES (?, ?, ?)`,
-		workID, title, normalizeScope(scope),
+		`INSERT INTO qa_sessions (work_id, user_id, title, scope) VALUES (?, ?, ?, ?)`,
+		workID, userID, title, normalizeScope(scope),
 	)
 	if err != nil {
 		return 0, err
@@ -58,10 +58,10 @@ func (s *Store) CreateSession(workID int64, title, scope string) (int64, error) 
 }
 
 // SetSessionScope updates a chat's spoiler scope ("reading" | "book").
-func (s *Store) SetSessionScope(id int64, scope string) error {
+func (s *Store) SetSessionScope(id int64, scope string, userID int64) error {
 	_, err := s.db.Exec(
-		`UPDATE qa_sessions SET scope = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		normalizeScope(scope), id,
+		`UPDATE qa_sessions SET scope = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`,
+		normalizeScope(scope), id, userID,
 	)
 	return err
 }
@@ -75,19 +75,19 @@ func normalizeAnswerMode(mode string) string {
 }
 
 // SetSessionAnswerMode updates a chat's answer mode ("generated" | "extract").
-func (s *Store) SetSessionAnswerMode(id int64, mode string) error {
+func (s *Store) SetSessionAnswerMode(id int64, mode string, userID int64) error {
 	_, err := s.db.Exec(
-		`UPDATE qa_sessions SET answer_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		normalizeAnswerMode(mode), id,
+		`UPDATE qa_sessions SET answer_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`,
+		normalizeAnswerMode(mode), id, userID,
 	)
 	return err
 }
 
-func (s *Store) ListSessions(workID int64) ([]QASession, error) {
+func (s *Store) ListSessions(workID, userID int64) ([]QASession, error) {
 	rows, err := s.db.Query(
 		`SELECT id, work_id, title, scope, answer_mode, created_at, updated_at
-		   FROM qa_sessions WHERE work_id = ? ORDER BY updated_at DESC, id DESC`,
-		workID,
+		   FROM qa_sessions WHERE work_id = ? AND user_id = ? ORDER BY updated_at DESC, id DESC`,
+		workID, userID,
 	)
 	if err != nil {
 		return nil, err
@@ -104,11 +104,11 @@ func (s *Store) ListSessions(workID int64) ([]QASession, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) GetSession(id int64) (*QASession, error) {
+func (s *Store) GetSession(id, userID int64) (*QASession, error) {
 	var ss QASession
 	err := s.db.QueryRow(
 		`SELECT id, work_id, title, scope, answer_mode, created_at, updated_at
-		   FROM qa_sessions WHERE id = ?`, id,
+		   FROM qa_sessions WHERE id = ? AND user_id = ?`, id, userID,
 	).Scan(&ss.ID, &ss.WorkID, &ss.Title, &ss.Scope, &ss.AnswerMode, &ss.CreatedAt, &ss.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -119,28 +119,31 @@ func (s *Store) GetSession(id int64) (*QASession, error) {
 	return &ss, nil
 }
 
-func (s *Store) RenameSession(id int64, title string) error {
+func (s *Store) RenameSession(id int64, title string, userID int64) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "New chat"
 	}
 	_, err := s.db.Exec(
-		`UPDATE qa_sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		title, id,
+		`UPDATE qa_sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`,
+		title, id, userID,
 	)
 	return err
 }
 
-func (s *Store) DeleteSession(id int64) error {
+// DeleteSession removes a chat + its messages the reader owns. OWNERSHIP: both
+// deletes are guarded on user_id, so another reader's session (and its private
+// messages) can't be deleted through a guessed id.
+func (s *Store) DeleteSession(id, userID int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM qa_messages WHERE session_id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM qa_messages WHERE session_id = ? AND session_id IN (SELECT id FROM qa_sessions WHERE id = ? AND user_id = ?)`, id, id, userID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM qa_sessions WHERE id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM qa_sessions WHERE id = ? AND user_id = ?`, id, userID); err != nil {
 		return err
 	}
 	return tx.Commit()

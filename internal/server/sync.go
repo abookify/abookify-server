@@ -111,9 +111,9 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 // The device sends its local state, server responds with the merged state.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DeviceID  string                 `json:"device_id"`
-		Positions []db.PlaybackPosition  `json:"positions,omitempty"`
-		Bookmarks []db.Bookmark          `json:"bookmarks,omitempty"`
+		DeviceID  string                `json:"device_id"`
+		Positions []db.PlaybackPosition `json:"positions,omitempty"`
+		Bookmarks []db.Bookmark         `json:"bookmarks,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -121,17 +121,20 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Everything synced belongs to THIS reader (multi-user) — never another's.
+	uid := userIDFromContext(r)
+
 	// Merge positions (last-write-wins based on timestamp)
 	for _, pos := range req.Positions {
-		existing, _ := s.store.GetPosition(pos.WorkID)
+		existing, _ := s.store.GetPosition(pos.WorkID, uid)
 		if existing == nil || pos.PositionSecs > 0 {
-			s.store.SavePosition(pos)
+			s.store.SavePosition(pos, uid)
 		}
 	}
 
 	// Merge bookmarks (additive — don't delete)
 	for _, bm := range req.Bookmarks {
-		s.store.CreateBookmark(bm)
+		s.store.CreateBookmark(bm, uid)
 	}
 
 	// Return current server state
@@ -140,10 +143,10 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	allBookmarks := []db.Bookmark{}
 
 	for _, w := range works {
-		if pos, err := s.store.GetPosition(w.ID); err == nil && pos != nil {
+		if pos, err := s.store.GetPosition(w.ID, uid); err == nil && pos != nil {
 			allPositions = append(allPositions, *pos)
 		}
-		if bms, err := s.store.ListBookmarks(w.ID); err == nil {
+		if bms, err := s.store.ListBookmarks(w.ID, uid); err == nil {
 			allBookmarks = append(allBookmarks, bms...)
 		}
 	}

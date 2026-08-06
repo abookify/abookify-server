@@ -448,8 +448,9 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 		}
 	}
 
-	// bookmarks (+ highlights, distinguished by type)
-	bookmarks, err := store.ListBookmarks(work.ID)
+	// bookmarks (+ highlights, distinguished by type). An .abook carries the
+	// primary reader's (user 1) annotations; per-user export is a future refinement.
+	bookmarks, err := store.ListBookmarks(work.ID, 1)
 	if err != nil {
 		return fmt.Errorf("bookmarks: %w", err)
 	}

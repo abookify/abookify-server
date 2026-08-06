@@ -75,7 +75,7 @@ func TestHandleSetupHidesPathsFromUnauthenticated(t *testing.T) {
 
 	// Auth ON + valid session → paths exposed.
 	tok, _ := db.NewSessionToken()
-	store.CreateAuthSession(tok, "pj", db.DefaultSessionTTL)
+	store.CreateAuthSession(tok, 1, "pj", db.DefaultSessionTTL)
 	if b := call(tok); b["data_dir"] != "/home/pj/.abookify" {
 		t.Errorf("auth-on authenticated: data_dir = %v, want exposed", b["data_dir"])
 	}

@@ -136,10 +136,10 @@ func (s *Server) handleRotateServerID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"server_id":   newID,
-		"public_url":  s.PublicURL(r),
-		"next_step":   "restart the relay container so it picks up the new slug",
-		"command":     "cd engineering/relay && ./start.sh",
+		"server_id":  newID,
+		"public_url": s.PublicURL(r),
+		"next_step":  "restart the relay container so it picks up the new slug",
+		"command":    "cd engineering/relay && ./start.sh",
 	})
 }
 
@@ -167,7 +167,9 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 	if s.authEnabled() {
 		if tok, err := db.NewSessionToken(); err == nil {
 			user, _ := s.store.GetSetting("auth_username")
-			if err := s.store.CreateAuthSession(tok, user, db.DefaultSessionTTL); err == nil {
+			// The paired device inherits the pairing admin's reader identity, so
+			// their position/bookmarks/Q&A follow them onto the phone.
+			if err := s.store.CreateAuthSession(tok, userIDFromContext(r), user, db.DefaultSessionTTL); err == nil {
 				p.AuthToken = tok
 			}
 		}

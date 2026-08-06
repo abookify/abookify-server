@@ -13,7 +13,7 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Empty list to start.
-	sessions, err := store.ListSessions(workID)
+	sessions, err := store.ListSessions(workID, 1)
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -22,16 +22,16 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Create two sessions.
-	s1, err := store.CreateSession(workID, "", "reading")
+	s1, err := store.CreateSession(workID, "", "reading", 1)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	s2, err := store.CreateSession(workID, "Custom title", "book")
+	s2, err := store.CreateSession(workID, "Custom title", "book", 1)
 	if err != nil {
 		t.Fatalf("create session 2: %v", err)
 	}
 
-	sessions, _ = store.ListSessions(workID)
+	sessions, _ = store.ListSessions(workID, 1)
 	if len(sessions) != 2 {
 		t.Fatalf("want 2 sessions, got %d", len(sessions))
 	}
@@ -58,10 +58,10 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Rename + verify.
-	if err := store.RenameSession(s2, "Renamed"); err != nil {
+	if err := store.RenameSession(s2, "Renamed", 1); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	got, err := store.GetSession(s2)
+	got, err := store.GetSession(s2, 1)
 	if err != nil || got == nil || got.Title != "Renamed" {
 		t.Fatalf("get session after rename: %+v err=%v", got, err)
 	}
@@ -70,7 +70,7 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	if _, err := store.AppendMessage(s1, "user", "follow up", "", ""); err != nil {
 		t.Fatalf("append followup: %v", err)
 	}
-	sessions, _ = store.ListSessions(workID)
+	sessions, _ = store.ListSessions(workID, 1)
 	if len(sessions) != 2 {
 		t.Fatalf("want 2 sessions still, got %d", len(sessions))
 	}
@@ -79,10 +79,10 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	}
 
 	// Delete s2; messages of s1 stay.
-	if err := store.DeleteSession(s2); err != nil {
+	if err := store.DeleteSession(s2, 1); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	sessions, _ = store.ListSessions(workID)
+	sessions, _ = store.ListSessions(workID, 1)
 	if len(sessions) != 1 || sessions[0].ID != s1 {
 		t.Fatalf("after delete: want only s1=%d, got %v", s1, sessions)
 	}
@@ -95,7 +95,7 @@ func TestChatSessionsLifecycle(t *testing.T) {
 	if err := store.DeleteWork(workID); err != nil {
 		t.Fatalf("delete work: %v", err)
 	}
-	sessions, _ = store.ListSessions(workID)
+	sessions, _ = store.ListSessions(workID, 1)
 	if len(sessions) != 0 {
 		t.Fatalf("sessions should cascade-delete with work, got %d", len(sessions))
 	}

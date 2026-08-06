@@ -23,36 +23,37 @@ func NewSessionToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// CreateAuthSession stores a token for username with the given TTL.
-// Pass DefaultSessionTTL for the standard 30-day window.
-func (s *Store) CreateAuthSession(token, username string, ttl time.Duration) error {
+// CreateAuthSession stores a token for a user with the given TTL.
+// Pass DefaultSessionTTL for the standard 30-day window. userID scopes the
+// session to a reader (multi-user); username is kept for display/back-compat.
+func (s *Store) CreateAuthSession(token string, userID int64, username string, ttl time.Duration) error {
 	expires := time.Now().Add(ttl).UTC()
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO auth_sessions (token, username, expires_at) VALUES (?, ?, ?)`,
-		token, username, expires,
+		`INSERT OR REPLACE INTO auth_sessions (token, user_id, username, expires_at) VALUES (?, ?, ?, ?)`,
+		token, userID, username, expires,
 	)
 	return err
 }
 
-// ValidateAuthSession returns the username for a non-expired token.
+// ValidateAuthSession returns the user_id + username for a non-expired token.
 // ok is false when the token is unknown or expired. Expired rows are
 // best-effort deleted on the way out.
-func (s *Store) ValidateAuthSession(token string) (username string, ok bool) {
+func (s *Store) ValidateAuthSession(token string) (userID int64, username string, ok bool) {
 	if token == "" {
-		return "", false
+		return 0, "", false
 	}
 	var expires time.Time
 	err := s.db.QueryRow(
-		`SELECT username, expires_at FROM auth_sessions WHERE token = ?`, token,
-	).Scan(&username, &expires)
+		`SELECT user_id, username, expires_at FROM auth_sessions WHERE token = ?`, token,
+	).Scan(&userID, &username, &expires)
 	if err != nil {
-		return "", false
+		return 0, "", false
 	}
 	if time.Now().After(expires) {
 		s.db.Exec(`DELETE FROM auth_sessions WHERE token = ?`, token)
-		return "", false
+		return 0, "", false
 	}
-	return username, true
+	return userID, username, true
 }
 
 // DeleteAuthSession removes one token (logout). No error if absent.

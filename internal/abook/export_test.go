@@ -88,7 +88,7 @@ func seedWork(t *testing.T, dir string) (*db.Store, *db.Work) {
 	if _, err := store.CreateBookmark(db.Bookmark{
 		WorkID: workID, BookID: textID, Type: "highlight", ChapterIdx: 0,
 		StartWord: 0, EndWord: 2, TextSnippet: "It was", Color: "#f0a500",
-	}); err != nil {
+	}, 1); err != nil {
 		t.Fatalf("create bookmark: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func TestExportV2_RoundTripImport(t *testing.T) {
 	if len(aligns) != 1 || aligns[0].Method != "anchored-dp" {
 		t.Errorf("alignments = %+v", aligns)
 	}
-	bms, _ := destStore.ListBookmarks(w.ID)
+	bms, _ := destStore.ListBookmarks(w.ID, 1)
 	if len(bms) != 1 || bms[0].Type != "highlight" {
 		t.Errorf("bookmarks = %+v", bms)
 	}

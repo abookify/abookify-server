@@ -15,8 +15,8 @@ import (
 
 // engineState is one speech engine's availability.
 type engineState struct {
-	LocalURL  string `json:"local_url"`  // configured local-engine endpoint ("" = none)
-	Reachable bool   `json:"reachable"`  // local engine answered a health probe
+	LocalURL  string `json:"local_url"` // configured local-engine endpoint ("" = none)
+	Reachable bool   `json:"reachable"` // local engine answered a health probe
 	// APIProvider/APIConfigured describe a cloud (BYOK) engine — set when a cloud
 	// provider + key is configured in settings (#54 step 2), which makes the
 	// engine usable with no local install.
@@ -107,7 +107,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if !s.authEnabled() {
 		resp["data_dir"] = s.DataDir
 		resp["models_dir"] = s.ModelsDir
-	} else if _, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
+	} else if _, _, ok := s.store.ValidateAuthSession(tokenFromRequest(r)); ok {
 		resp["data_dir"] = s.DataDir
 		resp["models_dir"] = s.ModelsDir
 	}
@@ -171,10 +171,11 @@ func (s *Server) handleEnginesInstall(w http.ResponseWriter, r *http.Request) {
 
 // triggerEngineDownload POSTs to {url}/download to ask a local engine to
 // pre-fetch its model. Maps the outcome to a status the UI can show:
-//   unavailable — no local engine configured (use an API key instead)
-//   downloading — engine accepted the pre-download (poll GET {url}/download)
-//   deferred    — engine has no /download yet; model fetches on first use
-//   error       — engine reachable but the request failed
+//
+//	unavailable — no local engine configured (use an API key instead)
+//	downloading — engine accepted the pre-download (poll GET {url}/download)
+//	deferred    — engine has no /download yet; model fetches on first use
+//	error       — engine reachable but the request failed
 func triggerEngineDownload(url string) map[string]any {
 	if url == "" {
 		return map[string]any{"status": "unavailable"}

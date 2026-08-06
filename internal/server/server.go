@@ -1616,7 +1616,7 @@ func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	bookmarks, err := s.store.ListBookmarks(workID)
+	bookmarks, err := s.store.ListBookmarks(workID, userIDFromContext(r))
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -1640,7 +1640,7 @@ func (s *Server) handleCreateBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bm.WorkID = workID
-	id, err := s.store.CreateBookmark(bm)
+	id, err := s.store.CreateBookmark(bm, userIDFromContext(r))
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -1663,7 +1663,7 @@ func (s *Server) handleUpdateBookmark(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.store.UpdateBookmark(id, req.Note, req.Color); err != nil {
+	if err := s.store.UpdateBookmark(id, req.Note, req.Color, userIDFromContext(r)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -1677,7 +1677,7 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	if err := s.store.DeleteBookmark(id); err != nil {
+	if err := s.store.DeleteBookmark(id, userIDFromContext(r)); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -2355,7 +2355,7 @@ func (s *Server) handleGetPosition(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
-	pos, err := s.store.GetPosition(workID)
+	pos, err := s.store.GetPosition(workID, userIDFromContext(r))
 	if err != nil {
 		writeServerError(w, r, err)
 		return
@@ -2380,14 +2380,15 @@ func (s *Server) handleSavePosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pos.WorkID = workID
-	if err := s.store.SavePosition(pos); err != nil {
+	uid := userIDFromContext(r)
+	if err := s.store.SavePosition(pos, uid); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
 	// Record a 10-second listening event for analytics. The web/mobile
 	// clients save position every 10 seconds while playing — each save
 	// represents ~10s of actual listening time.
-	s.store.RecordPlayback(workID, "listen", 10)
+	s.store.RecordPlayback(workID, "listen", 10, uid)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

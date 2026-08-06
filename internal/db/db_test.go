@@ -192,11 +192,11 @@ func TestPlaybackPositions(t *testing.T) {
 	store := testStore(t)
 
 	pos := PlaybackPosition{WorkID: 1, BookID: 10, FileIndex: 3, PositionSecs: 45.5}
-	if err := store.SavePosition(pos); err != nil {
+	if err := store.SavePosition(pos, 1); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, err := store.GetPosition(1)
+	got, err := store.GetPosition(1, 1)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -209,8 +209,8 @@ func TestPlaybackPositions(t *testing.T) {
 
 	// Update
 	pos.PositionSecs = 90.0
-	store.SavePosition(pos)
-	got, _ = store.GetPosition(1)
+	store.SavePosition(pos, 1)
+	got, _ = store.GetPosition(1, 1)
 	if got.PositionSecs != 90.0 {
 		t.Errorf("updated position = %f, want 90.0", got.PositionSecs)
 	}
@@ -223,7 +223,7 @@ func TestBookmarks(t *testing.T) {
 		WorkID: 1, BookID: 10, Type: "bookmark",
 		ChapterIdx: 5, PositionSecs: 120.0,
 		TextSnippet: "some text", Note: "my note",
-	})
+	}, 1)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestBookmarks(t *testing.T) {
 		t.Fatal("bookmark id is 0")
 	}
 
-	bms, _ := store.ListBookmarks(1)
+	bms, _ := store.ListBookmarks(1, 1)
 	if len(bms) != 1 {
 		t.Fatalf("got %d bookmarks, want 1", len(bms))
 	}
@@ -239,8 +239,8 @@ func TestBookmarks(t *testing.T) {
 		t.Errorf("note = %q", bms[0].Note)
 	}
 
-	store.DeleteBookmark(id)
-	bms, _ = store.ListBookmarks(1)
+	store.DeleteBookmark(id, 1)
+	bms, _ = store.ListBookmarks(1, 1)
 	if len(bms) != 0 {
 		t.Errorf("after delete: got %d bookmarks", len(bms))
 	}
@@ -306,7 +306,7 @@ func TestGetBookAndNil(t *testing.T) {
 	}
 
 	// Same for position
-	pos, err := store.GetPosition(999)
+	pos, err := store.GetPosition(999, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -343,8 +343,8 @@ func TestCleanupOrphanedRows(t *testing.T) {
 	store.InsertChunk(Chunk{BookID: orphanBook, ChapterIdx: 0, ChunkIdx: 0, Content: "orphan"})
 	store.InsertParagraph(Paragraph{BookID: orphanBook, ChapterIdx: 0, ParagraphIdx: 0, Text: "orphan"})
 	store.SaveAlignment(Alignment{WorkID: orphanWork, FromBookID: orphanBook, ToBookID: orphanBook, Unit: "word", Method: "anchor", Pairs: "[]"})
-	store.CreateBookmark(Bookmark{WorkID: orphanWork, BookID: orphanBook, Type: "bookmark"})
-	store.RecordPlayback(orphanWork, "listen", 10) // orphaned playback_event
+	store.CreateBookmark(Bookmark{WorkID: orphanWork, BookID: orphanBook, Type: "bookmark"}, 1)
+	store.RecordPlayback(orphanWork, "listen", 10, 1) // orphaned playback_event
 
 	removed, err := store.CleanupOrphanedRows()
 	if err != nil {
