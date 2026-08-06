@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/library"
 )
 
@@ -104,6 +105,74 @@ func (s *Server) handleReprocessWork(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_id": id,
 		"status":  "reprocessed",
+	})
+}
+
+// handleReextractWork RE-EXTRACTS a work's ebook chapters from the source EPUB,
+// then re-chunks + re-embeds. Every normal path (scan/rescan/watcher/reprocess)
+// treats extraction as one-time and skips a book that already has chapters, so an
+// improvement to the extractor (e.g. a new boilerplate strip) does nothing for
+// books already in the DB. This is the deliberate re-derive: drop the old
+// chapters + chunks, re-run ExtractEPUBChapters (picking up the current stripper),
+// re-chunk, bump content_version (so the coherence watcher + mobile update-check
+// see the change), and re-embed. Alignment is re-run separately via /align, which
+// re-derives the coverage %. Goes through the server's single serialized DB
+// connection, so it is safe alongside an external repair writing other works.
+func (s *Server) handleReextractWork(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid work id", http.StatusBadRequest)
+		return
+	}
+	work, err := s.store.GetWork(id)
+	if err != nil || work == nil {
+		http.Error(w, "work not found", http.StatusNotFound)
+		return
+	}
+	reextracted, chapters := 0, 0
+	for _, b := range work.TextFiles {
+		if b.Format != "epub" {
+			continue // only EPUB chapters come from an extractor we can re-run
+		}
+		chs, err := library.ExtractEPUBChapters(b.Path, b.ID)
+		if err != nil {
+			http.Error(w, "re-extract "+b.Filename+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.store.DeleteChaptersByBook(b.ID); err != nil {
+			http.Error(w, "clear chapters: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.store.DeleteChunksByBook(b.ID)
+		for _, ch := range chs {
+			if err := s.store.InsertChapter(ch); err == nil {
+				chapters++
+			}
+		}
+		library.ChunkBook(s.store, b.ID)
+		reextracted++
+	}
+	if reextracted == 0 {
+		http.Error(w, "work has no EPUB text to re-extract", http.StatusBadRequest)
+		return
+	}
+	if fresh, _ := s.store.GetWork(id); fresh != nil {
+		if err := library.LinkChapters(s.store, fresh); err != nil {
+			applog.Warnf("system", "reextract: link-chapters work %d: %v", id, err)
+		}
+	}
+	s.store.BumpContentVersion(id)
+	s.Events.Broadcast(Event{Type: "library_updated"})
+	s.EmbedNewWorks()
+	for _, tf := range work.TextFiles {
+		s.invalidateSummaries(tf.ID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"work_id":    id,
+		"status":     "reextracted",
+		"epub_books": reextracted,
+		"chapters":   chapters,
 	})
 }
 

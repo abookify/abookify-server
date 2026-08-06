@@ -495,6 +495,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("DELETE /api/queue/failed/{name}", s.handleQueueRemoveFailed)
 	mux.HandleFunc("POST /api/books/{id}/embed", s.handleEmbedBook)
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
+	mux.HandleFunc("POST /api/works/{id}/reextract", s.handleReextractWork)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
 	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
 	// Shared cause→presentation contract both web + mobile render from (gap_status.go).
