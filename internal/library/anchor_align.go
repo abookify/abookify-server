@@ -154,13 +154,26 @@ func LocateGlobal(spans []ChapterSpan, globalPos int) (chapterIdx, localPos int,
 var nonWord = regexp.MustCompile(`[^a-z0-9' ]+`)
 
 // Tokenize normalizes text to lowercase alphanumeric words. Punctuation is
-// dropped; apostrophes are kept so contractions stay one token. This is the
-// same normalization used to compare ebook and transcript words.
+// dropped; INTERNAL apostrophes are kept so contractions stay one token, but
+// boundary apostrophes are trimmed: Whisper decorates narrated dialogue with
+// quote marks ('This is...'), and a quote-role apostrophe glued to a token
+// ('and, humbug') matches nothing on the ebook side — measured at -4.5
+// coverage points on A Christmas Carol and -7.5 on Brave New World, with the
+// trim moving no work in the library downward (46-work sweep, 2026-08-06).
+// This is the same normalization used to compare ebook and transcript words.
 func Tokenize(s string) []string {
 	s = strings.ToLower(s)
 	s = strings.ReplaceAll(s, "’", "'") // curly apostrophe → straight
 	s = nonWord.ReplaceAllString(s, " ")
-	return strings.Fields(s)
+	fields := strings.Fields(s)
+	out := fields[:0]
+	for _, t := range fields {
+		t = strings.Trim(t, "'")
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ngramIndex maps each n-gram to the list of start positions where it occurs.
@@ -219,7 +232,7 @@ func MonotonicChain(cands []Anchor) []Anchor {
 	})
 
 	// Patience LIS on TransPos (strictly increasing), with parent pointers.
-	tails := []int{}      // tails[k] = index into a of the smallest tail of an increasing seq of length k+1
+	tails := []int{} // tails[k] = index into a of the smallest tail of an increasing seq of length k+1
 	parent := make([]int, len(a))
 	for i := range parent {
 		parent[i] = -1

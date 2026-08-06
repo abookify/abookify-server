@@ -197,3 +197,21 @@ func TestFindAnchors_SkipsAmbiguousEbookNgrams(t *testing.T) {
 		}
 	}
 }
+
+// Whisper decorates narrated dialogue with quote marks; the ebook side uses
+// curly doubles that strip cleanly. A quote-role apostrophe glued to a token
+// must not survive tokenization — it made 'and ≠ and, which broke every
+// 4-gram spanning a dialogue boundary and systematically depressed coverage.
+// Internal apostrophes (contractions) must survive untouched.
+func TestTokenizeTrimsQuoteRoleApostrophes(t *testing.T) {
+	got := Tokenize(`"'What odds, Mrs. Dilber!' said the woman. Don't! ‘Humbug!’ ' `)
+	want := []string{"what", "odds", "mrs", "dilber", "said", "the", "woman", "don't", "humbug"}
+	if len(got) != len(want) {
+		t.Fatalf("tokens = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("token %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

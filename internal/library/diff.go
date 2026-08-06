@@ -140,7 +140,17 @@ var displayNonWord = regexp.MustCompile(`[^A-Za-z0-9' ]+`)
 func displayTokenize(s string) []string {
 	s = strings.ReplaceAll(s, "’", "'")
 	s = displayNonWord.ReplaceAllString(s, " ")
-	return strings.Fields(s)
+	fields := strings.Fields(s)
+	// Mirror Tokenize's boundary-apostrophe trim (quote-role apostrophes are
+	// not part of the word) so the two streams stay index-aligned.
+	out := fields[:0]
+	for _, t := range fields {
+		t = strings.Trim(t, "'")
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // assembleDisplay concatenates case-preserving tokens across chapters, index-
