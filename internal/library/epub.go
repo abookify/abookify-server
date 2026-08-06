@@ -155,7 +155,7 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		if err != nil {
 			return nil, err
 		}
-		return stripRunningHeaders(perFile), nil
+		return cleanExtractedChapters(perFile), nil
 	}
 
 	for _, seg := range segments {
@@ -205,10 +205,10 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 	// merely because it exists. Both are cheap to compute on an epub.
 	if perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID); err == nil &&
 		len(perFile) > len(chapters) {
-		return stripRunningHeaders(perFile), nil
+		return cleanExtractedChapters(perFile), nil
 	}
 
-	return stripRunningHeaders(chapters), nil
+	return cleanExtractedChapters(chapters), nil
 }
 
 // Project Gutenberg wraps every ebook in a licence header and footer, fenced by
@@ -249,6 +249,78 @@ func trimGutenbergBoilerplate(html string) string {
 		html = html[:loc[0]]
 	}
 	return html
+}
+
+// Two Project Gutenberg front-matter blocks slip past trimGutenbergBoilerplate
+// (they sit INSIDE the content, not between the START/END sentinels) AND past the
+// running-head pass (they are multi-line blocks, not one short repeated line):
+//   1. the "editions of this ebook" listing — an intro line, a "click the
+//      filenumbers" line, then N "<number> (edition description)" rows; and
+//   2. a "Project Gutenberg Editor's Note:" label + its one-sentence note.
+// Both carry PG-unique phrasing that never occurs in an author's prose, so they
+// match precisely with no risk to real text — a chapter that merely mentions
+// "Gutenberg" (or names the printer), or a prose line that happens to start with
+// a number in parentheses, is untouched (see the tests).
+var (
+	reEditionsIntro = regexp.MustCompile(`(?i)^There are several editions of this ebook in the Project Gutenberg`)
+	reClickFilenums = regexp.MustCompile(`(?i)^Click on any of the file ?numbers`)
+	reFileEntry     = regexp.MustCompile(`^\d{2,6}\s*\(`)
+	reEditorsNote   = regexp.MustCompile(`(?i)Project Gutenberg('?s)? Editor'?s Note`)
+)
+
+// stripGutenbergApparatus removes the two PG front-matter blocks above from a
+// chapter's plaintext, line by line — keeping everything that is not apparatus,
+// so the book's own title page, table of contents and prose all survive. It is
+// deliberately narrow (matches only PG-unique phrasing) rather than "drop any
+// line mentioning Gutenberg", which would eat legitimate text.
+func stripGutenbergApparatus(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inEditions := false
+	for i := 0; i < len(lines); i++ {
+		norm := strings.TrimSpace(lines[i])
+		switch {
+		case reEditionsIntro.MatchString(norm):
+			inEditions = true // drop the intro and enter the listing
+			continue
+		case inEditions && (norm == "" || reClickFilenums.MatchString(norm) || reFileEntry.MatchString(norm)):
+			continue // still inside the listing
+		case inEditions:
+			inEditions = false // first non-apparatus line: real content resumes — keep it
+		}
+		if reEditorsNote.MatchString(norm) {
+			// A bare "…Editor's Note:" label is followed by the note sentence on
+			// the next line; drop both. An inline note is one line; drop just it.
+			if strings.HasSuffix(norm, ":") && i+1 < len(lines) {
+				i++
+			}
+			continue
+		}
+		out = append(out, lines[i])
+	}
+	return strings.Join(out, "\n")
+}
+
+// cleanExtractedChapters is the single funnel every extraction path returns
+// through: it strips the PG apparatus blocks (recomputing word counts, dropping
+// any chapter emptied by the strip, re-indexing), then runs the running-header
+// pass. Splitting it out keeps the apparatus strip unconditional — the
+// running-head pass skips books with too few chapters, but front matter needs
+// cleaning regardless of length.
+func cleanExtractedChapters(chapters []db.Chapter) []db.Chapter {
+	cleaned := make([]db.Chapter, 0, len(chapters))
+	idx := 0
+	for _, ch := range chapters {
+		ch.Content = strings.TrimSpace(stripGutenbergApparatus(ch.Content))
+		if ch.Content == "" {
+			continue
+		}
+		ch.WordCount = len(strings.Fields(ch.Content))
+		ch.Index = idx
+		idx++
+		cleaned = append(cleaned, ch)
+	}
+	return stripRunningHeaders(cleaned)
 }
 
 // Running-header/footer removal. Calibre and many publishers stamp a page
