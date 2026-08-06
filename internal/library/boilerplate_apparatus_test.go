@@ -84,3 +84,25 @@ func TestStripGutenbergApparatus(t *testing.T) {
 		})
 	}
 }
+
+// stripGutenbergApparatusHTML must drop the apparatus blocks from the reader HTML
+// while leaving every prose block — including a block that merely mentions
+// Gutenberg — untouched.
+func TestStripGutenbergApparatusHTML(t *testing.T) {
+	in := `<h4>There are several editions of this ebook in the Project Gutenberg collection. Click on any of the filenumbers below.</h4>` +
+		`<p>Project Gutenberg Editor's Note: the Greek font may not render.</p>` +
+		`<h1>A CHRISTMAS CAROL</h1>` +
+		`<p>Marley was dead: to begin with.</p>` +
+		`<p>He admired Gutenberg, who built the first printing press.</p>`
+	got := stripGutenbergApparatusHTML(in)
+	for _, gone := range []string{"several editions of this ebook", "Editor's Note"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("apparatus block not removed: %q still present\n  got: %q", gone, got)
+		}
+	}
+	for _, keep := range []string{"A CHRISTMAS CAROL", "Marley was dead", "He admired Gutenberg, who built the first printing press"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("prose block wrongly removed: %q missing\n  got: %q", keep, got)
+		}
+	}
+}

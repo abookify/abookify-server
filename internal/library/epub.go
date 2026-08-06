@@ -301,6 +301,35 @@ func stripGutenbergApparatus(text string) string {
 	return strings.Join(out, "\n")
 }
 
+// stripGutenbergApparatusHTML mirrors the plaintext strip for the reader's rich
+// HTML: it removes the block element whose visible text IS the "editions of this
+// ebook" intro or a "Project Gutenberg Editor's Note", so the reader's first
+// screen for a PG classic isn't apparatus. Same narrowness as
+// stripHeaderBlocksFromHTML — it only drops a block whose entire tag-stripped
+// text matches PG-unique phrasing, so it can never eat prose. (The plaintext
+// strip is the correctness fix for search/chunks/alignment; this only tidies the
+// display. It deliberately does NOT touch bare edition-number entries that sit
+// outside a block, since a "<year> (published …)" text-node regex could match
+// real prose — the safe, provable win is the branded intro/note block.)
+func stripGutenbergApparatusHTML(html string) string {
+	if html == "" {
+		return html
+	}
+	return htmlApparatusTagRe.ReplaceAllStringFunc(html, func(block string) string {
+		inner := strings.TrimSpace(htmlTagRe.ReplaceAllString(block, ""))
+		if reEditionsIntro.MatchString(inner) || reEditorsNote.MatchString(inner) {
+			return ""
+		}
+		return block
+	})
+}
+
+// htmlApparatusTagRe matches a single block OR inline element — the PG apparatus
+// label lands in a bare <b>/<span> as often as a <p> ("<b>Project Gutenberg
+// Editor's Note:</b>"). Non-greedy + the text-match guard in the caller keeps it
+// to elements whose whole text IS the apparatus phrase, so it can't eat prose.
+var htmlApparatusTagRe = regexp.MustCompile(`(?is)<(p|h[1-6]|div|b|i|em|strong|span)\b[^>]*>.*?</(?:p|h[1-6]|div|b|i|em|strong|span)>`)
+
 // cleanExtractedChapters is the single funnel every extraction path returns
 // through: it strips the PG apparatus blocks (recomputing word counts, dropping
 // any chapter emptied by the strip, re-indexing), then runs the running-header
@@ -315,6 +344,7 @@ func cleanExtractedChapters(chapters []db.Chapter) []db.Chapter {
 		if ch.Content == "" {
 			continue
 		}
+		ch.ContentHTML = stripGutenbergApparatusHTML(ch.ContentHTML)
 		ch.WordCount = len(strings.Fields(ch.Content))
 		ch.Index = idx
 		idx++
