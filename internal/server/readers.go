@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pj/abookify/internal/db"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,6 +20,62 @@ type readerRow struct {
 	Username string `json:"username"`
 	IsYou    bool   `json:"is_you"`
 	Data     any    `json:"data"` // db.UserDataCounts — what a removal would delete
+}
+
+// POST /api/readers/enable-sharing — the first-run "share your library" step.
+// A person reading alone never sees accounts; this is where multi-user first
+// becomes real, framed as setting up THEIR sign-in (they become reader 1, owning
+// the history they already have), not administering user accounts. It enables
+// login, creates reader 1 immediately (no restart), and keeps them signed in so
+// the flow never bounces them to a login screen for a password they just set.
+func (s *Server) handleEnableSharing(w http.ResponseWriter, r *http.Request) {
+	if s.authEnabled() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sharing is already set up"})
+		return
+	}
+	var req struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "your name is required"})
+		return
+	}
+	if len(req.Password) < 6 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 6 characters"})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if err := s.store.UpsertPrimaryUser(req.Name, string(hash)); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	// Enable auth: the hash is the single source of truth (authEnabled), the
+	// username mirrors it so the startup seed stays consistent.
+	if err := s.store.SetSetting("auth_username", req.Name); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if err := s.store.SetSetting("auth_password_hash", string(hash)); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	// Keep them signed in seamlessly — no bounce to a login screen mid-flow.
+	if token, err := db.NewSessionToken(); err == nil {
+		if err := s.store.CreateAuthSession(token, 1, req.Name, db.DefaultSessionTTL); err == nil {
+			s.setSessionCookie(w, r, token, db.DefaultSessionTTL)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": req.Name})
 }
 
 // GET /api/users — list readers with the per-reader data each holds, so the

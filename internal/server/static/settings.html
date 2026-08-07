@@ -291,7 +291,19 @@
     <div class="section" id="readers-section">
       <h2>Readers</h2>
       <div class="hint" style="margin-bottom:12px;">Everyone in your household reads from this one library, but each person keeps their own place, bookmarks, and Q&amp;A. Add the people you share with — each signs in with their own name and password.</div>
-      <div id="readers-auth-note" class="callout" style="display:none; margin-bottom:12px;">Reader accounts need a password set first — add one under <strong>Security</strong> above, then reload this page.</div>
+      <div id="readers-sharing" style="display:none;">
+        <div class="callout" style="margin-bottom:12px;">Reading on your own? You're all set — there's nothing here to set up.<br>Sharing this library with someone at home? Each person keeps their own place, bookmarks, and notes.</div>
+        <button type="button" class="save-btn" id="sharing-start-btn" onclick="startSharing()">Set up sharing</button>
+        <div id="sharing-form" style="display:none; margin-top:14px;">
+          <div class="hint" style="margin-bottom:10px;">First, your own sign-in — this keeps everything you've read so far yours.</div>
+          <div class="field"><label>Your name</label><input type="text" id="sharing-name" autocapitalize="words" autocorrect="off" placeholder="e.g. your name"></div>
+          <div class="field"><label>Password</label><input type="password" id="sharing-pw" autocomplete="new-password" placeholder="at least 6 characters"></div>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+            <button type="button" class="save-btn" onclick="enableSharing()">Turn on sharing</button>
+            <span class="save-msg" id="sharing-msg" style="opacity:1;"></span>
+          </div>
+        </div>
+      </div>
       <div id="readers-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px;"></div>
       <div id="readers-add" style="display:none;">
         <div class="field">
@@ -1552,19 +1564,20 @@
 
     // --- Readers (household multi-user) ---
     async function loadReaders() {
-      const note = document.getElementById('readers-auth-note');
+      const sharing = document.getElementById('readers-sharing');
       const add = document.getElementById('readers-add');
       const list = document.getElementById('readers-list');
       let status = {};
       try { status = await fetch('/api/auth/status').then(r => r.json()); } catch {}
       if (!status.auth_enabled) {
-        // No login → single reader; managing accounts is moot until a password is set.
-        note.style.display = '';
+        // Reading alone → no accounts to manage. Multi-user becomes real only when
+        // someone chooses to share, so that's the only thing we surface here.
+        sharing.style.display = '';
         add.style.display = 'none';
         list.innerHTML = '';
         return;
       }
-      note.style.display = 'none';
+      sharing.style.display = 'none';
       add.style.display = '';
       let readers = [];
       try { readers = await fetch('/api/users').then(r => r.json()); } catch {}
@@ -1583,6 +1596,32 @@
             <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">${plural(d.positions || 0, 'reading position')} · ${plural(d.bookmarks || 0, 'bookmark')} · ${plural(d.qa_sessions || 0, 'Q&amp;A chat')}</div>
           </div>${removeBtn}</div>`;
       }).join('');
+    }
+
+    function startSharing() {
+      document.getElementById('sharing-start-btn').style.display = 'none';
+      document.getElementById('sharing-form').style.display = '';
+      document.getElementById('sharing-name').focus();
+    }
+
+    async function enableSharing() {
+      const name = document.getElementById('sharing-name').value.trim();
+      const pw = document.getElementById('sharing-pw').value;
+      const msg = document.getElementById('sharing-msg');
+      msg.style.color = 'var(--danger)';
+      if (!name) { msg.textContent = 'Enter your name.'; return; }
+      if (pw.length < 6) { msg.textContent = 'Password needs at least 6 characters.'; return; }
+      try {
+        const res = await fetch('/api/readers/enable-sharing', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, password: pw }),
+        });
+        if (!res.ok) { const e = await res.json().catch(() => ({})); msg.textContent = e.error || 'Could not set up sharing.'; return; }
+        // Auth is on now and we're signed in — reload the section into the
+        // reader list + add form, and refresh the Security readout to match.
+        loadReaders();
+        if (typeof loadAuthState === 'function') loadAuthState();
+      } catch { msg.textContent = 'Network error.'; }
     }
 
     async function addReader() {

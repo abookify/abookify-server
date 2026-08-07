@@ -57,6 +57,19 @@ func (s *Store) ListUsers() ([]User, error) {
 	return out, rows.Err()
 }
 
+// UpsertPrimaryUser makes (or renames) reader id 1 with the given credentials.
+// The first reader is always id 1 — the same default user_id that solo reading
+// already wrote positions/bookmarks/Q&A under — so turning on sharing keeps a
+// person's existing history theirs instead of stranding it under a phantom user.
+// Runs immediately (no restart), unlike migrate()'s startup seed.
+func (s *Store) UpsertPrimaryUser(username, passwordHash string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO users (id, username, password_hash) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET username = excluded.username, password_hash = excluded.password_hash`,
+		username, passwordHash)
+	return err
+}
+
 // UserExists reports whether a reader id is present.
 func (s *Store) UserExists(userID int64) bool {
 	var n int
