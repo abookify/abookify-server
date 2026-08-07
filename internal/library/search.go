@@ -55,10 +55,31 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 		return wm
 	}
 
-	var hits []SearchHit
+	// Search BOTH text sources (ebook + transcript) — they are two renderings of
+	// one book, and a phrasing a reader remembers may exist in only one. Order the
+	// DISPLAYED source first so its hit wins the cross-source dedupe below (a
+	// passage found in both is one place, kept in the coordinates the reader is
+	// already showing). rawCap bounds the work on large multi-source books; we
+	// collect more than `limit` raw so dedupe still fills `limit` real places.
+	rawCap := limit * 4
+	ordered := make([]db.Book, 0, len(work.TextFiles))
+	if disp := ResolveDisplayText(work); disp != nil {
+		ordered = append(ordered, *disp)
+	}
 	for _, tf := range work.TextFiles {
+		if len(ordered) > 0 && tf.ID == ordered[0].ID {
+			continue
+		}
+		ordered = append(ordered, tf)
+	}
+
+	var hits []SearchHit
+	for _, tf := range ordered {
 		if tf.Visibility == "internal" {
 			continue
+		}
+		if len(hits) >= rawCap {
+			break
 		}
 		chapters, err := store.ListChapters(tf.ID)
 		if err != nil {
@@ -133,14 +154,58 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 				}
 
 				hits = append(hits, hit)
-				if len(hits) >= limit {
-					return hits, nil
-				}
 				searchFrom = absIdx + len(query)
+			}
+			if len(hits) >= rawCap {
+				break
 			}
 		}
 	}
-	return hits, nil
+
+	return dedupeAcrossSources(hits, limit), nil
+}
+
+// dedupeAcrossSources collapses hits that are the same PLACE found in different
+// sources into one result, keeping the first (the displayed source, ordered
+// first by the caller). Two hits from DIFFERENT books whose audio positions are
+// within dedupeSecs are the same passage rendered twice — one place, not two.
+// Hits without an audio position, or two close hits within the SAME source, are
+// distinct places and always kept. Caps the result at limit.
+func dedupeAcrossSources(hits []SearchHit, limit int) []SearchHit {
+	const dedupeSecs = 1.5
+	type ksec struct {
+		book int64
+		sec  float64
+	}
+	var kept []ksec
+	out := make([]SearchHit, 0, limit)
+	for _, h := range hits {
+		if h.AudioSec > 0 {
+			dup := false
+			for _, k := range kept {
+				if k.book != h.BookID && absSec(k.sec-h.AudioSec) < dedupeSecs {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			kept = append(kept, ksec{h.BookID, h.AudioSec})
+		}
+		out = append(out, h)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func absSec(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
 }
 
 // LibraryHit is one passage match in the full library — same fields as
