@@ -2723,35 +2723,51 @@ func (s *Server) handleGetExport(w http.ResponseWriter, r *http.Request) {
 // 409 conflict (with which side is newer) for the client to resolve, unless the
 // caller passes ?on_conflict=replace|skip|new.
 func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
-	// A .abook is multi-GB when audio is bundled (edition-locked), so allow a
-	// generous upload from an authed device.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<30) // 20 GB
+	var tmpPath string
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file"})
-		return
-	}
-	defer file.Close()
+	// Two sources: a URL (the first-run "try a sample" funnel — server fetches an
+	// allowlisted sample directly, so it's one click, no download-and-drop) or a
+	// multipart file upload (a user's own .abook). The rest — identity dedupe and
+	// ingest — is shared.
+	if sampleURL := strings.TrimSpace(r.URL.Query().Get("url")); sampleURL != "" {
+		p, status, err := fetchAllowlistedAbook(sampleURL)
+		if err != nil {
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		tmpPath = p
+		defer os.Remove(tmpPath)
+	} else {
+		// A .abook is multi-GB when audio is bundled (edition-locked), so allow a
+		// generous upload from an authed device.
+		r.Body = http.MaxBytesReader(w, r.Body, 20<<30) // 20 GB
 
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".abook") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file must have .abook extension"})
-		return
-	}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file"})
+			return
+		}
+		defer file.Close()
 
-	tmpFile, err := os.CreateTemp("", "abook-import-*.abook")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
-		return
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-	if _, err := io.Copy(tmpFile, file); err != nil {
+		if !strings.HasSuffix(strings.ToLower(header.Filename), ".abook") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file must have .abook extension"})
+			return
+		}
+
+		tmpFile, err := os.CreateTemp("", "abook-import-*.abook")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
+			return
+		}
+		tmpPath = tmpFile.Name()
+		defer os.Remove(tmpPath)
+		if _, err := io.Copy(tmpFile, file); err != nil {
+			tmpFile.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save upload"})
+			return
+		}
 		tmpFile.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save upload"})
-		return
 	}
-	tmpFile.Close()
 
 	// Read identity up front to dedupe.
 	manifest, err := abook.ReadManifest(tmpPath)
