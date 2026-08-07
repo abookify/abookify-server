@@ -462,6 +462,26 @@ func main() {
 	// caught without anyone remembering to look.
 	srv.StartCoherenceSweeper()
 
+	// Post-derivation completeness sweep: assert every work's derived karaoke
+	// data is whole (chapter links not collapsed, every narration fully synced)
+	// and log loud for any that isn't, so a book left half-finished by an update
+	// is found at boot instead of one grey screen at a time. Off-thread — never
+	// blocks serving.
+	go func() {
+		bad, err := library.StartupDerivationSweep(store)
+		if err != nil {
+			applog.Warnf("system", "derivation sweep: %v", err)
+			return
+		}
+		if len(bad) == 0 {
+			applog.Infof("system", "derivation sweep: all works complete")
+			return
+		}
+		for _, rep := range bad {
+			applog.Warnf("system", "derivation incomplete: work %d (%s): %+v", rep.WorkID, rep.Title, rep.Issues)
+		}
+	}()
+
 	// Serve in a goroutine so the main goroutine can wait for a shutdown
 	// signal and drain cleanly (Tauri sends SIGTERM/SIGINT on quit).
 	serveErr := make(chan error, 1)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -156,12 +157,17 @@ func (s *Server) handleReextractWork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "work has no EPUB text to re-extract", http.StatusBadRequest)
 		return
 	}
-	if fresh, _ := s.store.GetWork(id); fresh != nil {
-		if err := library.LinkChapters(s.store, fresh); err != nil {
-			applog.Warnf("system", "reextract: link-chapters work %d: %v", id, err)
-		}
-	}
 	s.store.BumpContentVersion(id)
+	// Re-extraction changed the ebook's chapter offsets, so the whole derivation
+	// chain downstream is stale: re-link chapters and re-align (which re-derives
+	// the alignment payload the word map + coverage read from), then VERIFY the
+	// result is complete. Doing link then align then verify here — instead of
+	// leaving align "separate via /align" — is what stops an update from silently
+	// leaving derived data half-finished.
+	rep, rederiveErr := s.rederiveWork(id)
+	if rederiveErr != nil {
+		applog.Warnf("system", "reextract: re-derive work %d: %v", id, rederiveErr)
+	}
 	s.Events.Broadcast(Event{Type: "library_updated"})
 	s.EmbedNewWorks()
 	for _, tf := range work.TextFiles {
@@ -173,7 +179,95 @@ func (s *Server) handleReextractWork(w http.ResponseWriter, r *http.Request) {
 		"status":     "reextracted",
 		"epub_books": reextracted,
 		"chapters":   chapters,
+		"derivation": rep,
 	})
+}
+
+// rederiveWork re-runs a work's post-import derivation chain — link chapters,
+// re-align (re-derives the alignment payload the reader's word map + coverage
+// read from) — then VERIFIES the result is complete. The verify is the point: a
+// chain that half-finishes must not report success. STT sync_data is
+// transcription output, unaffected by ebook/link changes, so it isn't re-run
+// here (a changed ebook doesn't re-transcribe the audio); the verify still
+// asserts sync completeness and flags any narration a prior run left partial.
+func (s *Server) rederiveWork(id int64) (library.DerivationReport, error) {
+	work, err := s.store.GetWork(id)
+	if err != nil || work == nil {
+		return library.DerivationReport{}, fmt.Errorf("work %d not found", id)
+	}
+	if err := library.LinkChapters(s.store, work); err != nil {
+		return library.DerivationReport{}, err
+	}
+	if _, err := library.ComputeAnchorAlignment(s.store, id); err != nil {
+		applog.Warnf("system", "rederive: align work %d: %v", id, err)
+	} else {
+		s.stampWork(id)
+	}
+	fresh, err := s.store.GetWork(id)
+	if err != nil || fresh == nil {
+		return library.DerivationReport{}, fmt.Errorf("reload work %d: %v", id, err)
+	}
+	rep, err := library.VerifyWorkDerivation(s.store, fresh)
+	if err != nil {
+		return rep, err
+	}
+	if !rep.OK {
+		applog.Warnf("system", "rederive: work %d (%s) still incomplete after re-derive: %+v",
+			id, rep.Title, rep.Issues)
+	}
+	return rep, nil
+}
+
+// POST /api/works/{id}/rederive — re-run the derivation chain and verify. The
+// repair vehicle (fixes a work whose chapter links collapsed) and the manual
+// trigger for the same chain the update path runs.
+func (s *Server) handleRederive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid work id", http.StatusBadRequest)
+		return
+	}
+	rep, err := s.rederiveWork(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Events.Broadcast(Event{Type: "library_updated"})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"work_id": id, "derivation": rep})
+}
+
+// GET /api/works/{id}/derivation — read-only completeness verdict for one work.
+func (s *Server) handleWorkDerivation(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid work id", http.StatusBadRequest)
+		return
+	}
+	work, err := s.store.GetWork(id)
+	if err != nil || work == nil {
+		http.Error(w, "work not found", http.StatusNotFound)
+		return
+	}
+	rep, err := library.VerifyWorkDerivation(s.store, work)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rep)
+}
+
+// GET /api/derivation-check — library-wide sweep; returns only the works whose
+// derived karaoke data is incomplete. Empty = the whole library asserts whole.
+func (s *Server) handleDerivationCheck(w http.ResponseWriter, r *http.Request) {
+	bad, err := library.StartupDerivationSweep(s.store)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"count": len(bad), "incomplete": bad})
 }
 
 // GET /api/works/{id}/transcription-gaps — list audio spans where

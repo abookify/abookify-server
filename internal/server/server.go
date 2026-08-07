@@ -11,11 +11,11 @@ import (
 	"io/fs"
 	"log"
 	"math"
-	"os/exec"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -496,6 +496,9 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("POST /api/books/{id}/embed", s.handleEmbedBook)
 	mux.HandleFunc("POST /api/works/{id}/reprocess", s.handleReprocessWork)
 	mux.HandleFunc("POST /api/works/{id}/reextract", s.handleReextractWork)
+	mux.HandleFunc("POST /api/works/{id}/rederive", s.handleRederive)
+	mux.HandleFunc("GET /api/works/{id}/derivation", s.handleWorkDerivation)
+	mux.HandleFunc("GET /api/derivation-check", s.handleDerivationCheck)
 	mux.HandleFunc("GET /api/works/{id}/transcription-gaps", s.handleTranscriptionGaps)
 	mux.HandleFunc("GET /api/transcription-gaps/summary", s.handleTranscriptionGapsSummary)
 	// Shared cause→presentation contract both web + mobile render from (gap_status.go).
