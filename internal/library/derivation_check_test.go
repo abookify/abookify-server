@@ -1,0 +1,67 @@
+package library
+
+import (
+	"testing"
+
+	"github.com/pj/abookify/internal/db"
+)
+
+func TestCollapsedToOneIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		idx  []int
+		want bool
+	}{
+		{"empty", nil, false},
+		{"single", []int{3}, false},
+		{"distinct", []int{0, 4, 9, 17, 25}, false},  // work 76 after the fix
+		{"collapsed", []int{8, 8, 8, 8, 8}, true},    // work 76 before the fix
+		{"one-outlier", []int{8, 8, 8, 9, 8}, false}, // not fully collapsed
+	}
+	for _, c := range cases {
+		var links []db.ChapterLink
+		for _, i := range c.idx {
+			links = append(links, db.ChapterLink{TextIndex: i})
+		}
+		if got := collapsedToOneIndex(links); got != c.want {
+			t.Errorf("%s: collapsedToOneIndex=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNarrationEnd(t *testing.T) {
+	// Work 86 shape: a 7-file LibriVox chain and a single-file AI reading, BOTH
+	// starting at 0. The chain walk must separate them so neither narration's end
+	// bleeds into the other (the false positive the per-narration model fixes).
+	files := []db.Book{
+		{ID: 1, StartSec: 0, Duration: 1507},     // LibriVox 1
+		{ID: 2, StartSec: 0, Duration: 10795},    // AI (single file)
+		{ID: 3, StartSec: 1507, Duration: 1361},  // LibriVox 2
+		{ID: 4, StartSec: 2868, Duration: 2066},  // LibriVox 3
+		{ID: 5, StartSec: 4934, Duration: 1331},  // LibriVox 4
+		{ID: 6, StartSec: 6265, Duration: 2159},  // LibriVox 5
+		{ID: 7, StartSec: 8424, Duration: 1924},  // LibriVox 6
+		{ID: 8, StartSec: 10348, Duration: 2498}, // LibriVox 7
+	}
+	if got := narrationEnd(files, 1); got < 12844 || got > 12848 {
+		t.Errorf("LibriVox narration end = %.0f, want ~12846", got)
+	}
+	if got := narrationEnd(files, 2); got != 10795 {
+		t.Errorf("AI narration end = %.0f, want 10795 (must not chain into LibriVox)", got)
+	}
+	if got := narrationEnd(files, 99); got != 0 {
+		t.Errorf("unknown rep book = %.0f, want 0", got)
+	}
+
+	// Single-narration chain (work 76 shape): 5 files chaining to ~17808.
+	w76 := []db.Book{
+		{ID: 10, StartSec: 0, Duration: 3022},
+		{ID: 11, StartSec: 3021, Duration: 3794},
+		{ID: 12, StartSec: 6816, Duration: 3380},
+		{ID: 13, StartSec: 10196, Duration: 3517},
+		{ID: 14, StartSec: 13713, Duration: 4095},
+	}
+	if got := narrationEnd(w76, 10); got < 17806 || got > 17810 {
+		t.Errorf("work-76 narration end = %.0f, want ~17808", got)
+	}
+}
