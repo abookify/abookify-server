@@ -112,21 +112,23 @@ type SampleBook struct {
 	NarrationText string `json:"narration_label"` // human-readable, from the manifest
 	Voice         string `json:"voice,omitempty"`
 	OurNarration  bool   `json:"our_narration"` // Kokoro — word-perfect sync by construction
+	DurationSecs  int    `json:"duration_secs"` // 0 until the manifest carries it
 	SizeBytes     int64  `json:"size_bytes"`
 	DownloadURL   string `json:"download_url"`
 	CoverURL      string `json:"cover_url"`
 }
 
 type manifestBook struct {
-	Slug        string `json:"slug"`
-	Title       string `json:"title"`
-	Author      string `json:"author"`
-	Narration   string `json:"narration"`
-	Category    string `json:"category"`
-	Voice       string `json:"voice"`
-	SizeBytes   int64  `json:"size_bytes"`
-	DownloadURL string `json:"download_url"`
-	Cover       string `json:"cover"`
+	Slug         string `json:"slug"`
+	Title        string `json:"title"`
+	Author       string `json:"author"`
+	Narration    string `json:"narration"`
+	Category     string `json:"category"`
+	Voice        string `json:"voice"`
+	DurationSecs int    `json:"duration_secs"`
+	SizeBytes    int64  `json:"size_bytes"`
+	DownloadURL  string `json:"download_url"`
+	Cover        string `json:"cover"`
 }
 
 var (
@@ -194,6 +196,7 @@ func (s *Server) handleSamples(w http.ResponseWriter, r *http.Request) {
 			NarrationText: b.Narration,
 			Voice:         b.Voice,
 			OurNarration:  kind == "ours",
+			DurationSecs:  b.DurationSecs,
 			SizeBytes:     b.SizeBytes,
 			DownloadURL:   b.DownloadURL,
 			CoverURL:      cover,
