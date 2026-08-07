@@ -15,8 +15,8 @@ type SearchHit struct {
 	BookTitle    string  `json:"book_title"`
 	ChapterIdx   int     `json:"chapter_idx"`
 	ChapterTitle string  `json:"chapter_title"`
-	WordPosition int     `json:"word_position"` // approximate word offset in chapter
-	Snippet      string  `json:"snippet"`       // ~100 chars of context around the match
+	WordPosition int     `json:"word_position"`       // approximate word offset in chapter
+	Snippet      string  `json:"snippet"`             // ~100 chars of context around the match
 	AudioSec     float64 `json:"audio_sec,omitempty"` // audio timestamp if sync_data available
 	AudioBookID  int64   `json:"audio_book_id,omitempty"`
 }
@@ -36,6 +36,23 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 	work, err := store.GetWork(workID)
 	if err != nil || work == nil {
 		return nil, err
+	}
+
+	// Per-(book,chapter) composed word-map cache. The map gives each chapter word
+	// its audio second in the CORRECT coordinate system — BuildTranscriptWordSync
+	// slices the whole-work sync blob by the chapter's own audio window (fixing
+	// the bug where a chapter-local word position was indexed straight into the
+	// global sync array, so only chapter 0 ever resolved), and BuildEbookWordSync
+	// maps a word-aligned ebook through the alignment. Built once per chapter.
+	wmCache := map[[2]int64][]SyncWord{}
+	wordMap := func(bookID int64, ch int) []SyncWord {
+		k := [2]int64{bookID, int64(ch)}
+		if wm, ok := wmCache[k]; ok {
+			return wm
+		}
+		wm, _ := BuildDisplayWordSync(store, workID, bookID, ch)
+		wmCache[k] = wm
+		return wm
 	}
 
 	var hits []SearchHit
@@ -89,19 +106,28 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 					Snippet:      snippet,
 				}
 
-				// Try to get audio timestamp via sync_data.
+				// Audio timestamp. Prefer the composed per-chapter word map (correct
+				// coordinate system for transcript chapters and word-aligned ebooks).
+				// Fall back to the raw per-chapter sync index for TTS works whose
+				// sync is keyed directly to the ebook chapter and have no
+				// alignment/transcript to compose a map from — there the naive index
+				// is already correct, so the fallback avoids regressing them.
 				if len(work.AudioFiles) > 0 {
 					af := work.AudioFiles[0]
-					raw, _ := store.GetSyncData(workID, af.ID, chMeta.Index)
-					if raw == "" {
-						// Single-file books store all sync_data at chapter_idx=0
-						raw, _ = store.GetSyncData(workID, af.ID, 0)
-					}
-					if raw != "" {
-						var ts []db.SyncTimestamp
-						if err := jsonUnmarshal(raw, &ts); err == nil && wordPos < len(ts) {
-							hit.AudioSec = ts[wordPos].Start
-							hit.AudioBookID = af.ID
+					if wm := wordMap(tf.ID, chMeta.Index); wordPos < len(wm) {
+						hit.AudioSec = wm[wordPos].S
+						hit.AudioBookID = af.ID
+					} else {
+						raw, _ := store.GetSyncData(workID, af.ID, chMeta.Index)
+						if raw == "" {
+							raw, _ = store.GetSyncData(workID, af.ID, 0)
+						}
+						if raw != "" {
+							var ts []db.SyncTimestamp
+							if err := jsonUnmarshal(raw, &ts); err == nil && wordPos < len(ts) {
+								hit.AudioSec = ts[wordPos].Start
+								hit.AudioBookID = af.ID
+							}
 						}
 					}
 				}
@@ -121,9 +147,9 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 // SearchHit plus the work identity so the client can route to the
 // right work card / reader.
 type LibraryHit struct {
-	WorkID     int64     `json:"work_id"`
-	WorkTitle  string    `json:"work_title"`
-	WorkAuthor string    `json:"work_author,omitempty"`
+	WorkID     int64  `json:"work_id"`
+	WorkTitle  string `json:"work_title"`
+	WorkAuthor string `json:"work_author,omitempty"`
 	SearchHit
 }
 
