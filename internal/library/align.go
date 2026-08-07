@@ -77,6 +77,20 @@ func AlignChapter(store *db.Store, sttClient stt.Provider, workID, audioBookID i
 		finalTimestamps = whisperWords
 	}
 
+	// The MAPPED extent gets the same refusal as the transcribed extent: the
+	// greedy mapper once emitted every original word compressed into half the
+	// narration FROM A COMPLETE TRANSCRIPTION (Alice ch3: 1,702 words ending
+	// 294s of 554s), so checking whisper's extent alone is not enough.
+	if n := len(finalTimestamps); n > 0 {
+		if wEnd := whisperWords[len(whisperWords)-1].End; wEnd > 60 {
+			if mEnd := finalTimestamps[n-1].End; mEnd < 0.85*wEnd {
+				return fmt.Errorf("mapped word timeline ends at %.0fs of %.0fs transcribed — "+
+					"refusing to store a compressed word map (text/transcript mismatch?)",
+					mEnd, wEnd)
+			}
+		}
+	}
+
 	// Serialize to compact JSON
 	data, err := json.Marshal(finalTimestamps)
 	if err != nil {

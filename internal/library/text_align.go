@@ -33,44 +33,84 @@ func AlignTimestampsToSource(originalText string, whisperWords []db.SyncTimestam
 		whisperNorm[i] = normalizeWord(w.Word)
 	}
 
-	// Dynamic programming alignment (similar to diff)
-	// Find the best mapping of whisper words to original words
-	aligned := alignWords(origNorm, whisperNorm)
+	// Anchor alignment, NOT greedy matching. The greedy walker this replaces
+	// carried a 10-word lookahead: one divergence longer than that (a spelled-
+	// out number, a preprocessing artifact) derailed it permanently, and every
+	// later word "interpolated" at prev+0.15s — Alice ch3 stored all 1,702
+	// words ending at 294s of a 554s narration, with a COMPLETE whisper
+	// transcription in hand. The anchor chain re-synchronizes after any
+	// divergence, exactly why it superseded greedy matching everywhere else.
+	aln := Align(origNorm, whisperNorm, 4)
 
-	// Build result: original words with timestamps from their aligned Whisper counterparts
-	var result []db.SyncTimestamp
-	for _, pair := range aligned {
-		if pair.origIdx >= 0 && pair.origIdx < len(origTokens) {
-			word := origTokens[pair.origIdx].word
-			// Preserve leading/trailing whitespace from original
-			if origTokens[pair.origIdx].leadingSpace {
-				word = " " + word
-			}
-
-			if pair.whisperIdx >= 0 && pair.whisperIdx < len(whisperWords) {
-				// Have a timestamp from Whisper
-				result = append(result, db.SyncTimestamp{
-					Start: whisperWords[pair.whisperIdx].Start,
-					End:   whisperWords[pair.whisperIdx].End,
-					Word:  word,
-				})
-			} else {
-				// No Whisper match — interpolate timestamp from neighbors
-				start, end := interpolateTimestamp(result, pair.origIdx, len(origTokens), whisperWords)
-				result = append(result, db.SyncTimestamp{
-					Start: start,
-					End:   end,
-					Word:  word,
-				})
+	assign := make([]int, len(origTokens))
+	for i := range assign {
+		assign[i] = -1
+	}
+	anchored := 0
+	for _, s := range aln.Segments {
+		if s.Kind != SegAligned {
+			continue
+		}
+		n := s.EbookEnd - s.EbookStart
+		if m := s.TransEnd - s.TransStart; m < n {
+			n = m
+		}
+		for k := 0; k < n; k++ {
+			oi, wi := s.EbookStart+k, s.TransStart+k
+			if oi < len(assign) && wi < len(whisperWords) {
+				assign[oi] = wi
+				anchored++
 			}
 		}
 	}
-
-	if len(result) == 0 {
-		return whisperWords
+	if anchored == 0 {
+		return whisperWords // nothing matched at all — old degenerate fallback
 	}
 
+	// Unanchored words interpolate LINEARLY between the surrounding anchors'
+	// times (or the audio edges), so a divergent stretch spreads across the
+	// real time it occupies instead of piling up at its start.
+	audioEnd := whisperWords[len(whisperWords)-1].End
+	result := make([]db.SyncTimestamp, 0, len(origTokens))
+	i := 0
+	for i < len(origTokens) {
+		if assign[i] >= 0 {
+			w := whisperWords[assign[i]]
+			result = append(result, db.SyncTimestamp{Start: w.Start, End: w.End, Word: displayWord(origTokens[i])})
+			i++
+			continue
+		}
+		// Run of unanchored originals [i, j).
+		j := i
+		for j < len(origTokens) && assign[j] < 0 {
+			j++
+		}
+		t0 := 0.0
+		if i > 0 && assign[i-1] >= 0 {
+			t0 = whisperWords[assign[i-1]].End
+		}
+		t1 := audioEnd
+		if j < len(origTokens) && assign[j] >= 0 {
+			t1 = whisperWords[assign[j]].Start
+		}
+		if t1 < t0 {
+			t1 = t0
+		}
+		step := (t1 - t0) / float64(j-i)
+		for k := i; k < j; k++ {
+			s := t0 + float64(k-i)*step
+			result = append(result, db.SyncTimestamp{Start: s, End: s + step, Word: displayWord(origTokens[k])})
+		}
+		i = j
+	}
 	return result
+}
+
+func displayWord(t token) string {
+	if t.leadingSpace {
+		return " " + t.word
+	}
+	return t.word
 }
 
 type token struct {
@@ -112,60 +152,4 @@ func normalizeWord(w string) string {
 	return w
 }
 
-type alignPair struct {
-	origIdx    int
-	whisperIdx int
-}
 
-// alignWords uses a greedy forward-matching approach.
-// For each original word, find the nearest matching Whisper word.
-func alignWords(orig, whisper []string) []alignPair {
-	var pairs []alignPair
-	wi := 0 // whisper index pointer
-
-	for oi := 0; oi < len(orig); oi++ {
-		if orig[oi] == "" {
-			pairs = append(pairs, alignPair{origIdx: oi, whisperIdx: -1})
-			continue
-		}
-
-		// Look ahead in whisper for a match (within a window)
-		bestWi := -1
-		window := 10
-		for j := wi; j < len(whisper) && j < wi+window; j++ {
-			if whisper[j] == orig[oi] {
-				bestWi = j
-				break
-			}
-			// Also try fuzzy match (first 3+ chars)
-			if len(orig[oi]) >= 3 && len(whisper[j]) >= 3 &&
-				orig[oi][:3] == whisper[j][:3] {
-				bestWi = j
-				break
-			}
-		}
-
-		if bestWi >= 0 {
-			pairs = append(pairs, alignPair{origIdx: oi, whisperIdx: bestWi})
-			wi = bestWi + 1
-		} else {
-			// No match — original word has no Whisper counterpart
-			pairs = append(pairs, alignPair{origIdx: oi, whisperIdx: -1})
-		}
-	}
-
-	return pairs
-}
-
-// interpolateTimestamp estimates timing for words that Whisper missed.
-func interpolateTimestamp(existing []db.SyncTimestamp, origIdx, totalOrig int, whisper []db.SyncTimestamp) (float64, float64) {
-	// Use the previous word's end time as start
-	if len(existing) > 0 {
-		prev := existing[len(existing)-1]
-		gap := 0.15 // estimated word duration
-		return prev.End, prev.End + gap
-	}
-
-	// No previous — use start of audio
-	return 0, 0.15
-}
