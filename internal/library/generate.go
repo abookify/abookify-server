@@ -224,10 +224,29 @@ func NewGenerator(store *db.Store, ttsProvider tts.Provider, sttProvider stt.Pro
 			for _, j := range resumable {
 				applog.JobEvent(applog.LevelInfo, j.ID, j.WorkID, "auto-resuming job after restart",
 					map[string]any{"type": j.Type})
-				switch j.Type {
-				case "tts":
-					g.GenerateAudioFromText(j.WorkID, 0, "", "") // will find text book + voice from settings
-				case "stt":
+				switch {
+				case strings.HasPrefix(j.ID, "regen-"):
+					// Per-chapter regen: the requested voice is not recoverable
+					// from the job record, and resuming through the whole-book
+					// path with the settings default would REGENERATE IN THE
+					// WRONG VOICE silently (a restart during the Carol run
+					// spawned tts-85-0-af-heart from a bm_fable job). Fail it
+					// loudly; the caller re-queues with the right voice.
+					g.updateJob(&JobStatus{ID: j.ID, WorkID: j.WorkID, Type: j.Type,
+						Status: "failed",
+						Error:  "interrupted by restart — re-queue this chapter (voice is not persisted)"})
+				case j.Type == "tts":
+					// The job ID encodes what was asked for: tts-<work>-<textbook>-<voiceslug>.
+					// Resume THAT, not the settings default.
+					workID, bookID, voice, ok := parseTTSJobID(j.ID)
+					if !ok {
+						g.updateJob(&JobStatus{ID: j.ID, WorkID: j.WorkID, Type: j.Type,
+							Status: "failed",
+							Error:  "interrupted by restart — could not recover voice from job id, re-queue"})
+						continue
+					}
+					g.GenerateAudioFromText(workID, bookID, voice, "")
+				case j.Type == "stt":
 					g.TranscribeAudio(j.WorkID)
 				}
 			}
@@ -1097,4 +1116,21 @@ func (g *Generator) runRedoSTT(job *JobStatus, workID int64, filenames []string)
 	job.Progress = 1.0
 	job.CurrentStep = fmt.Sprintf("Re-transcribed %d file(s); transcript updated", n)
 	g.updateJob(job)
+}
+
+// parseTTSJobID inverts the "tts-<work>-<textbook>-<voiceslug>" job id so a
+// restart resumes the job that was actually requested. voiceSlug maps '_' to
+// '-', and every Kokoro voice has exactly one underscore (af_heart, bm_fable),
+// so the first dash in the slug converts back.
+func parseTTSJobID(id string) (workID, bookID int64, voice string, ok bool) {
+	parts := strings.SplitN(id, "-", 4)
+	if len(parts) != 4 || parts[0] != "tts" {
+		return 0, 0, "", false
+	}
+	w, err1 := strconv.ParseInt(parts[1], 10, 64)
+	b, err2 := strconv.ParseInt(parts[2], 10, 64)
+	if err1 != nil || err2 != nil || parts[3] == "" {
+		return 0, 0, "", false
+	}
+	return w, b, strings.Replace(parts[3], "-", "_", 1), true
 }
