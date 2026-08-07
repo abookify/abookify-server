@@ -197,16 +197,16 @@ func (s *Server) handleAppendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	// Extract-only answers from the book's own text, so it needs NO LLM. Only the
-	// generated mode requires a configured model. ONE global setting governs
-	// every generate-from-book path (chat, single-shot Q&A, voice, recap, summary).
-	extractOnly := s.extractOnlyEnabled()
+	// Extract-only answers from the book's own text, so it needs NO LLM. Force it
+	// when the user asked OR no LLM is configured (by SETTINGS — a cleared key does
+	// not drop a loaded client, so the pointer can't be trusted; see
+	// forceExtractOnly). Drop the client in that mode so a stale-loaded one can't
+	// generate. ONE global setting governs every generate-from-book path (chat,
+	// single-shot Q&A, voice, recap, summary).
+	extractOnly := s.forceExtractOnly()
 	rag := s.RAG()
-	if rag == nil && !extractOnly {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings, or turn on 'answer from the book text'.",
-		})
-		return
+	if extractOnly {
+		rag = nil
 	}
 
 	var req struct {

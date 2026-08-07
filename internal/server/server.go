@@ -1597,15 +1597,29 @@ func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"purged_corrupt": purged, "fetched": fetched, "not_found": missing, "skipped": skipped})
 }
 
+// forceExtractOnly reports whether a book-answering path must run in extract-only
+// mode: the user asked for it, OR no LLM is configured. It reads configuration
+// from SETTINGS (llmState), NOT the loaded rag pointer — clearing the LLM key
+// does not drop an already-loaded client, so `rag == nil` is an unreliable "no
+// key" test (it stays non-nil and keeps generating), and a never-keyed server
+// with the setting off would wrongly 503 instead of answering. Extract-only reads
+// the retrieved, position-bounded passages VERBATIM with no LLM call, so it always
+// works and is the strongest spoiler guarantee — it is the correct no-key default,
+// not a mode gated behind a key it never uses. Callers must drop the rag client
+// (pass nil) when this is true, so a stale-loaded client can never generate.
+func (s *Server) forceExtractOnly() bool {
+	_, llmConfigured := s.llmState()
+	return s.extractOnlyEnabled() || !llmConfigured
+}
+
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	rag := s.RAG()
-	// Extract-only answers from the book's own retrieved, position-bounded passages
-	// VERBATIM and never calls an LLM, so it works with NO key — the strongest
-	// spoiler guarantee, and the mode most users (no key) actually get. Only the
-	// generative path requires a configured LLM.
-	if rag == nil && !s.extractOnlyEnabled() {
+	extractOnly := s.forceExtractOnly()
+	if extractOnly {
+		rag = nil // never let a stale-loaded client generate in extract-only mode
+	} else if rag == nil || rag.Client() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings, or turn on 'answer from the book text'.",
+			"error": "LLM not available — add an API key in Settings, or turn on 'answer from the book text'.",
 		})
 		return
 	}
@@ -1640,7 +1654,7 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	// New path: vector search + alignment-aware citations with audio times.
 	// Falls back gracefully when embeddings aren't populated. Extract-only (the
 	// one global spoiler-safe setting) answers from the book text, no generation.
-	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope, s.extractOnlyEnabled())
+	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope, extractOnly)
 	if err != nil {
 		// The legacy keyword fallback needs the LLM client; in extract-only with no
 		// key (rag == nil) there is nothing to fall back to, so surface the error.
