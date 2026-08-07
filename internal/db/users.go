@@ -56,3 +56,54 @@ func (s *Store) ListUsers() ([]User, error) {
 	}
 	return out, rows.Err()
 }
+
+// UserExists reports whether a reader id is present.
+func (s *Store) UserExists(userID int64) bool {
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, userID).Scan(&n)
+	return n > 0
+}
+
+// UserDataCounts is the per-reader data a removal would destroy — surfaced in
+// the confirmation so nobody deletes a reader without seeing what goes with them.
+type UserDataCounts struct {
+	Positions  int `json:"positions"`
+	Bookmarks  int `json:"bookmarks"`
+	QASessions int `json:"qa_sessions"`
+}
+
+// UserDataCounts returns the reader's reading positions, bookmarks, and Q&A
+// conversation counts.
+func (s *Store) UserDataCounts(userID int64) UserDataCounts {
+	var c UserDataCounts
+	s.db.QueryRow(`SELECT COUNT(*) FROM playback_positions WHERE user_id = ?`, userID).Scan(&c.Positions)
+	s.db.QueryRow(`SELECT COUNT(*) FROM bookmarks WHERE user_id = ?`, userID).Scan(&c.Bookmarks)
+	s.db.QueryRow(`SELECT COUNT(*) FROM qa_sessions WHERE user_id = ?`, userID).Scan(&c.QASessions)
+	return c
+}
+
+// DeleteUser removes a reader and ALL their per-reader data — reading positions,
+// playback history, bookmarks, Q&A conversations, and login sessions. This is
+// irreversible; the caller is responsible for confirming intent. Runs in one
+// transaction so a reader is never left half-deleted.
+func (s *Store) DeleteUser(userID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// qa_messages hang off qa_sessions by session_id.
+	if _, err := tx.Exec(
+		`DELETE FROM qa_messages WHERE session_id IN (SELECT id FROM qa_sessions WHERE user_id = ?)`, userID); err != nil {
+		return err
+	}
+	for _, t := range []string{"qa_sessions", "bookmarks", "playback_events", "playback_positions", "auth_sessions"} {
+		if _, err := tx.Exec(`DELETE FROM `+t+` WHERE user_id = ?`, userID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

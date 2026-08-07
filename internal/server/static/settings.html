@@ -288,6 +288,27 @@
       </div>
     </div>
 
+    <div class="section" id="readers-section">
+      <h2>Readers</h2>
+      <div class="hint" style="margin-bottom:12px;">Everyone in your household reads from this one library, but each person keeps their own place, bookmarks, and Q&amp;A. Add the people you share with — each signs in with their own name and password.</div>
+      <div id="readers-auth-note" class="callout" style="display:none; margin-bottom:12px;">Reader accounts need a password set first — add one under <strong>Security</strong> above, then reload this page.</div>
+      <div id="readers-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px;"></div>
+      <div id="readers-add" style="display:none;">
+        <div class="field">
+          <label>Name</label>
+          <input type="text" id="new-reader-name" autocapitalize="words" autocorrect="off" placeholder="e.g. Sam">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="new-reader-pw" autocomplete="new-password" placeholder="at least 6 characters">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+          <button type="button" class="save-btn" onclick="addReader()">Add reader</button>
+          <span class="save-msg" id="reader-add-msg" style="opacity:1;"></span>
+        </div>
+      </div>
+    </div>
+
     <div class="section">
       <h2>Library locations</h2>
       <div class="hint" style="margin-bottom:12px;">The folders Abookify scans for books. Add external drives or network shares here. An unplugged/unmounted drive shows as <strong>offline</strong> — its books are kept and marked stale, <strong>never deleted</strong>.</div>
@@ -1527,6 +1548,74 @@
     loadRoots();
     loadAuthState();
     loadCredentials();
+    loadReaders();
+
+    // --- Readers (household multi-user) ---
+    async function loadReaders() {
+      const note = document.getElementById('readers-auth-note');
+      const add = document.getElementById('readers-add');
+      const list = document.getElementById('readers-list');
+      let status = {};
+      try { status = await fetch('/api/auth/status').then(r => r.json()); } catch {}
+      if (!status.auth_enabled) {
+        // No login → single reader; managing accounts is moot until a password is set.
+        note.style.display = '';
+        add.style.display = 'none';
+        list.innerHTML = '';
+        return;
+      }
+      note.style.display = 'none';
+      add.style.display = '';
+      let readers = [];
+      try { readers = await fetch('/api/users').then(r => r.json()); } catch {}
+      if (!Array.isArray(readers)) readers = [];
+      const esc = (typeof schemaEscHtml === 'function') ? schemaEscHtml : (x => x);
+      list.innerHTML = readers.map(u => {
+        const d = u.data || {};
+        const you = u.is_you ? ' <span style="color:var(--text-muted); font-size:0.8rem;">(you)</span>' : '';
+        const canRemove = !u.is_you && readers.length > 1;
+        const removeBtn = canRemove
+          ? `<button type="button" onclick='removeReader(${u.id}, ${JSON.stringify(u.username)}, ${d.positions || 0}, ${d.bookmarks || 0}, ${d.qa_sessions || 0})' style="background:transparent; color:var(--danger); border:1px solid var(--danger); padding:4px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer; flex:none;">Remove</button>`
+          : '';
+        const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+        return `<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; background:var(--surface-2); border-radius:8px;">
+          <div><strong>${esc(u.username)}</strong>${you}
+            <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">${plural(d.positions || 0, 'reading position')} · ${plural(d.bookmarks || 0, 'bookmark')} · ${plural(d.qa_sessions || 0, 'Q&amp;A chat')}</div>
+          </div>${removeBtn}</div>`;
+      }).join('');
+    }
+
+    async function addReader() {
+      const name = document.getElementById('new-reader-name').value.trim();
+      const pw = document.getElementById('new-reader-pw').value;
+      const msg = document.getElementById('reader-add-msg');
+      msg.style.color = 'var(--danger)';
+      if (!name) { msg.textContent = 'Enter a name.'; return; }
+      if (pw.length < 6) { msg.textContent = 'Password needs at least 6 characters.'; return; }
+      try {
+        const res = await fetch('/api/users', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: name, password: pw }),
+        });
+        if (!res.ok) { const e = await res.json().catch(() => ({})); msg.textContent = e.error || 'Could not add reader.'; return; }
+        document.getElementById('new-reader-name').value = '';
+        document.getElementById('new-reader-pw').value = '';
+        msg.style.color = 'var(--text-muted)';
+        msg.textContent = 'Added.';
+        loadReaders();
+      } catch { msg.textContent = 'Network error.'; }
+    }
+
+    async function removeReader(id, name, positions, bookmarks, qa) {
+      const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+      const lost = `${plural(positions, 'reading position')}, ${plural(bookmarks, 'bookmark')}, and ${plural(qa, 'Q&A conversation')}`;
+      if (!confirm(`Remove ${name}?\n\nThis permanently deletes ${name}'s ${lost}. It cannot be undone.`)) return;
+      try {
+        const res = await fetch('/api/users/' + id, { method: 'DELETE' });
+        if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error || 'Could not remove reader.'); return; }
+        loadReaders();
+      } catch { alert('Network error.'); }
+    }
   </script>
 </body>
 </html>
