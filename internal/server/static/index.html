@@ -2350,6 +2350,7 @@
       return `<div class="empty">
         <h2>Your library is empty — let's add your first book</h2>
         <p>Abookify turns your own audiobooks and ebooks into a synced, read-along library. Add a file and it shows up right here.</p>
+        <p class="fr-payoff"><strong>Want the words to light up as you listen?</strong> Drop in an ebook and Abookify will read it aloud to you — no audiobook needed.</p>
         <div class="fr-actions">
           <button class="fr-btn primary" onclick="openFilePicker()">Choose files to add</button>
           <button class="fr-btn" onclick="rescanNow(this)">Rescan library folder</button>
@@ -3686,8 +3687,9 @@
     function renderTextPane(work, files) {
       if (files.length === 0) {
         return `<div class="split-pane"><div class="missing-pane">
-          <div class="icon">&#128214;</div><p>No ebook files</p>
-          <button class="generate-btn" onclick="transcribeAudio(${work.id})" id="gen-text-${work.id}">Generate transcript</button>
+          <div class="icon">&#128214;</div>
+          <p class="readalong-payoff"><strong>Read along with this audiobook?</strong> Transcribe it and the words will light up as it plays.</p>
+          <button class="generate-btn" onclick="transcribeAudio(${work.id})" id="gen-text-${work.id}">Transcribe</button>
         </div></div>`;
       }
 
