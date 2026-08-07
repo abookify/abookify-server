@@ -61,6 +61,53 @@ func VerifyWorkDerivation(store *db.Store, work *db.Work) (DerivationReport, err
 		})
 	}
 
+	// Reference integrity for links + display pointers. A chapter link past the
+	// text book's chapter count, or a display pointer at a book not on this work,
+	// renders the wrong/empty text SILENTLY — the update/merge/delete failure
+	// class. These conditions are never legitimate (unlike a short book sharing a
+	// chapter across files), so asserting them can't cry wolf. display_*=0 is the
+	// "use default" sentinel, not a dangling pointer.
+	onWork := map[int64]int{} // book id → chapter count, for this work's books
+	for _, b := range work.AudioFiles {
+		onWork[b.ID] = b.ChapterCount
+	}
+	for _, b := range work.TextFiles {
+		onWork[b.ID] = b.ChapterCount
+	}
+	for _, l := range links {
+		if l.TextBookID != 0 {
+			cc, ok := onWork[l.TextBookID]
+			if !ok {
+				rep.OK = false
+				rep.Issues = append(rep.Issues, DerivationIssue{Kind: "link_dangling",
+					Detail: fmt.Sprintf("chapter link → text book %d not on this work", l.TextBookID)})
+			} else if cc > 0 && l.TextIndex >= cc {
+				rep.OK = false
+				rep.Issues = append(rep.Issues, DerivationIssue{Kind: "link_out_of_range",
+					Detail: fmt.Sprintf("chapter link text_index %d ≥ %d chapters in book %d", l.TextIndex, cc, l.TextBookID)})
+			}
+		}
+		if l.AudioBookID != 0 {
+			if _, ok := onWork[l.AudioBookID]; !ok {
+				rep.OK = false
+				rep.Issues = append(rep.Issues, DerivationIssue{Kind: "link_dangling",
+					Detail: fmt.Sprintf("chapter link → audio book %d not on this work", l.AudioBookID)})
+			}
+		}
+	}
+	for _, ptr := range []struct {
+		name string
+		id   int64
+	}{{"display_text", work.DisplayTextBookID}, {"display_audio", work.DisplayAudioBookID}} {
+		if ptr.id != 0 {
+			if _, ok := onWork[ptr.id]; !ok {
+				rep.OK = false
+				rep.Issues = append(rep.Issues, DerivationIssue{Kind: "display_dangling",
+					Detail: fmt.Sprintf("%s book %d not on this work", ptr.name, ptr.id)})
+			}
+		}
+	}
+
 	// Karaoke is EXPECTED only when a word alignment pairs the ebook with a
 	// transcript. Without one, absent sync is correct (audio-only, a different
 	// edition, an un-narrated ebook) — not a half-finished chain — so sync is not

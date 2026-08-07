@@ -66,6 +66,47 @@ func TestNarrationEnd(t *testing.T) {
 	}
 }
 
+func TestVerifyDerivation_LinkIntegrity(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+	work := seedWork(t, store, 5, 0) // 5 text chapters, no detected audio chapters
+	textID := work.TextFiles[0].ID
+	audioID := work.AudioFiles[0].ID
+
+	// A single in-range link → passes (no word alignment, so sync isn't asserted).
+	store.InsertChapterLink(work.ID, db.ChapterLink{AudioBookID: audioID, AudioIndex: 0, TextBookID: textID, TextIndex: 2, Confidence: 0.9})
+	fresh, _ := store.GetWork(work.ID)
+	if rep, err := VerifyWorkDerivation(store, fresh); err != nil || !rep.OK {
+		t.Fatalf("valid link should pass: err=%v issues=%+v", err, rep.Issues)
+	}
+
+	// text_index beyond the 5 chapters → link_out_of_range (never legitimate).
+	store.InsertChapterLink(work.ID, db.ChapterLink{AudioBookID: audioID, AudioIndex: 1, TextBookID: textID, TextIndex: 99, Confidence: 0.9})
+	fresh, _ = store.GetWork(work.ID)
+	rep, _ := VerifyWorkDerivation(store, fresh)
+	if rep.OK || !hasIssue(rep, "link_out_of_range") {
+		t.Fatalf("out-of-range text_index should fail with link_out_of_range: %+v", rep.Issues)
+	}
+
+	// A link pointing at a text book not on this work → link_dangling.
+	store.DeleteChapterLinksByWork(work.ID)
+	store.InsertChapterLink(work.ID, db.ChapterLink{AudioBookID: audioID, AudioIndex: 0, TextBookID: 999999, TextIndex: 0, Confidence: 0.9})
+	fresh, _ = store.GetWork(work.ID)
+	rep, _ = VerifyWorkDerivation(store, fresh)
+	if rep.OK || !hasIssue(rep, "link_dangling") {
+		t.Fatalf("link to a foreign text book should fail with link_dangling: %+v", rep.Issues)
+	}
+}
+
+func hasIssue(rep DerivationReport, kind string) bool {
+	for _, i := range rep.Issues {
+		if i.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNarrationChainExcludesJunk(t *testing.T) {
 	// Work 71 shape: a real 01→03.mp3 chain (0→9600) plus zero-duration junk
 	// files (18/19.mp3, start 0 dur 0). The chain must contain ONLY the real
