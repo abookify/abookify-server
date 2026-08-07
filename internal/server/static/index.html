@@ -2589,29 +2589,64 @@
       render();
     }
 
+    // A library-listing call returned 401 — the browser's session is missing or
+    // expired. THE 401 IS THE GROUND TRUTH: show the sign-in overlay directly,
+    // rather than re-deriving it from /api/auth/status (which races and, when it
+    // disagreed, left the owner staring at an "empty library" — reading as "your
+    // whole library is gone"). Returns true so callers stop before rendering.
+    function handleAuthFailure() {
+      const gate = document.getElementById('login-gate');
+      if (gate) {
+        gate.style.display = 'flex';
+        document.getElementById('login-username')?.focus();
+      }
+      const st = document.getElementById('status-text');
+      if (st) st.textContent = 'signed out';
+      return true;
+    }
+
     async function loadWorks() {
+      let worksRes;
       try {
-        const [worksRes] = await Promise.all([
-          fetch('/api/works'),
-          loadLLMConfig(),
-          loadTranscriptionGapSummary(),
-        ]);
-        allWorks = await worksRes.json();
-        const totalFiles = allWorks.reduce((s, w) =>
-          s + (w.audio_files || []).length + (w.text_files || []).length, 0);
-        document.getElementById('status-text').textContent =
-          `${allWorks.length} works | ${totalFiles} files`;
-        render();
-        hydrateSyncLeadInputs();
-        hydrateWorkProgress();
-        loadDuplicates();
+        worksRes = await fetch('/api/works');
       } catch (e) {
-        // Surface the actual error in the status text so cross-host
-        // failures (CORS, JSON parse, JS error in render) are
-        // diagnosable from the UI without needing devtools.
         document.getElementById('status-text').textContent = 'connection error: ' + (e && e.message ? e.message : String(e));
         console.error('loadWorks failed:', e);
+        return;
       }
+      // GUARD: a failed fetch must NEVER render as an empty successful one.
+      // "Empty because you're new" and "empty because we couldn't authenticate
+      // you" are different facts and must never render the same — the second one
+      // would also trigger the first-run sample invitation for a signed-out owner
+      // with a full library.
+      if (worksRes.status === 401) { handleAuthFailure(); return; }
+      if (!worksRes.ok) {
+        document.getElementById('status-text').textContent = 'connection error: HTTP ' + worksRes.status;
+        return;
+      }
+      let data;
+      try { data = await worksRes.json(); } catch (e) {
+        document.getElementById('status-text').textContent = 'connection error: ' + (e && e.message ? e.message : String(e));
+        return;
+      }
+      // A non-array body (an error object) is a failed fetch, not an empty library.
+      if (!Array.isArray(data)) {
+        document.getElementById('status-text').textContent = 'connection error: unexpected response';
+        console.error('loadWorks: expected an array, got', data);
+        return;
+      }
+      allWorks = data;
+      // Secondary loads — fire alongside, but never let them gate the grid.
+      loadLLMConfig();
+      loadTranscriptionGapSummary();
+      const totalFiles = allWorks.reduce((s, w) =>
+        s + (w.audio_files || []).length + (w.text_files || []).length, 0);
+      document.getElementById('status-text').textContent =
+        `${allWorks.length} works | ${totalFiles} files`;
+      render();
+      hydrateSyncLeadInputs();
+      hydrateWorkProgress();
+      loadDuplicates();
     }
 
     // Poll /api/works/duplicates and show a banner listing any groups of works
