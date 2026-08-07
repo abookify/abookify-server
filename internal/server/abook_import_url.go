@@ -1,12 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -90,4 +92,118 @@ func fetchAllowlistedAbook(rawURL string) (path string, status int, err error) {
 	}
 	tmp.Close()
 	return tmpPath, http.StatusOK, nil
+}
+
+// --- Sample library proxy (the first-run "try a sample" picker) ---
+
+// sampleManifestURL is the canonical, stable manifest both the showcase page and
+// this picker render from — one list, two surfaces, no drift.
+const sampleManifestURL = "https://abookify.com/showcase/showcase.json"
+const sampleCoverBase = "https://abookify.com/showcase/"
+
+// SampleBook is the normalized shape the empty-library picker renders. The
+// narration fields carry the quality distinction as DATA (ours vs a human
+// volunteer), so each surface presents it in its own voice without guessing.
+type SampleBook struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Author        string `json:"author"`
+	NarrationKind string `json:"narration_kind"`  // "ours" | "human" | "neural" | "radio"
+	NarrationText string `json:"narration_label"` // human-readable, from the manifest
+	Voice         string `json:"voice,omitempty"`
+	OurNarration  bool   `json:"our_narration"` // Kokoro — word-perfect sync by construction
+	SizeBytes     int64  `json:"size_bytes"`
+	DownloadURL   string `json:"download_url"`
+	CoverURL      string `json:"cover_url"`
+}
+
+type manifestBook struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Author      string `json:"author"`
+	Narration   string `json:"narration"`
+	Category    string `json:"category"`
+	Voice       string `json:"voice"`
+	SizeBytes   int64  `json:"size_bytes"`
+	DownloadURL string `json:"download_url"`
+	Cover       string `json:"cover"`
+}
+
+var (
+	samplesMu     sync.Mutex
+	samplesCache  []SampleBook
+	samplesExpiry time.Time
+)
+
+// GET /api/samples — the normalized sample library for the first-run picker.
+// Server-side proxy of the canonical manifest: avoids a cross-origin fetch from
+// the app, and reuses our trust boundary (the manifest is on our own host).
+// Cached briefly so an empty-library render doesn't hammer the site.
+func (s *Server) handleSamples(w http.ResponseWriter, r *http.Request) {
+	samplesMu.Lock()
+	fresh := samplesCache != nil && time.Now().Before(samplesExpiry)
+	cached := samplesCache
+	samplesMu.Unlock()
+	if fresh {
+		writeJSON(w, http.StatusOK, map[string]any{"samples": cached})
+		return
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(sampleManifestURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if cached != nil { // serve stale on a transient fetch failure
+			writeJSON(w, http.StatusOK, map[string]any{"samples": cached, "stale": true})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sample library is unreachable right now"})
+		return
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Books []manifestBook `json:"books"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sample library manifest was unreadable"})
+		return
+	}
+
+	out := make([]SampleBook, 0, len(doc.Books))
+	for _, b := range doc.Books {
+		if b.DownloadURL == "" {
+			continue // not importable → don't offer it
+		}
+		kind := "human"
+		switch b.Category {
+		case "kokoro":
+			kind = "ours"
+		case "neural":
+			kind = "neural"
+		case "radio":
+			kind = "radio"
+		}
+		cover := b.Cover
+		if cover != "" && !strings.HasPrefix(cover, "http") {
+			cover = sampleCoverBase + strings.TrimPrefix(cover, "/")
+		}
+		out = append(out, SampleBook{
+			ID:            b.Slug,
+			Title:         b.Title,
+			Author:        b.Author,
+			NarrationKind: kind,
+			NarrationText: b.Narration,
+			Voice:         b.Voice,
+			OurNarration:  kind == "ours",
+			SizeBytes:     b.SizeBytes,
+			DownloadURL:   b.DownloadURL,
+			CoverURL:      cover,
+		})
+	}
+
+	samplesMu.Lock()
+	samplesCache = out
+	samplesExpiry = time.Now().Add(10 * time.Minute)
+	samplesMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"samples": out})
 }
