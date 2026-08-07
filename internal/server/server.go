@@ -1593,9 +1593,13 @@ func (s *Server) handleFetchMissingCovers(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	rag := s.RAG()
-	if rag == nil {
+	// Extract-only answers from the book's own retrieved, position-bounded passages
+	// VERBATIM and never calls an LLM, so it works with NO key — the strongest
+	// spoiler guarantee, and the mode most users (no key) actually get. Only the
+	// generative path requires a configured LLM.
+	if rag == nil && !s.extractOnlyEnabled() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "No LLM configured. Add an API key in Settings.",
+			"error": "No LLM configured. Add an API key in Settings, or turn on 'answer from the book text'.",
 		})
 		return
 	}
@@ -1632,6 +1636,12 @@ func (s *Server) handleAskQuestion(w http.ResponseWriter, r *http.Request) {
 	// one global spoiler-safe setting) answers from the book text, no generation.
 	answer, err := library.AskWithCitations(s.store, rag, workID, req.Question, req.Scope, s.extractOnlyEnabled())
 	if err != nil {
+		// The legacy keyword fallback needs the LLM client; in extract-only with no
+		// key (rag == nil) there is nothing to fall back to, so surface the error.
+		if rag == nil {
+			writeServerError(w, r, err)
+			return
+		}
 		// Legacy fallback: keyword-only search on the first text file
 		legacy, err2 := rag.Ask(work.TextFiles[0].ID, req.Question, work.Title)
 		if err2 != nil {
