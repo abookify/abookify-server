@@ -2677,6 +2677,34 @@ func (s *Store) BestAlignmentByWork() (map[int64]BestAlignment, error) {
 // sync_data row (word-level timestamps from the TTS→Whisper path). Lets the work
 // list flag "word-level sync" for a single-source book that has no cross-source
 // alignment (hence no coverage%), without loading every work's rows. One query.
+// WorkIDsWithUnreadableText returns works that HAVE a text book but from which
+// no chapters ever extracted — i.e. an unsupported/unextracted text file (a PDF
+// today; PDF extraction isn't supported, users convert to EPUB). Lets the work
+// card say "couldn't read this — convert to EPUB" instead of rendering blank,
+// which reads as broken.
+func (s *Store) WorkIDsWithUnreadableText() (map[int64]bool, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT b.work_id FROM books b
+		WHERE b.media_type = 'text'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM books b2 JOIN chapters c ON c.book_id = b2.id
+		    WHERE b2.work_id = b.work_id AND b2.media_type = 'text'
+		  )`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var wid int64
+		if err := rows.Scan(&wid); err != nil {
+			return nil, err
+		}
+		out[wid] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) WorkIDsWithSyncData() (map[int64]bool, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT work_id FROM sync_data`)
 	if err != nil {

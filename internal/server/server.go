@@ -823,6 +823,7 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	// a coverage pill without an N+1 fetch. One SQL query for the whole library.
 	best, _ := s.store.BestAlignmentByWork()
 	synced, _ := s.store.WorkIDsWithSyncData()
+	unreadable, _ := s.store.WorkIDsWithUnreadableText()
 	type workWithAlign struct {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
@@ -849,6 +850,9 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		// (Discriminator per transcription: sync_data existence, not "has text" —
 		// a lone EPUB has text but no peer to align, so "not aligned" would mislead.)
 		HasWordSync bool `json:"has_word_sync"`
+		// NeedsTextConversion: a text file (e.g. a PDF) is present but extracted no
+		// chapters, so the card can say "convert to EPUB" instead of rendering blank.
+		NeedsTextConversion bool `json:"needs_text_conversion,omitempty"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -877,6 +881,7 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out[i].HasWordSync = synced[wk.ID]
+		out[i].NeedsTextConversion = unreadable[wk.ID]
 	}
 	writeJSON(w, http.StatusOK, out)
 }
