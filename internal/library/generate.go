@@ -485,7 +485,7 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 
 			// Split long text into chunks for TTS (~500 words each)
 			textChunks := SplitTextForTTS(processedText, 500)
-			var allAudio []byte
+			var audioChunks [][]byte
 
 			for ci, chunk := range textChunks {
 				if len(textChunks) > 1 {
@@ -502,10 +502,11 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 					g.updateJob(job)
 					return
 				}
-				allAudio = append(allAudio, audioData...)
+				audioChunks = append(audioChunks, audioData)
 			}
 
-			if err := os.WriteFile(mp3Path, allAudio, 0644); err != nil {
+			// Never byte-concatenate the chunks — see concatAudioChunks.
+			if err := concatAudioChunks(audioChunks, mp3Path); err != nil {
 				job.Status = "failed"
 				job.Error = err.Error()
 				g.updateJob(job)
@@ -916,7 +917,7 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 	job.CurrentStep = fmt.Sprintf("Generating: %s", ch.Title)
 	g.updateJob(job)
 
-	var allAudio []byte
+	var audioChunks [][]byte
 	for ci, chunk := range chunks {
 		job.Progress = float64(ci) / float64(len(chunks))
 		if len(chunks) > 1 {
@@ -935,10 +936,11 @@ func (g *Generator) runRegenerateChapter(job *JobStatus, workID, bookID int64, c
 			g.updateJob(job)
 			return
 		}
-		allAudio = append(allAudio, data...)
+		audioChunks = append(audioChunks, data)
 	}
 
-	if err := os.WriteFile(mp3Path, allAudio, 0644); err != nil {
+	// Never byte-concatenate the chunks — see concatAudioChunks.
+	if err := concatAudioChunks(audioChunks, mp3Path); err != nil {
 		log.Printf("regenerate: write failed: %v", err)
 		job.Status = "failed"
 		job.Error = err.Error()

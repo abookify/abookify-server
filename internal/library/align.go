@@ -46,6 +46,27 @@ func AlignChapter(store *db.Store, sttClient stt.Provider, workID, audioBookID i
 
 	log.Printf("align: got %d whisper words (%.1fs audio)", len(whisperWords), result.Duration)
 
+	// Refuse to store a word map for a partial transcription. Whisper's
+	// decoder stops at the first malformed frame of a byte-concatenated MP3
+	// while player decoders skip it and keep going — so a truncated round-trip
+	// used to slip through here, and AlignTimestampsToSource then compressed
+	// EVERY original word into the transcribed span: karaoke that drifts off
+	// the audio within minutes, stored silently (Gulag chapter-005: 178s
+	// transcribed of 1757s, all 4,523 words mapped into it). No sync row is
+	// better than a wrong one — absence shows up in every completeness sweep,
+	// compression showed up in none.
+	if probed := probeDurationFile(audioPath); probed > 60 {
+		extent := result.Duration
+		if last := whisperWords[len(whisperWords)-1].End; last > extent {
+			extent = last
+		}
+		if extent < 0.85*probed {
+			return fmt.Errorf("whisper transcribed only %.0fs of a %.0fs file — refusing to "+
+				"store a compressed word map (malformed audio stream? re-encode the file)",
+				extent, probed)
+		}
+	}
+
 	// If we have the original text, align Whisper timestamps to it
 	var finalTimestamps []db.SyncTimestamp
 	if originalText != "" {
