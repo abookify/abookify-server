@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -59,7 +60,16 @@ func fetchAllowlistedAbook(rawURL string) (path string, status int, err error) {
 	}
 
 	client := &http.Client{
-		Timeout: 10 * time.Minute,
+		// Generous TOTAL budget for a large file, but fail FAST when there's no
+		// connectivity — a blocked/blackholed request must surface in seconds, not
+		// hang for ten minutes behind a spinner. ("Nothing happened" is the failure
+		// we will not ship again.)
+		Timeout: 15 * time.Minute,
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
@@ -72,7 +82,7 @@ func fetchAllowlistedAbook(rawURL string) (path string, status int, err error) {
 	}
 	resp, err := client.Get(u.String())
 	if err != nil {
-		return "", http.StatusBadGateway, fmt.Errorf("could not fetch the sample: %v", err)
+		return "", http.StatusBadGateway, fmt.Errorf("couldn't reach the sample library — check this server's internet connection: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

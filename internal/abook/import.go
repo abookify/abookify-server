@@ -68,9 +68,17 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 		out, err := os.Create(destPath)
 		if err != nil {
 			rc.Close()
-			continue
+			os.RemoveAll(outDir)
+			return fmt.Errorf("create %q: %w", f.Name, err)
 		}
-		io.Copy(out, rc)
+		// A silently-truncated write (disk full) would leave a book with broken
+		// audio that still imports "successfully" — check it and fail loudly.
+		if _, cerr := io.Copy(out, rc); cerr != nil {
+			out.Close()
+			rc.Close()
+			os.RemoveAll(outDir)
+			return fmt.Errorf("extract %q failed (out of disk space?): %w", f.Name, cerr)
+		}
 		out.Close()
 		rc.Close()
 	}
@@ -82,12 +90,20 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 		}
 	}
 
-	return ingestBookDB(store, dbPath, outDir, &manifest)
+	if err := ingestBookDB(store, dbPath, outDir, &manifest); err != nil {
+		// The ingest already rolled back its half-built work row; also drop the
+		// extracted files so no orphaned folder sits on disk looking like a book.
+		os.RemoveAll(outDir)
+		return err
+	}
+	return nil
 }
 
 // ingestBookDB opens the carved book.db and copies its rows into the monolith
-// under a fresh work id, remapping book ids as it goes.
-func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) error {
+// under a fresh work id, remapping book ids as it goes. On ANY failure after the
+// work row is created it rolls that row back (named-return + defer), so a
+// half-finished import never leaves a partial "broken book" in the library.
+func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) (err error) {
 	bdb, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&mode=ro")
 	if err != nil {
 		return fmt.Errorf("open book.db: %w", err)
@@ -98,6 +114,11 @@ func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) er
 	if err != nil {
 		return fmt.Errorf("create work: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			store.DeleteWork(newWorkID) // roll back the partial work on any later failure
+		}
+	}()
 
 	// works row → series metadata (the rest is already on the new work).
 	var series string
@@ -117,11 +138,11 @@ func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) er
 		return fmt.Errorf("read books: %w", err)
 	}
 	type bookrow struct {
-		oldID                                                 int64
-		filename, format, mediaType, title, author, album     string
-		origin, visibility, edition                           string
-		duration, startSec                                    float64
-		assetPath                                             sql.NullString
+		oldID                                             int64
+		filename, format, mediaType, title, author, album string
+		origin, visibility, edition                       string
+		duration, startSec                                float64
+		assetPath                                         sql.NullString
 	}
 	var books []bookrow
 	for rows.Next() {
@@ -150,20 +171,20 @@ func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) er
 			size = fi.Size()
 		}
 		if err := store.UpsertBook(db.Book{
-			WorkID:    newWorkID,
-			Path:      path,
-			Filename:  b.filename,
-			Format:    b.format,
-			MediaType: b.mediaType,
-			SizeBytes: size,
-			Title:     b.title,
-			Author:    b.author,
-			Album:     b.album,
-			Duration:  b.duration,
-			StartSec:  b.startSec,
-			Origin:    b.origin,
+			WorkID:     newWorkID,
+			Path:       path,
+			Filename:   b.filename,
+			Format:     b.format,
+			MediaType:  b.mediaType,
+			SizeBytes:  size,
+			Title:      b.title,
+			Author:     b.author,
+			Album:      b.album,
+			Duration:   b.duration,
+			StartSec:   b.startSec,
+			Origin:     b.origin,
 			Visibility: b.visibility,
-			Edition:   b.edition,
+			Edition:    b.edition,
 		}); err != nil {
 			return fmt.Errorf("upsert book: %w", err)
 		}

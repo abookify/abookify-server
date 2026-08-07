@@ -2464,17 +2464,19 @@
         if (!res.ok) {
           btn.disabled = false;
           btn.textContent = original;
-          alert(data.error || `Could not add ${title}.`);
+          // Explicit, honest failure — never a dead spinner. The server says why
+          // (no connectivity, damaged file, disk full); fall back to a plain line.
+          alert(data.error || `Couldn't add ${title}. Please try again.`);
           return;
         }
-        btn.textContent = '✓ Added';
+        btn.textContent = data.status === 'skipped' ? '✓ Already in your library' : '✓ Added';
         // The library is no longer empty — reload works so the welcome gives way
         // to the book, and the reader can press play.
         if (typeof loadWorks === 'function') loadWorks();
       } catch {
         btn.disabled = false;
         btn.textContent = original;
-        alert('Network error while adding the sample.');
+        alert('Couldn’t reach the server to add this sample. Check your connection and try again.');
       }
     }
 

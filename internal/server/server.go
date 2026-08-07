@@ -2815,7 +2815,14 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := abook.Import(s.store, tmpPath, s.importRoot()); err != nil {
-		writeServerError(w, r, err)
+		// The download was fine but ingest failed (bad/incompatible file, or disk
+		// full). Import already rolled back any partial work, so the library isn't
+		// left with a broken book — but say plainly what happened rather than a bare
+		// 500 that reads as "the app is broken". applog keeps the technical detail.
+		applog.Warnf("system", "abook import failed for %q: %v", manifest.Title, err)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error": "This book couldn't be imported — the file may be damaged or the disk may be full. Nothing was added to your library.",
+		})
 		return
 	}
 	s.Events.Broadcast(Event{Type: "library_updated"})
