@@ -209,11 +209,17 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 		return nil, false
 	}
 
-	// Earliest audio second for each ebook chapter, from aligned segments.
+	// Earliest audio second for each ebook chapter, from aligned segments; track
+	// the alignment's furthest audio second (maxSs) — the aligned narration's
+	// reach.
 	chapStart := map[int]float64{}
+	maxSs := 0.0
 	for _, s := range p.Segments {
 		if s.Kind != SegAligned || s.StartSec <= 0 {
 			continue
+		}
+		if s.StartSec > maxSs {
+			maxSs = s.StartSec
 		}
 		ci := chapterOfToken(p.EbookChapters, s.EbookStart)
 		if ci < 0 {
@@ -225,6 +231,31 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 	}
 	if len(chapStart) == 0 {
 		return nil, false
+	}
+
+	// Restrict linking to the ALIGNED narration. A work can carry more than one
+	// narration (a human + an AI reading) or zero-duration junk files (work 71's
+	// 18-30.mp3 dupes); mapping all of them through this one alignment's timeline
+	// smears the extras onto whatever chapter plays at their start_sec. The
+	// aligned narration is the sync-anchored contiguous chain whose end best
+	// matches the alignment's audio reach (maxSs) — link only its files; leave
+	// the rest unlinked (honest: they have no karaoke timing here anyway).
+	var members map[int64]bool
+	if syncRows, err := store.ListSyncForWork(work.ID); err == nil && maxSs > 0 {
+		bestDiff := -1.0
+		for _, row := range syncRows {
+			m, end := narrationChain(work.AudioFiles, row.AudioBookID)
+			if end <= 0 {
+				continue
+			}
+			diff := end - maxSs
+			if diff < 0 {
+				diff = -diff
+			}
+			if bestDiff < 0 || diff < bestDiff {
+				bestDiff, members = diff, m
+			}
+		}
 	}
 	// (audio second → chapter index), ascending, so a file's StartSec picks the
 	// chapter playing at that moment.
@@ -240,6 +271,9 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 
 	links := make([]db.ChapterLink, 0, len(work.AudioFiles))
 	for i, af := range work.AudioFiles {
+		if members != nil && !members[af.ID] {
+			continue // not part of the aligned narration — leave it unlinked
+		}
 		// Greatest timeline entry whose sec <= this file's start.
 		pick := timeline[0].idx
 		for _, t := range timeline {
@@ -256,6 +290,9 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 			TextIndex:   pick,
 			Confidence:  0.85, // alignment-derived: authoritative, above title-overlap
 		})
+	}
+	if len(links) == 0 {
+		return nil, false // nothing in the aligned narration — fall back
 	}
 	return links, true
 }

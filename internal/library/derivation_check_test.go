@@ -65,3 +65,30 @@ func TestNarrationEnd(t *testing.T) {
 		t.Errorf("work-76 narration end = %.0f, want ~17808", got)
 	}
 }
+
+func TestNarrationChainExcludesJunk(t *testing.T) {
+	// Work 71 shape: a real 01→03.mp3 chain (0→9600) plus zero-duration junk
+	// files (18/19.mp3, start 0 dur 0). The chain must contain ONLY the real
+	// files so alignment-derived linking never smears junk across the timeline.
+	files := []db.Book{
+		{ID: 100, StartSec: 0, Duration: 3600},    // 01.mp3 (chain anchor)
+		{ID: 201, StartSec: 0, Duration: 0},       // 18.mp3 junk
+		{ID: 202, StartSec: 0, Duration: 0},       // 19.mp3 junk
+		{ID: 101, StartSec: 3600, Duration: 3600}, // 02.mp3
+		{ID: 102, StartSec: 7200, Duration: 2400}, // 03.mp3
+	}
+	members, end := narrationChain(files, 100)
+	if end < 9598 || end > 9602 {
+		t.Errorf("chain end = %.0f, want ~9600", end)
+	}
+	for _, want := range []int64{100, 101, 102} {
+		if !members[want] {
+			t.Errorf("chain missing real file %d", want)
+		}
+	}
+	for _, junk := range []int64{201, 202} {
+		if members[junk] {
+			t.Errorf("chain wrongly included zero-duration junk file %d", junk)
+		}
+	}
+}

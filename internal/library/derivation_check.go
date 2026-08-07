@@ -119,12 +119,20 @@ func VerifyWorkDerivation(store *db.Store, work *db.Work) (DerivationReport, err
 	return rep, nil
 }
 
-// narrationEnd walks the contiguous start_sec chain beginning at repBook and
-// returns the narration's end second (the last file's start_sec+duration). A
-// file continues the chain when its start_sec meets the running end; two
-// narrations that both begin at 0 separate cleanly because only one file
-// continues each chain. Returns 0 when repBook isn't among the work's files.
+// narrationEnd returns just the end second of the narration chain at repBook.
 func narrationEnd(files []db.Book, repBook int64) float64 {
+	_, end := narrationChain(files, repBook)
+	return end
+}
+
+// narrationChain walks the contiguous start_sec chain beginning at repBook and
+// returns the set of member file IDs and the narration's end second (the last
+// file's start_sec+duration). A file continues the chain when its start_sec
+// meets the running end; two narrations that both begin at 0 separate cleanly
+// because only one file continues each chain, and zero-duration junk files
+// (start 0, dur 0) never advance it. Empty set / 0 when repBook isn't among the
+// work's files.
+func narrationChain(files []db.Book, repBook int64) (map[int64]bool, float64) {
 	var cur *db.Book
 	for i := range files {
 		if files[i].ID == repBook {
@@ -133,16 +141,16 @@ func narrationEnd(files []db.Book, repBook int64) float64 {
 		}
 	}
 	if cur == nil {
-		return 0
+		return nil, 0
 	}
 	const tol = 2.0
+	members := map[int64]bool{cur.ID: true}
 	end := cur.StartSec + cur.Duration
-	seen := map[int64]bool{cur.ID: true}
 	for {
 		var next *db.Book
 		for i := range files {
 			f := &files[i]
-			if seen[f.ID] || f.StartSec <= cur.StartSec {
+			if members[f.ID] || f.StartSec <= cur.StartSec {
 				continue
 			}
 			if f.StartSec >= end-tol && f.StartSec <= end+tol {
@@ -151,9 +159,9 @@ func narrationEnd(files []db.Book, repBook int64) float64 {
 			}
 		}
 		if next == nil {
-			return end
+			return members, end
 		}
-		seen[next.ID] = true
+		members[next.ID] = true
 		cur = next
 		end = cur.StartSec + cur.Duration
 	}
