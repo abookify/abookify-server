@@ -93,15 +93,113 @@ func ReimportWorkSidecar(store *db.Store, libraryRoot string, workID int64) (str
 	if !w.HasAudio || len(w.AudioFiles) == 0 {
 		return "", fmt.Errorf("work %d has no audio", workID)
 	}
-	af := w.AudioFiles[0]
-	sidecarPath := findSidecar(af.Path, libraryRoot)
-	if sidecarPath == "" {
-		return "", fmt.Errorf("no sidecar found for work %d (book %s)", workID, af.Path)
+	// A work can carry several audio EDITIONS, each with its own sidecar and
+	// its own transcript book. Importing only AudioFiles[0]'s sidecar left
+	// Call of the Wild's repaired LibriVox decode on disk while the database
+	// kept serving the old one — and reimport-realign still exited 0, because
+	// the alignment-freshness check verifies the rows were rewritten, not
+	// that the text they describe is current. Import every distinct sidecar,
+	// each anchored to the first audio book that resolves to it.
+	type edition struct {
+		audioID int64
+		path    string
+		base    string // sidecar filename without .stt.json
 	}
-	if err := importOneSidecar(store, w.ID, af.ID, sidecarPath); err != nil {
-		return sidecarPath, err
+	var editions []edition
+	seen := map[string]bool{}
+	for i := range w.AudioFiles {
+		af := w.AudioFiles[i]
+		p := findSidecar(af.Path, libraryRoot)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		editions = append(editions, edition{audioID: af.ID,
+			path: p, base: strings.TrimSuffix(filepath.Base(p), ".stt.json")})
 	}
-	return sidecarPath, nil
+	if len(editions) == 0 {
+		return "", fmt.Errorf("no sidecar found for work %d (book %s)", workID, w.AudioFiles[0].Path)
+	}
+
+	// Route each edition to ITS transcript book, never someone else's. Nothing
+	// in the schema links a transcript book to its edition, so the routing uses
+	// the naming that created them: an edition-specific book is titled
+	// "<sidecar base> (Transcript)" (Call of the Wild's TTS edition kept
+	// "call-of-the-wild-ai (Transcript)" through a work merge), and the work's
+	// primary edition owns the per-work default book. Editions beyond the
+	// existing books get a fresh book with an edition-suffixed path.
+	var transcripts []*db.Book
+	defaultPath := fmt.Sprintf("generated://transcript/work-%d", workID)
+	var defaultBook *db.Book
+	for i := range w.TextFiles {
+		b := &w.TextFiles[i]
+		if b.Format == "transcript" || b.Origin == "whisper_transcript" {
+			transcripts = append(transcripts, b)
+			if b.Path == defaultPath {
+				defaultBook = b
+			}
+		}
+	}
+	target := make([]int64, len(editions))
+	claimed := map[int64]bool{}
+	for i, ed := range editions { // pass 1: name match
+		for _, t := range transcripts {
+			if !claimed[t.ID] && t.Filename == ed.base+" (Transcript)" {
+				target[i], claimed[t.ID] = t.ID, true
+				break
+			}
+		}
+	}
+	for i := range editions { // pass 2: the primary edition takes the default book
+		if target[i] == 0 && defaultBook != nil && !claimed[defaultBook.ID] {
+			target[i], claimed[defaultBook.ID] = defaultBook.ID, true
+			break
+		}
+	}
+	for i, ed := range editions { // pass 3: leftover editions get their own book
+		if target[i] != 0 {
+			continue
+		}
+		for _, t := range transcripts { // reuse any unclaimed book before creating
+			if !claimed[t.ID] {
+				target[i], claimed[t.ID] = t.ID, true
+				break
+			}
+		}
+		if target[i] != 0 {
+			continue
+		}
+		nb := db.Book{
+			WorkID:     workID,
+			Path:       fmt.Sprintf("generated://transcript/work-%d/%s", workID, ed.base),
+			Filename:   ed.base + " (Transcript)",
+			Format:     "transcript",
+			MediaType:  "text",
+			Title:      ed.base + " (Transcript)",
+			Origin:     "whisper_transcript",
+			Visibility: "visible",
+		}
+		if err := store.UpsertBook(nb); err != nil {
+			return ed.path, fmt.Errorf("create transcript book for edition %s: %w", ed.base, err)
+		}
+		books, err := store.ListBooks()
+		if err != nil {
+			return ed.path, err
+		}
+		for _, bk := range books {
+			if bk.Path == nb.Path {
+				target[i], claimed[bk.ID] = bk.ID, true
+				break
+			}
+		}
+	}
+
+	for i, ed := range editions {
+		if err := importOneSidecarInto(store, w.ID, ed.audioID, ed.path, target[i]); err != nil {
+			return ed.path, err
+		}
+	}
+	return editions[0].path, nil
 }
 
 func ImportSidecars(store *db.Store, libraryRoot string) {
@@ -188,6 +286,12 @@ func fileExists(path string) bool {
 }
 
 func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) error {
+	return importOneSidecarInto(store, workID, audioBookID, path, 0)
+}
+
+// importOneSidecarInto pins the transcript book the text lands in (see
+// ensureTranscriptBook); textBookID 0 = the legacy per-work default.
+func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path string, textBookID int64) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read sidecar: %w", err)
@@ -322,7 +426,7 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 	// something to render — without this the sync_data is orphaned and the
 	// work shows up as audio-only with no karaoke surface. Mirrors the shape
 	// 438 Days has after the normal STT → transcript-split pipeline.
-	if err := ensureTranscriptBook(store, workID, audioBookID, &sc); err != nil {
+	if err := ensureTranscriptBook(store, workID, audioBookID, &sc, textBookID); err != nil {
 		log.Printf("sidecar-import: transcript book creation failed: %v", err)
 	}
 
@@ -365,43 +469,54 @@ func importOneSidecar(store *db.Store, workID, audioBookID int64, path string) e
 // ensureTranscriptBook creates a synthetic text book holding the sidecar's
 // transcript, split into chapters by the detected boundaries. Idempotent:
 // if a transcript book already exists for this work, it's updated in place.
-func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSidecar) error {
-	transcriptPath := fmt.Sprintf("generated://transcript/work-%d", workID)
-	title := fmt.Sprintf("Transcript (work %d)", workID)
-
-	// Find existing work to use its title if available.
-	if w, err := store.GetWork(workID); err == nil && w != nil {
-		title = w.Title + " (Transcript)"
-	}
-
-	b := db.Book{
-		WorkID:     workID,
-		Path:       transcriptPath,
-		Filename:   title,
-		Format:     "transcript",
-		MediaType:  "text",
-		Title:      title,
-		Origin:     "whisper_transcript",
-		Visibility: "visible",
-	}
-	if err := store.UpsertBook(b); err != nil {
-		return fmt.Errorf("upsert transcript book: %w", err)
-	}
-
-	// Look up the inserted book's ID.
-	books, err := store.ListBooks()
-	if err != nil {
-		return fmt.Errorf("list books: %w", err)
-	}
+// targetBookID > 0 pins the transcript book this sidecar's text lands in.
+// Zero keeps the legacy per-work default — correct for every single-edition
+// work, and the ONLY behavior before multi-edition imports existed. The pin
+// exists because a work can carry several audio editions, each owning its own
+// transcript book (Call of the Wild: LibriVox + TTS), and the per-work default
+// made a second edition's import OVERWRITE the first edition's text — the AI
+// decode landed in the LibriVox transcript book and served there.
+func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSidecar, targetBookID int64) error {
 	var textBookID int64
-	for _, bk := range books {
-		if bk.Path == transcriptPath {
-			textBookID = bk.ID
-			break
+	if targetBookID > 0 {
+		textBookID = targetBookID
+	} else {
+		transcriptPath := fmt.Sprintf("generated://transcript/work-%d", workID)
+		title := fmt.Sprintf("Transcript (work %d)", workID)
+
+		// Find existing work to use its title if available.
+		if w, err := store.GetWork(workID); err == nil && w != nil {
+			title = w.Title + " (Transcript)"
 		}
-	}
-	if textBookID == 0 {
-		return fmt.Errorf("transcript book not found after upsert")
+
+		b := db.Book{
+			WorkID:     workID,
+			Path:       transcriptPath,
+			Filename:   title,
+			Format:     "transcript",
+			MediaType:  "text",
+			Title:      title,
+			Origin:     "whisper_transcript",
+			Visibility: "visible",
+		}
+		if err := store.UpsertBook(b); err != nil {
+			return fmt.Errorf("upsert transcript book: %w", err)
+		}
+
+		// Look up the inserted book's ID.
+		books, err := store.ListBooks()
+		if err != nil {
+			return fmt.Errorf("list books: %w", err)
+		}
+		for _, bk := range books {
+			if bk.Path == transcriptPath {
+				textBookID = bk.ID
+				break
+			}
+		}
+		if textBookID == 0 {
+			return fmt.Errorf("transcript book not found after upsert")
+		}
 	}
 
 	// Wipe existing chapters + repopulate. Cheap enough for one-shot import.

@@ -1,7 +1,13 @@
 package library
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/pj/abookify/internal/db"
 )
 
 // detectChaptersFromPauses should flag the word immediately after any gap
@@ -120,8 +126,8 @@ func TestInferChapterTitle(t *testing.T) {
 	t.Run("phm style tight flow no subtitle", func(t *testing.T) {
 		ws := []sttWord{
 			{Start: 0.0, End: 0.36, Word: " Chapter"},
-			{Start: 0.36, End: 0.62, Word: " 1"},       // no period
-			{Start: 0.62, End: 1.90, Word: " What's"},  // zero-gap (per Whisper)
+			{Start: 0.36, End: 0.62, Word: " 1"},      // no period
+			{Start: 0.62, End: 1.90, Word: " What's"}, // zero-gap (per Whisper)
 		}
 		got := inferChapterTitle(ws, 0, 1)
 		want := "Chapter 1"
@@ -164,7 +170,7 @@ func TestInferChapterTitle(t *testing.T) {
 			{Start: 12519.24, End: 12520.28, Word: " The"},
 			{Start: 12520.28, End: 12520.68, Word: " Lost"},
 			{Start: 12520.68, End: 12521.12, Word: " Days"},
-			{Start: 12521.12, End: 12522.04, Word: " I"},      // drift!
+			{Start: 12521.12, End: 12522.04, Word: " I"}, // drift!
 			{Start: 12523.73, End: 12524.07, Word: " awaken"},
 		}
 		// Real silence runs 12521.58 → 12523.78; its start (12521.58)
@@ -187,7 +193,7 @@ func TestInferChapterTitle(t *testing.T) {
 	t.Run("norm ch3 tight number-to-title flow extracts via post-title pause", func(t *testing.T) {
 		ws := []sttWord{
 			{Start: 1537.96, End: 1538.52, Word: " Chapter"},
-			{Start: 1538.52, End: 1538.88, Word: " 3,"},  // 0s gap to title
+			{Start: 1538.52, End: 1538.88, Word: " 3,"}, // 0s gap to title
 			{Start: 1538.98, End: 1539.14, Word: " My"},
 			{Start: 1539.14, End: 1539.42, Word: " First"},
 			{Start: 1539.42, End: 1539.66, Word: " Five"},
@@ -208,8 +214,8 @@ func TestInferChapterTitle(t *testing.T) {
 	t.Run("wws style subtitle after announcement period", func(t *testing.T) {
 		ws := []sttWord{
 			{Start: 7757.2, End: 7757.9, Word: " Chapter"},
-			{Start: 7757.9, End: 7758.3, Word: " 4."},       // period — subtitle follows
-			{Start: 7758.9, End: 7759.6, Word: " Ape"},       // 0.6s gap
+			{Start: 7757.9, End: 7758.3, Word: " 4."},  // period — subtitle follows
+			{Start: 7758.9, End: 7759.6, Word: " Ape"}, // 0.6s gap
 			{Start: 7759.6, End: 7760.1, Word: " Beds,"},
 			{Start: 7760.2, End: 7760.9, Word: " Dinosaurs,"},
 			{Start: 7761.2, End: 7761.6, Word: " and"},
@@ -217,7 +223,7 @@ func TestInferChapterTitle(t *testing.T) {
 			{Start: 7762.0, End: 7762.2, Word: " with"},
 			{Start: 7762.2, End: 7762.5, Word: " Half"},
 			{Start: 7762.5, End: 7762.6, Word: " a"},
-			{Start: 7762.6, End: 7763.0, Word: " Brain."},  // period → cut here
+			{Start: 7762.6, End: 7763.0, Word: " Brain."}, // period → cut here
 			{Start: 7763.5, End: 7764.0, Word: " They"},
 		}
 		got := inferChapterTitle(ws, 0, 4)
@@ -234,11 +240,11 @@ func TestInferChapterTitle(t *testing.T) {
 	t.Run("norm ch23 short title with mid-pause cut", func(t *testing.T) {
 		ws := []sttWord{
 			{Start: 100.0, End: 100.4, Word: " Chapter"},
-			{Start: 100.4, End: 100.8, Word: " 23."},      // announcement period
-			{Start: 101.4, End: 101.7, Word: " Make"},     // 0.6s announcement pause
+			{Start: 100.4, End: 100.8, Word: " 23."},  // announcement period
+			{Start: 101.4, End: 101.7, Word: " Make"}, // 0.6s announcement pause
 			{Start: 101.7, End: 101.8, Word: " a"},
-			{Start: 101.8, End: 102.2, Word: " Wish"},     // no period
-			{Start: 102.9, End: 103.3, Word: " Atom"},     // 0.7s pause — body
+			{Start: 101.8, End: 102.2, Word: " Wish"}, // no period
+			{Start: 102.9, End: 103.3, Word: " Atom"}, // 0.7s pause — body
 			{Start: 103.3, End: 103.6, Word: " bombs"},
 		}
 		got := inferChapterTitle(ws, 0, 23)
@@ -258,10 +264,10 @@ func TestInferChapterTitle(t *testing.T) {
 		ws := []sttWord{
 			{Start: 100.0, End: 100.4, Word: " Chapter"},
 			{Start: 100.4, End: 100.8, Word: " 23."},
-			{Start: 101.4, End: 101.7, Word: " Make"},     // 0.6s announcement pause
+			{Start: 101.4, End: 101.7, Word: " Make"}, // 0.6s announcement pause
 			{Start: 101.7, End: 101.8, Word: " a"},
-			{Start: 101.8, End: 102.5, Word: " Wish"},     // word stretched — End=102.5
-			{Start: 102.5, End: 103.0, Word: " Atom"},     // Whisper says 0s gap…
+			{Start: 101.8, End: 102.5, Word: " Wish"}, // word stretched — End=102.5
+			{Start: 102.5, End: 103.0, Word: " Atom"}, // Whisper says 0s gap…
 			{Start: 103.0, End: 103.3, Word: " bombs"},
 		}
 		// …but ffmpeg silencedetect found a 0.7s real silence between
@@ -281,9 +287,9 @@ func TestInferChapterTitle(t *testing.T) {
 		ws := []sttWord{
 			{Start: 200.0, End: 200.4, Word: " Chapter"},
 			{Start: 200.4, End: 200.8, Word: " 24."},
-			{Start: 201.4, End: 201.9, Word: " Heading"},  // 0.6s announcement pause
-			{Start: 201.9, End: 202.3, Word: " North"},    // no period
-			{Start: 203.0, End: 203.3, Word: " This"},     // 0.7s pause — body
+			{Start: 201.4, End: 201.9, Word: " Heading"}, // 0.6s announcement pause
+			{Start: 201.9, End: 202.3, Word: " North"},   // no period
+			{Start: 203.0, End: 203.3, Word: " This"},    // 0.7s pause — body
 			{Start: 203.3, End: 203.6, Word: " is"},
 		}
 		got := inferChapterTitle(ws, 0, 24)
@@ -308,7 +314,7 @@ func TestInferChapterTitle(t *testing.T) {
 			{Start: 302.2, End: 302.3, Word: " to"},
 			{Start: 302.3, End: 302.7, Word: " Thirteen"},
 			{Start: 302.7, End: 303.0, Word: " Years"},
-			{Start: 303.0, End: 303.4, Word: " Old."},  // period
+			{Start: 303.0, End: 303.4, Word: " Old."}, // period
 			{Start: 304.1, End: 304.3, Word: " I"},
 			{Start: 304.3, End: 304.5, Word: " was"},
 		}
@@ -409,8 +415,8 @@ func TestSilenceBareNumberAnnouncement_173(t *testing.T) {
 	// "Two. [0.7s] My First Five Years [2.0s] It doesn't..." — narrator said
 	// "Two", but the silence path detects this as (say) the 5th chapter.
 	titleWords := []sttWord{
-		{Start: 100.0, End: 100.5, Word: " Two."},  // bare spoken number, no "Chapter"
-		{Start: 101.2, End: 101.5, Word: " My"},     // 0.7s announcement pause
+		{Start: 100.0, End: 100.5, Word: " Two."}, // bare spoken number, no "Chapter"
+		{Start: 101.2, End: 101.5, Word: " My"},   // 0.7s announcement pause
 		{Start: 101.5, End: 101.8, Word: " First"},
 		{Start: 101.8, End: 102.0, Word: " Five"},
 		{Start: 102.0, End: 102.4, Word: " Years"},
@@ -579,11 +585,13 @@ func TestBuildChapterContentV2_UsesSilences(t *testing.T) {
 // Regression: Norm Macdonald ch21 had paragraph-grade silences sitting
 // inside the chapter title region ("Chapter 21 [0.66s] The Lost Days I
 // [2.2s] awaken..."), producing reader text like
-//   Chapter 21 The
 //
-//   Lost Days I
+//	Chapter 21 The
 //
-//   awaken from my blackout...
+//	Lost Days I
+//
+//	awaken from my blackout...
+//
 // The punctuation gate on detectParagraphsFromSilences and
 // buildChapterContentByIdxWithSilences kills those breaks because "The"
 // and "I" don't end in .!? — the only break that survives is the real
@@ -651,5 +659,122 @@ func TestBuildChapterContentByIdx_InsertsParagraphBreaks(t *testing.T) {
 	want := "Hello world.\n\nNext sentence."
 	if content != want {
 		t.Errorf("want %q, got %q", want, content)
+	}
+}
+
+// A work with several audio editions has several sidecars. Importing only
+// AudioFiles[0]'s left Call of the Wild's repaired LibriVox decode on disk
+// while the database served the old one — invisible, because the freshness
+// check verifies alignment rows were rewritten, not that the text is current.
+func TestReimportWorkSidecarImportsEveryEdition(t *testing.T) {
+	store := testStoreForLib(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "audiobooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"reading", "tts"} {
+		if err := os.WriteFile(filepath.Join(root, "audiobooks", n+".mp3"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDriftSidecar(t, filepath.Join(root, "audiobooks", "reading.stt.json"), driftWords("alpha", 400))
+	writeDriftSidecar(t, filepath.Join(root, "audiobooks", "tts.stt.json"), driftWords("bravo", 400))
+
+	wid, err := store.CreateWork("Two editions", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/audiobooks/reading.mp3",
+		Filename: "reading.mp3", Format: "mp3", MediaType: "audio"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/audiobooks/tts.mp3",
+		Filename: "tts.mp3", Format: "mp3", MediaType: "audio"})
+
+	if _, err := ReimportWorkSidecar(store, root, wid); err != nil {
+		t.Fatalf("reimport: %v", err)
+	}
+
+	books, _ := store.ListBooks()
+	var all string
+	for _, b := range books {
+		if b.Format != "transcript" {
+			continue
+		}
+		chs, _ := store.ListChapters(b.ID)
+		for _, ch := range chs {
+			if full, _ := store.GetChapterContent(b.ID, ch.Index); full != nil {
+				all += full.Content + " "
+			}
+		}
+	}
+	for _, want := range []string{"alpha", "bravo"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("edition text %q missing from imported transcripts — only one edition's sidecar was imported", want)
+		}
+	}
+}
+
+// The Call of the Wild shape: a merged work whose second edition kept its
+// pre-merge transcript book ("<sidecar base> (Transcript)", foreign work path)
+// while the primary owns the per-work default book. Each edition must land in
+// ITS OWN existing book — the AI decode landing in the LibriVox book is the
+// production corruption this guards against — and no third book may appear.
+func TestReimportWorkSidecarRoutesEditionsToTheirOwnBooks(t *testing.T) {
+	store := testStoreForLib(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "audiobooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"call-of-the-wild", "call-of-the-wild-ai"} {
+		if err := os.WriteFile(filepath.Join(root, "audiobooks", n+".mp3"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDriftSidecar(t, filepath.Join(root, "audiobooks", "call-of-the-wild.stt.json"), driftWords("librivox", 400))
+	writeDriftSidecar(t, filepath.Join(root, "audiobooks", "call-of-the-wild-ai.stt.json"), driftWords("kokoro", 400))
+
+	wid, err := store.CreateWork("The call of the wild", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/audiobooks/call-of-the-wild.mp3",
+		Filename: "call-of-the-wild.mp3", Format: "mp3", MediaType: "audio"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/audiobooks/call-of-the-wild-ai.mp3",
+		Filename: "call-of-the-wild-ai.mp3", Format: "mp3", MediaType: "audio"})
+	// Pre-existing transcript books, exactly as the merge left them.
+	store.UpsertBook(db.Book{WorkID: wid, Path: fmt.Sprintf("generated://transcript/work-%d", wid),
+		Filename: "The call of the wild (Transcript)", Format: "transcript", MediaType: "text",
+		Origin: "whisper_transcript"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "generated://transcript/work-95",
+		Filename: "call-of-the-wild-ai (Transcript)", Format: "transcript", MediaType: "text",
+		Origin: "whisper_transcript"})
+
+	if _, err := ReimportWorkSidecar(store, root, wid); err != nil {
+		t.Fatalf("reimport: %v", err)
+	}
+
+	books, _ := store.ListBooks()
+	nTranscripts := 0
+	for _, b := range books {
+		if b.Format != "transcript" {
+			continue
+		}
+		nTranscripts++
+		var all string
+		chs, _ := store.ListChapters(b.ID)
+		for _, ch := range chs {
+			if full, _ := store.GetChapterContent(b.ID, ch.Index); full != nil {
+				all += full.Content
+			}
+		}
+		want, wrong := "librivox", "kokoro"
+		if b.Filename == "call-of-the-wild-ai (Transcript)" {
+			want, wrong = "kokoro", "librivox"
+		}
+		if !strings.Contains(all, want) || strings.Contains(all, wrong) {
+			t.Errorf("%s holds the wrong edition's text (want %s)", b.Filename, want)
+		}
+	}
+	if nTranscripts != 2 {
+		t.Errorf("transcript books = %d, want 2 (no duplicates created)", nTranscripts)
 	}
 }
