@@ -15,7 +15,7 @@ func PreprocessForTTS(title string, content string) string {
 
 	// Format the chapter title with a pause
 	title = strings.TrimSpace(title)
-	if title != "" && !isBoilerplateTitle(title) {
+	if title != "" && !isBoilerplateTitle(title) && !contentOpensWithTitle(content, title) {
 		// Normalize all-caps titles to title case for better pronunciation
 		if isAllCaps(title) {
 			title = toTitleCase(title)
@@ -183,4 +183,46 @@ func ensureTrailingPunctuation(line string) string {
 	// Don't add punctuation — TTS handles natural pauses.
 	// Just trim trailing whitespace.
 	return strings.TrimRight(line, " ")
+}
+
+// contentOpensWithTitle reports whether the body text already begins with the
+// chapter title's words. Gutenberg chapters usually embed their own heading,
+// and prepending the title again makes the narrator open with a stutter —
+// "Stave One. Stave One. Marley's Ghost. Marley was dead..." — which is the
+// first thing a listener hears.
+func contentOpensWithTitle(content, title string) bool {
+	tw := normalizedWords(title)
+	if len(tw) == 0 {
+		return false
+	}
+	cw := normalizedWords(content)
+	if len(cw) < len(tw) {
+		return false
+	}
+	for i := range tw {
+		if cw[i] != tw[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedWords(s string) []string {
+	var out []string
+	var cur strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			cur.WriteRune(r)
+		} else if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+		if len(out) >= 24 {
+			break
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
