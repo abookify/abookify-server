@@ -2687,7 +2687,10 @@
       const works = allWorks || [];
       await Promise.all(works.filter(w => w.has_audio).map(async (w) => {
         try {
-          const audioFiles = w.audio_files || [];
+          // ONE edition's files, so the "X of Y listened" total isn't the sum of
+          // two narrations flattened together (that made a multi-edition work read
+          // as half-finished when it wasn't).
+          const audioFiles = displayEditionBooks(w, 'audio');
           const total = audioFiles.reduce((s, f) => s + (f.duration_secs || 0), 0);
           if (total <= 0) return;
           const res = await fetch(`/api/works/${w.id}/position`);
@@ -5744,7 +5747,7 @@
       // Sync the reader pane: find the text chapter whose time range covers
       // absSecs and load it. Skip the recursive audio seek since we're
       // about to call playAudio ourselves.
-      const textFile = (work.text_files || [])[0];
+      const textFile = displayEditionBooks(work, 'text')[0];
       if (textFile) {
         const cached = chapterCache[textFile.id]?.chapters;
         if (cached && cached.length) {
@@ -5872,7 +5875,7 @@
       // supersedes the old chapter_links lookup which was broken for
       // multi-file audiobooks (linker assumed 1:1 text_chapter↔mp3_file).
       if (syncEnabled[workId] !== false && work) {
-        const textFile = (work.text_files || [])[0];
+        const textFile = displayEditionBooks(work, 'text')[0];
         if (textFile) {
           await loadChapterList(textFile.id, workId);
           const chs = chapterCache[textFile.id]?.chapters || [];
@@ -6233,7 +6236,7 @@
       syncReloadInFlight = true;
       try {
         const work = allWorks.find(w => w.id === currentWorkId);
-        const textFile = (work?.text_files || [])[0];
+        const textFile = work ? displayEditionBooks(work, 'text')[0] : null;
         if (textFile) {
           await loadChapterList(textFile.id, currentWorkId);
           const chs = chapterCache[textFile.id]?.chapters || [];
@@ -8563,7 +8566,7 @@
       if (!work) return;
       const cur = currentReaderChapter[workId];
       const bookId = (cur && cur.bookId) || work.display_text_id ||
-        ((work.text_files || [])[0] || {}).id || '';
+        ((displayEditionBooks(work, 'text')[0]) || {}).id || '';
       let url = `/api/works/${workId}/qa-suggestions?book_id=${bookId || ''}`;
       if (cur) url += `&chapter=${cur.index}`;
       // AI tool chips first (recap / this-chapter) — only when a chapter is
