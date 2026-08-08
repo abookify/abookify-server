@@ -2,6 +2,7 @@ package library
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 
 	"github.com/pj/abookify/internal/db"
@@ -92,6 +93,12 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		}
 	}
 	if best == nil {
+		// No alignment rows at all — the work may still be word-synced BY
+		// CONSTRUCTION through its own TTS edition (sync words == this ebook's
+		// words; no aligner ever ran because none was needed).
+		if wm, err := BuildTTSEditionWordSync(store, workID, bookID, chapterIdx); err == nil && len(wm) > 0 {
+			return &TextSync{Mode: "word", Method: "tts", Unit: "word", Confidence: 1}, nil
+		}
 		return &TextSync{Mode: "none"}, nil
 	}
 
@@ -464,7 +471,12 @@ func BuildDisplayWordSync(store *db.Store, workID, bookID int64, chapterIdx int)
 			return BuildTranscriptWordSync(store, workID, bookID, chapterIdx)
 		}
 	}
-	return BuildEbookWordSync(store, workID, bookID, chapterIdx)
+	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err != nil || len(wm) > 0 {
+		return wm, err
+	}
+	// No anchor-composed map — the TTS-by-construction path (see
+	// BuildTTSEditionWordSync).
+	return BuildTTSEditionWordSync(store, workID, bookID, chapterIdx)
 }
 
 func clamp01(f float64) float64 {
@@ -502,4 +514,108 @@ func interpFrac(anchors []fracAnchor, frac float64) float64 {
 		}
 	}
 	return last.sec
+}
+
+// BuildTTSEditionWordSync composes the per-word audio map for a displayed
+// ebook chapter narrated by the work's OWN TTS edition. A TTS edition needs no
+// alignment row: its sync words WERE mapped onto this ebook's chapter text at
+// generation (word-synced by construction), and its chapter files are named
+// chapter-%03d.mp3 by the ebook chapter index they narrate — definitional, not
+// heuristic. Without this, a TTS-only work (the clean Carol sample, Alice,
+// Jekyll...) showed "no audio sync" in the reader while carrying perfect
+// per-word timing, because mode resolution consulted only alignment rows.
+//
+// Times are shifted to the edition's continuous play-order timeline (the
+// player's clock), and the map is served only when the sync row's word count
+// EXACTLY matches the chapter's — the construction guarantee, verified rather
+// than assumed.
+func BuildTTSEditionWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
+	work, err := store.GetWork(workID)
+	if err != nil || work == nil {
+		return nil, err
+	}
+	for _, b := range work.TextFiles {
+		if b.ID == bookID && (b.Origin == "whisper_transcript" || b.Format == "transcript") {
+			return nil, nil // transcripts have their own path
+		}
+	}
+	type ttsFile struct {
+		book *db.Book
+		idx  int // ebook chapter index from the chapter-%03d filename
+	}
+	var files []ttsFile
+	for i := range work.AudioFiles {
+		b := &work.AudioFiles[i]
+		if b.Origin != "tts_kokoro" {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(b.Filename, "chapter-%d.", &n); err != nil {
+			continue
+		}
+		files = append(files, ttsFile{book: b, idx: n})
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].idx < files[j].idx })
+
+	var target *ttsFile
+	offset := 0.0 // continuous timeline position of the target file (play order)
+	for i := range files {
+		if files[i].idx == chapterIdx {
+			target = &files[i]
+			break
+		}
+		offset += files[i].book.Duration
+	}
+	if target == nil {
+		return nil, nil
+	}
+
+	var wc int
+	chapters, err := store.ListChapters(bookID)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, ch := range chapters {
+		if ch.Index == chapterIdx {
+			wc, found = ch.WordCount, true
+			break
+		}
+	}
+	if !found || wc == 0 {
+		return nil, nil
+	}
+
+	rows, err := store.ListSyncForWork(workID)
+	if err != nil {
+		return nil, err
+	}
+	var words []SyncWord
+	for _, r := range rows {
+		if r.AudioBookID != target.book.ID {
+			continue
+		}
+		var ws []SyncWord
+		if json.Unmarshal([]byte(r.Timestamps), &ws) != nil {
+			continue
+		}
+		if len(ws) > len(words) {
+			words = ws
+		}
+	}
+	// The construction guarantee, checked: every displayed word has a
+	// timestamp because the audio was generated from these exact words. A
+	// mismatch means this sync was NOT built from this text — serve nothing
+	// rather than a map that drifts.
+	if len(words) != wc {
+		return nil, nil
+	}
+	out := make([]SyncWord, len(words))
+	for i, w := range words {
+		out[i] = SyncWord{W: w.W, S: w.S + offset, E: w.E + offset}
+	}
+	return out, nil
 }
