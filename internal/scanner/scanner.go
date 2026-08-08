@@ -67,6 +67,16 @@ func scan(root string, known map[string]int64) ([]db.Book, error) {
 			if d.Name() == "tts-previews" {
 				return filepath.SkipDir
 			}
+			// Imported .abook containers extract under <library>/abooks/. Those
+			// files are OWNED BY THE IMPORT — it already registered their book
+			// rows with the carved metadata (filename, origin, edition). Scanning
+			// them re-ingested the same paths with scanner defaults, which
+			// upsert-clobbered the imported rows: a Kokoro edition came back
+			// origin=narrator_recording under asset filenames, and the bundled
+			// original epub was ingested a second time as a fresh book.
+			if d.Name() == "abooks" && filepath.Dir(path) == root {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

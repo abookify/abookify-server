@@ -44,6 +44,25 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	// A --data-dir FLAG must re-seed every per-path default that wasn't
+	// explicitly overridden (flag or env). The pre-parse env resolution above
+	// cannot see the flag's value, so without this a `--data-dir X` run put
+	// models under X while the db/library/generated silently landed in the
+	// DEFAULT root — two half-installs, found by running a sandbox server.
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if *dataDir != root {
+		if !explicit["library"] && os.Getenv("ABOOKIFY_LIBRARY_PATH") == "" {
+			*libraryPath = filepath.Join(*dataDir, "library")
+		}
+		if !explicit["db"] && os.Getenv("ABOOKIFY_DB_PATH") == "" {
+			*dbPath = filepath.Join(*dataDir, "abookify.db")
+		}
+		if !explicit["generated"] && os.Getenv("ABOOKIFY_GENERATED_PATH") == "" {
+			*generatedPath = filepath.Join(*dataDir, "generated")
+		}
+	}
+
 	if *showVersion {
 		fmt.Println(version)
 		return

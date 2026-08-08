@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -174,5 +175,35 @@ func TestScan_DelegatesToScanIncremental_NilKnown(t *testing.T) {
 	}
 	if len(a) != len(b) {
 		t.Fatalf("Scan and ScanIncremental(nil) disagree on count: %d vs %d", len(a), len(b))
+	}
+}
+
+// Files under <library>/abooks/ are extracted .abook containers owned by the
+// import (which registered their rows with carved metadata). Scanning them
+// re-ingested the same paths with scanner defaults and upsert-clobbered the
+// imported rows (a Kokoro edition came back origin=narrator_recording).
+func TestScanSkipsImportedAbookDir(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "abooks", "A Christmas Carol", "audio")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "book-1.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "normal.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	books, err := ScanIncremental(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range books {
+		if strings.Contains(b.Path, "abooks") {
+			t.Errorf("scanner ingested import-owned file: %s", b.Path)
+		}
+	}
+	if len(books) != 1 {
+		t.Errorf("books = %d, want 1 (normal.mp3 only)", len(books))
 	}
 }
