@@ -23,16 +23,46 @@ func NewSessionToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// CreateAuthSession stores a token for a user with the given TTL.
-// Pass DefaultSessionTTL for the standard 30-day window. userID scopes the
-// session to a reader (multi-user); username is kept for display/back-compat.
+// maxSessionsPerUser caps how many live tokens one reader accumulates. Something
+// that re-authenticates on a cadence (a monitor/health check that logs in fresh
+// instead of reusing its token) would otherwise mint 30-day tokens forever — 460
+// of them were found in the wild. Each CreateAuthSession trims the user back to
+// the most-recent N, so accumulation is bounded regardless of the client.
+const maxSessionsPerUser = 25
+
+// CreateAuthSession stores a token for a user with the given TTL, then trims that
+// user's sessions to the most recent maxSessionsPerUser. Pass DefaultSessionTTL
+// for the standard 30-day window. userID scopes the session to a reader
+// (multi-user); username is kept for display/back-compat.
 func (s *Store) CreateAuthSession(token string, userID int64, username string, ttl time.Duration) error {
 	expires := time.Now().Add(ttl).UTC()
-	_, err := s.db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT OR REPLACE INTO auth_sessions (token, user_id, username, expires_at) VALUES (?, ?, ?, ?)`,
 		token, userID, username, expires,
-	)
+	); err != nil {
+		return err
+	}
+	// Cap this user's live tokens (bounds the re-auth-every-N-minutes accumulation).
+	s.db.Exec(`DELETE FROM auth_sessions WHERE user_id = ? AND token NOT IN (
+		SELECT token FROM auth_sessions WHERE user_id = ? ORDER BY expires_at DESC LIMIT ?)`,
+		userID, userID, maxSessionsPerUser)
+	return nil
+}
+
+// DeleteAllAuthSessions revokes EVERY session — used when the password changes,
+// so a changed password actually signs everyone out (a session that outlives the
+// password it was minted under defeats the point of changing it). The person who
+// changed it re-signs-in with the new password.
+func (s *Store) DeleteAllAuthSessions() error {
+	_, err := s.db.Exec(`DELETE FROM auth_sessions`)
 	return err
+}
+
+// CountAuthSessions returns how many session rows exist (for health reporting).
+func (s *Store) CountAuthSessions() int {
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&n)
+	return n
 }
 
 // ValidateAuthSession returns the user_id + username for a non-expired token.

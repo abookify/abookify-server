@@ -3221,6 +3221,15 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 				writeServerError(w, r, err)
 				return
 			}
+			// A changed password must revoke every existing session — otherwise a
+			// token minted under the OLD password stays valid for 30 days and the
+			// change protects nothing (PJ was still signed in on a password he never
+			// typed). The caller re-signs-in with the new password.
+			if err := s.store.DeleteAllAuthSessions(); err != nil {
+				applog.Warnf("system", "revoke sessions on password change: %v", err)
+			} else {
+				applog.Infof("system", "password changed — all sessions revoked")
+			}
 		}
 	}
 	// Reserved keys have dedicated mutation paths and must NEVER be written

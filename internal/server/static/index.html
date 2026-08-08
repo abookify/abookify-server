@@ -8347,19 +8347,21 @@
     async function enforceAuthGate() {
       const gate = document.getElementById('login-gate');
       if (!gate) return;
+      let st;
       try {
         const res = await fetch('/api/auth/status');
-        const st = res.ok ? await res.json() : { auth_enabled: false, authenticated: true };
-        if (st.auth_enabled && !st.authenticated) {
-          gate.style.display = 'flex';
-          document.getElementById('login-username')?.focus();
-        } else {
-          gate.style.display = 'none';
-        }
+        if (!res.ok) return; // can't confirm — leave the gate AS-IS, never force it away
+        st = await res.json();
       } catch {
-        // If status itself is unreachable, leave the gate hidden — the
-        // user will see normal connection errors rather than a login
-        // form they can't submit.
+        // Status unreachable — do NOT hide the gate. The way back in is the last
+        // thing we ever hide; if a library call already showed sign-in (a 401),
+        // it must stay. Only a CONFIRMED "authenticated" or "auth off" hides it.
+        return;
+      }
+      if (st.auth_enabled && !st.authenticated) {
+        gate.style.display = 'flex';
+        document.getElementById('login-username')?.focus();
+      } else if (st.authenticated || !st.auth_enabled) {
         gate.style.display = 'none';
       }
     }
