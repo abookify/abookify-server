@@ -3043,6 +3043,42 @@
       return order.map(k => byKey[k]);
     }
 
+    // A work can hold several editions of one medium — two narrations (LibriVox +
+    // our Kokoro), or an EPUB + a transcript. Flattening them into one list is the
+    // mess PJ hit on Carol: no chapter list, nothing plays. displayEditionBooks
+    // resolves the SINGLE edition to show/play: the user's pinned edition if set,
+    // else the most complete group (tie-broken by source authority). The rest stay
+    // reachable via the edition switcher. Rendering + playback both route through
+    // this so they never disagree about which narration is playing.
+    function editionAuthority(b) {
+      return ({ author_recording: 6, narrator_recording: 5, publisher_epub: 5, publisher_mobi: 4, librivox: 4, whisper_transcript: 2, tts_kokoro: 3 }[b.origin] ?? 1);
+    }
+    function displayEditionBooks(work, media) {
+      const src = (media === 'audio' ? (work.audio_files || []) : (work.text_files || []))
+        .filter(b => b.visibility !== 'internal');
+      if (src.length <= 1) return src;
+      // Group by ORIGIN (coarser than editionKeyOf) so an edition whose files were
+      // labeled inconsistently — work 85's Kokoro, some tagged "Kokoro · Fable",
+      // some blank — still resolves to ONE narration instead of fragmenting. The
+      // two real editions (6 Kokoro, 5 LibriVox) come out clean.
+      const byKey = {};
+      for (const b of src) {
+        const k = b.origin || editionKeyOf(b);
+        (byKey[k] = byKey[k] || []).push(b);
+      }
+      const groups = Object.values(byKey).map(g =>
+        g.slice().sort((a, b) => (a.start_sec || 0) - (b.start_sec || 0) || a.id - b.id));
+      const pinId = media === 'audio' ? work.display_audio_book_id : work.display_text_book_id;
+      if (pinId) {
+        const pinned = groups.find(g => g.some(b => b.id === pinId));
+        if (pinned) return pinned;
+      }
+      // Most complete edition; ties → highest source authority.
+      return groups.slice().sort((a, b) =>
+        (b.length - a.length) ||
+        (Math.max(...b.map(editionAuthority)) - Math.max(...a.map(editionAuthority))))[0];
+    }
+
     // List the work's audio + text sources GROUPED by edition, each with a
     // rename + remove action (dedupe / curate). The last remaining edition can't
     // be removed.
@@ -3731,7 +3767,10 @@
         }
         audioChapterCache[file.id] = chapters;
       }
-      const files = work.audio_files || [];
+      // ONE edition's files — this async render is the list PJ actually sees and
+      // clicks, so it must match the filtered set (not all narrations flattened),
+      // or play resolves into the wrong file on the concatenated timeline.
+      const files = displayEditionBooks(work, 'audio');
       const workTitle = escapeJs(work.title);
 
       // No detected chapters: fall back to the raw file list (still useful
@@ -3763,7 +3802,7 @@
       // chapters. Showing both is redundant. Collapse the audio pane's
       // list to a compact summary and let the ebook pane be the single
       // authoritative TOC. Clicks in the ebook pane already seek audio.
-      const textFile = (work.text_files || [])[0];
+      const textFile = displayEditionBooks(work, 'text')[0];
       // Ensure text chapters are loaded so we can decide on sync state.
       if (textFile && !chapterCache[textFile.id]?.chapters) {
         await loadChapterList(textFile.id, work.id);
@@ -4912,8 +4951,11 @@
       const work = (allWorks || []).find(w => w.id === workId);
       if (!work) return;
       currentDetailWorkId = workId;
-      const audioFiles = work.audio_files || [];
-      const textFiles = work.text_files || [];
+      // Show ONE coherent edition per medium, not every narration/text flattened
+      // (that left Carol with no chapter list and nothing playable). The switcher
+      // reaches the others.
+      const audioFiles = displayEditionBooks(work, 'audio');
+      const textFiles = displayEditionBooks(work, 'text');
       const detail = document.getElementById('work-detail');
       detail.innerHTML = `
         <div class="detail-topbar">
@@ -5683,7 +5725,7 @@
     // time range contains absSecs, so clicking a chapter from the audio side
     // also updates the text side (and vice versa).
     async function seekToAbsoluteBookTime(work, absSecs, title) {
-      const files = work.audio_files || [];
+      const files = displayEditionBooks(work, 'audio');
       if (files.length === 0) return;
 
       // Find the right file + local offset.
@@ -5789,7 +5831,9 @@
 
       // Cache the audio files list for auto-advance
       const work = allWorks.find(w => w.id === workId);
-      currentAudioFiles = work ? (work.audio_files || []) : [];
+      // Playback rides the SAME single edition the detail view renders, so the
+      // concatenated-timeline seek can never resolve into the wrong narration.
+      currentAudioFiles = work ? displayEditionBooks(work, 'audio') : [];
 
       // For multi-file audiobooks with whole-book sync (sidecar-imported),
       // the sync timeline is absolute across ALL files concatenated. The
