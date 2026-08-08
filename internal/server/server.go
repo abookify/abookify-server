@@ -2527,10 +2527,33 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	// no bundled audio) — shareable/inspectable, audio streams from the
 	// server. Default bundles audio for a self-contained offline copy.
 	includeAudio := r.URL.Query().Get("audio") != "0"
+	// ?books=1,2,3 restricts the container to those books (one narration +
+	// one text for a distributable sample) — every id must belong to this
+	// work. Alignments/sync/links referencing excluded books are dropped.
+	var onlyBooks map[int64]bool
+	if raw := strings.TrimSpace(r.URL.Query().Get("books")); raw != "" {
+		valid := map[int64]bool{}
+		for _, b := range work.AudioFiles {
+			valid[b.ID] = true
+		}
+		for _, b := range work.TextFiles {
+			valid[b.ID] = true
+		}
+		onlyBooks = map[int64]bool{}
+		for _, part := range strings.Split(raw, ",") {
+			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+			if err != nil || !valid[id] {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": fmt.Sprintf("books: %q is not a book of work %d", part, workID)})
+				return
+			}
+			onlyBooks[id] = true
+		}
+	}
 	// Carry chunk embeddings so a downloaded .abook can do on-device cosine
 	// retrieval offline (mobile semantic Q&A). Backward-compatible — older
 	// clients ignore the column. See the size note in ExportOptions.
-	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true}); err != nil {
+	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true, OnlyBookIDs: onlyBooks}); err != nil {
 		writeServerError(w, r, err)
 		return
 	}

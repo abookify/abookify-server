@@ -2,6 +2,7 @@ package abook
 
 import (
 	"archive/zip"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -382,4 +383,82 @@ func itoa(n int64) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// A work in a personal library accumulates narrations and transcripts; a
+// DISTRIBUTED .abook must not. Work 85 carved whole dragged five LibriVox
+// recordings and a transcript alongside the Kokoro edition — PJ's "AI slop".
+// OnlyBookIDs must carve exactly the selected books, and every alignment,
+// sync row and chapter link referencing an excluded book must be dropped
+// rather than left dangling.
+func TestExportV2_OnlyBookIDs(t *testing.T) {
+	dir := t.TempDir()
+	store, work := seedWork(t, dir)
+	defer store.Close()
+
+	// Second narration + a transcript, to be EXCLUDED.
+	extraAudio := filepath.Join(dir, "librivox01.mp3")
+	if err := os.WriteFile(extraAudio, []byte("ID3 other narration"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store.UpsertBook(db.Book{WorkID: work.ID, Path: extraAudio, Filename: "librivox01.mp3",
+		Format: "mp3", MediaType: "audio", Title: "LV 1", Origin: "narrator_recording"})
+	store.UpsertBook(db.Book{WorkID: work.ID, Path: "generated://transcript/work-x",
+		Filename: "T", Format: "transcript", MediaType: "text", Origin: "whisper_transcript"})
+	lvID := bookID(t, store, extraAudio)
+	trID := bookID(t, store, "generated://transcript/work-x")
+	store.SaveSyncData(work.ID, lvID, 0, `[[0.0,0.5,"other"]]`)
+	store.SaveAlignment(db.Alignment{WorkID: work.ID, FromBookID: trID, ToBookID: lvID,
+		Unit: "word", Method: "anchor", Pairs: "[]"})
+
+	keepAudio := work.AudioFiles[0].ID
+	keepText := work.TextFiles[0].ID
+	work, _ = store.GetWork(work.ID) // reload with the extra books
+
+	out := filepath.Join(dir, "clean.abook")
+	if err := ExportV2(store, work, out, dir, ExportOptions{
+		IncludeAudio: true,
+		OnlyBookIDs:  map[int64]bool{keepAudio: true, keepText: true},
+	}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	// Unzip book.db and inspect.
+	zr, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "audio/") && strings.Contains(f.Name, "librivox") {
+			t.Errorf("excluded narration bundled: %s", f.Name)
+		}
+	}
+	raw, err := readFromZip(&zr.Reader, "book.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "carved.db")
+	if err := os.WriteFile(dbPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	carved, err := sql.Open("sqlite", dbPath+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open carved: %v", err)
+	}
+	defer carved.Close()
+	var n int
+	carved.QueryRow("select count(*) from books").Scan(&n)
+	if n != 2 {
+		t.Errorf("carved books = %d, want 2 (one narration, one text)", n)
+	}
+	carved.QueryRow("select count(*) from sync where audio_book_id != ?", keepAudio).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d sync row(s) reference excluded books", n)
+	}
+	carved.QueryRow("select count(*) from alignments where from_book_id not in (?,?) or to_book_id not in (?,?)",
+		keepAudio, keepText, keepAudio, keepText).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d alignment row(s) reference excluded books", n)
+	}
 }

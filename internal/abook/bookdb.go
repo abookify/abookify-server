@@ -330,6 +330,14 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 
 	// books + their chapters/paragraphs/chunks
 	allBooks := append(append([]db.Book{}, work.AudioFiles...), work.TextFiles...)
+	// Rows referencing books outside this container (an excluded edition, a
+	// deleted book) are dropped rather than carved dangling — an importer
+	// resolving a sync row or alignment against a book that is not in the
+	// container is exactly the confusion a distributed sample must not carry.
+	included := make(map[int64]bool, len(allBooks))
+	for _, bk := range allBooks {
+		included[bk.ID] = true
+	}
 	for _, bk := range allBooks {
 		chCount, _ := store.ChapterCount(bk.ID)
 		var assetPath any
@@ -409,6 +417,9 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 		return fmt.Errorf("chapter links: %w", err)
 	}
 	for _, l := range links {
+		if !included[l.AudioBookID] || !included[l.TextBookID] {
+			continue
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO chapter_links(work_id, audio_book_id, audio_index, text_book_id, text_index, confidence)
 			VALUES(?, ?, ?, ?, ?, ?)`,
@@ -424,6 +435,9 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 		return fmt.Errorf("alignments: %w", err)
 	}
 	for _, a := range aligns {
+		if !included[a.FromBookID] || !included[a.ToBookID] {
+			continue
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO alignments(id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs)
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -439,6 +453,9 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 		return fmt.Errorf("sync rows: %w", err)
 	}
 	for _, sr := range syncRows {
+		if !included[sr.AudioBookID] {
+			continue
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO sync(id, work_id, audio_book_id, chapter_idx, timestamps)
 			VALUES(?, ?, ?, ?, ?)`,

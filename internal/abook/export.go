@@ -29,6 +29,14 @@ type ExportOptions struct {
 	// IncludeEmbeddings carries chunk embedding blobs in book.db (larger file,
 	// enables future on-device vector search). Omitted by default.
 	IncludeEmbeddings bool
+	// OnlyBookIDs restricts the container to these books (nil/empty = whole
+	// work). A work in a personal library legitimately accumulates several
+	// narrations, transcripts and editions — a DISTRIBUTED .abook must not:
+	// the clean-Carol requirement is exactly one narration and one text, and
+	// carving the whole of work 85 dragged five LibriVox recordings and a
+	// transcript along. Alignments, sync rows and chapter links referencing
+	// excluded books are dropped with them, never left dangling.
+	OnlyBookIDs map[int64]bool
 }
 
 // isOriginalEbookFormat reports whether a text book is an ORIGINAL user-supplied
@@ -58,6 +66,9 @@ func ExportWithDirs(store *db.Store, work *db.Work, outputPath, libraryDir strin
 // ExportV2 writes a v2 .abook container: manifest.json + a per-work book.db
 // carved from the monolith + cover, plus bundled audio when opts.IncludeAudio.
 func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opts ExportOptions) error {
+	if len(opts.OnlyBookIDs) > 0 {
+		work = filterWorkBooks(work, opts.OnlyBookIDs)
+	}
 	sum := SummarizeWork(store, work)
 
 	// Map audio books that have a real on-disk file to an in-zip asset path.
@@ -246,4 +257,33 @@ func copyFileToZip(w *zip.Writer, name string, srcPath string) error {
 	}
 	_, err = io.Copy(f, src)
 	return err
+}
+
+// filterWorkBooks returns a shallow copy of the work holding only the selected
+// books, with the derived fields (HasAudio/HasText/DisplayTextBookID) made
+// consistent with the reduced set.
+func filterWorkBooks(work *db.Work, only map[int64]bool) *db.Work {
+	w := *work
+	w.AudioFiles = nil
+	w.TextFiles = nil
+	for _, b := range work.AudioFiles {
+		if only[b.ID] {
+			w.AudioFiles = append(w.AudioFiles, b)
+		}
+	}
+	for _, b := range work.TextFiles {
+		if only[b.ID] {
+			w.TextFiles = append(w.TextFiles, b)
+		}
+	}
+	w.HasAudio = len(w.AudioFiles) > 0
+	w.HasText = len(w.TextFiles) > 0
+	if !only[w.DisplayTextBookID] {
+		w.DisplayTextBookID = 0
+		for _, b := range w.TextFiles {
+			w.DisplayTextBookID = b.ID
+			break
+		}
+	}
+	return &w
 }
