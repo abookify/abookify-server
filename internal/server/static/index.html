@@ -529,6 +529,7 @@
     .abs-pill.good { background: rgba(52,211,153,0.14); border-color: var(--success); color: var(--success); }
     .abs-pill.warn { background: rgba(245,158,11,0.14); border-color: var(--ebook-only); color: var(--ebook-only); }
     .abs-pill.bad  { background: rgba(233,69,96,0.12); border-color: var(--danger); color: var(--danger); }
+    .abs-pill.unknown { background: var(--surface-2); border-color: var(--border); color: var(--text-muted); }
     .abs-quality { font-size: 0.88rem; font-weight: 600; color: var(--text); }
 
     .abs-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
@@ -4868,9 +4869,19 @@
       return { a: aOut.join(' '), b: bOut.join(' ') };
     }
 
+    // Render a 0..1 ratio as a percent, or null when it is genuinely UNKNOWN
+    // (null/undefined/NaN) — so "not measured" is structurally distinct from 0%
+    // and a caller can never coerce unknown into a confident score via `|| 0`.
+    function knownPct(ratio) {
+      if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return null;
+      return Math.round(ratio * 100);
+    }
+
     function renderMeld(workId, d, showAll) {
-      const cov = Math.round((d.coverage || 0) * 100);
-      const covClass = d.coverage >= 0.9 ? 'good' : (d.coverage >= 0.3 ? 'warn' : 'bad');
+      // A missing coverage is UNKNOWN, not 0% — never render "we didn't measure
+      // this" as a confident (bad) score (the nil-able-coverage rule).
+      const cov = knownPct(d.coverage);
+      const covClass = cov === null ? 'unknown' : (d.coverage >= 0.9 ? 'good' : (d.coverage >= 0.3 ? 'warn' : 'bad'));
       const aLabel = escapeHtml(d.source_a?.label || 'Ebook');
       const bLabel = escapeHtml(d.source_b?.label || 'Transcript');
 
@@ -4928,7 +4939,9 @@
       // (falls back to the legacy single scope number if an old payload lacks it).
       const dirReadout = d.directional
         ? directionalReadoutHtml(d.directional)
-        : `<span class="abs-pill ${covClass}">${cov}% aligned</span>`;
+        : (cov === null
+          ? `<span class="abs-pill unknown">coverage not measured</span>`
+          : `<span class="abs-pill ${covClass}">${cov}% aligned</span>`);
       return `
         <div class="meld-head">
           <button class="meld-open-btn" onclick="openAbookSummary(${workId})">&larr; Back</button>
