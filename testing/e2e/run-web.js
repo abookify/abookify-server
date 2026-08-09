@@ -359,6 +359,52 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     report('surface_consistency', false, 'error: ' + e.message.slice(0, 120));
   }
 
+  // ---- narration_binding (multi-edition fix, authorized 2026-08-09): the word map
+  // the reader follows must be timed to the NARRATION ACTUALLY PLAYING. A work with
+  // both a TTS edition (word-perfect by construction) AND a human recording
+  // (anchor-aligned, timed to its OWN pacing) carries two distinct timelines for the
+  // same EPUB. Returning the anchor map while the TTS narration plays is the desync
+  // PJ saw: right chapter, wrong sentence. The endpoint takes ?audio={audioBookId};
+  // this asserts the two narrations yield DISTINCT maps (server bound them). n/a for
+  // single-narration works. RED when identical = ?audio ignored (pre-fix), so
+  // playing the TTS narration would show the human narration's times.
+  try {
+    const nb = await page.evaluate(async (wid) => {
+      const w = (allWorks || []).find(x => x.id === Number(wid));
+      const audio = (w.audio_files || []);
+      const tts = audio.find(b => b.origin === 'tts_kokoro');
+      const human = audio.find(b => b.origin === 'narrator_recording' || b.origin === 'author_recording' || b.origin === 'librivox');
+      const epub = (typeof displayEditionBooks === 'function')
+        ? displayEditionBooks(w, 'text').find(b => b.format === 'epub')
+        : (w.text_files || []).find(b => b.format === 'epub');
+      if (!tts || !human || !epub) return { na: true, why: `single-narration (tts=${!!tts} human=${!!human} epub=${!!epub})` };
+      const chs = await fetch(`/api/books/${epub.id}/chapters`).then(r => r.json()).catch(() => []);
+      const list = Array.isArray(chs) ? chs : [];
+      const ch = list.filter(c => (c.word_count || 0) > 200).sort((a, b) => (b.word_count || 0) - (a.word_count || 0))[0]
+        || list[Math.floor(list.length / 2)];
+      if (!ch) return { na: true, why: 'no substantial epub chapter' };
+      const ext = async (aud) => {
+        const m = await fetch(`/api/works/${w.id}/word-sync/${epub.id}/${ch.index}?audio=${aud}`).then(r => r.json()).catch(() => []);
+        return (Array.isArray(m) && m.length) ? { n: m.length, first: m[0].s, last: m[m.length - 1].s } : null;
+      };
+      return { na: false, chIndex: ch.index, ttsMap: await ext(tts.id), humanMap: await ext(human.id) };
+    }, WORK);
+    if (nb.na) {
+      report('narration_binding', true, `n/a: ${nb.why} — nothing to bind`);
+    } else if (!nb.ttsMap || !nb.humanMap) {
+      report('narration_binding', false, `a narration returned NO map (tts=${!!nb.ttsMap} human=${!!nb.humanMap}) — binding/alignment gap`);
+    } else {
+      // Distinct timelines per narration => the server honoured ?audio. Identical =>
+      // it ignored ?audio and served the same (anchor) map for both = the desync.
+      const distinct = Math.abs(nb.ttsMap.first - nb.humanMap.first) > 2 || Math.abs(nb.ttsMap.last - nb.humanMap.last) > 5;
+      report('narration_binding', distinct,
+        `ch${nb.chIndex}: TTS map [${nb.ttsMap.first.toFixed(0)}..${nb.ttsMap.last.toFixed(0)}s] vs human [${nb.humanMap.first.toFixed(0)}..${nb.humanMap.last.toFixed(0)}s] — ` +
+        (distinct ? 'BOUND (distinct per narration)' : 'NOT BOUND (identical → ?audio ignored; playing TTS would show human times)'));
+    }
+  } catch (e) {
+    report('narration_binding', false, 'error: ' + e.message.slice(0, 120));
+  }
+
   await browser.close();
   process.exit(finish());
 })().catch(e => { console.error('FATAL', e); process.exit(2); });
