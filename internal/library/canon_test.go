@@ -69,3 +69,28 @@ func TestWorkCanonCleanWork(t *testing.T) {
 		t.Errorf("active audio=%d textCh=%d texts=%d, want 3/1/1", c.Active.AudioFiles, c.Active.TextChapters, c.TotalTexts)
 	}
 }
+
+// When a human recording and one of ours coexist, the HUMAN one is the
+// canonical default (META 2026-08-09, PJ's philosophy: their property beats
+// our product on the most visible surface). Ours wins only when it is the
+// only narration.
+func TestWorkCanonHumanNarrationDefaults(t *testing.T) {
+	store := testStoreForLib(t)
+	wid, _ := store.CreateWork("Both", "")
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/library/audiobooks/human/01.mp3",
+		Filename: "01.mp3", Format: "mp3", MediaType: "audio", Origin: "narrator_recording", Duration: 100})
+	for i := 0; i < 3; i++ {
+		store.UpsertBook(db.Book{WorkID: wid,
+			Path:     "/generated/tts-book-2/chapter-00" + string(rune('0'+i)) + ".mp3",
+			Filename: "chapter-00" + string(rune('0'+i)) + ".mp3",
+			Format:   "mp3", MediaType: "audio", Origin: "tts_kokoro",
+			Album: "bm_fable", Edition: "Kokoro · Fable", Duration: 500})
+	}
+	c, err := BuildWorkCanon(store, wid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Active.AudioFiles != 1 {
+		t.Errorf("active edition has %d files — the (shorter) HUMAN narration must win the default, not our (longer) TTS", c.Active.AudioFiles)
+	}
+}
