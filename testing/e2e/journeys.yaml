@@ -1,0 +1,40 @@
+# E2E journey vocabulary — ONE definition, three surfaces (web/mobile/api).
+# Each surface implements these journey ids; a surface skips a journey only
+# with an explicit "skipped:" line in its report, never silently.
+#
+# The bar (set 2026-08-09 after PJ found five broken things in a minute):
+# every journey FAILS LOUDLY, and karaoke_advances must catch all five known
+# broken states — frozen highlight, wrong chapter shown, near-empty render,
+# wrong sentence, frozen live-clock. See run-web.js assertions A1-A5.
+journeys:
+  - id: open_library
+    assert: page loads; >=1 work card; console errors below threshold
+  - id: open_book
+    assert: work page renders; audio + text badges present
+  - id: play_and_hear
+    assert: after pressing play, the player clock ADVANCES (~wall clock)
+  - id: karaoke_advances        # THE assertion — see run-web.js
+    assert: >
+      A1 displayed chapter renders >=50 sync words; A2 a reading window
+      exists while playing; A3 the active word INDEX advances over 10s;
+      A4 the active word's map time matches the player clock within 2.5s;
+      A5 the UI clock advances with wall time.
+  - id: change_chapter
+    assert: selecting another chapter changes the reader content
+  - id: switch_source
+    assert: each text source renders >=50 words for a mid-book chapter
+  - id: export_import_populated
+    assert: export a work; import it into a POPULATED server; the imported
+      work plays and karaoke_advances passes on it
+  - id: download_offline_play    # mobile surface
+    assert: download completes; playback + karaoke work offline
+  - id: signout_signin
+    assert: session ends and resumes; library still renders
+fixtures:
+  server: fresh --data-dir instance per run (testing/e2e/fixture-server.sh)
+  library:
+    - clean Carol .abook (single narration + single text; word map by construction)
+    - LibriVox Carol .abook (human narration + transcript + epub)
+    - MERGED messy work (both of the above merged) — the shape PJ's library
+      is full of and where this week's bugs lived; the suite MUST pass here,
+      not only on the pristine fixture
