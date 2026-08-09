@@ -2458,7 +2458,11 @@
       if (!url) return;
       btn.disabled = true;
       const original = btn.textContent;
-      btn.textContent = 'Adding… downloading';
+      // Honest about the wait: a sample is tens of MB over the server's
+      // connection, so it's not instant. And it's leave-safe — the server keeps
+      // downloading + importing even if this tab is closed (verified), so say so
+      // instead of implying they must wait here.
+      btn.textContent = 'Adding… (downloading — you can leave; it keeps going)';
       try {
         const res = await fetch('/api/import?on_conflict=skip&url=' + encodeURIComponent(url), { method: 'POST' });
         const data = await res.json().catch(() => ({}));
