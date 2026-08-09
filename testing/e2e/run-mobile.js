@@ -128,6 +128,18 @@ function tapText(xml, sub) {
   return true;
 }
 
+// Open the Now-Playing karaoke screen by tapping the mini-player body. The
+// mini-player is the BOTTOM-MOST node whose text carries the work title (the
+// work-screen title is higher up); tapping it navigates to Now-Playing where
+// the E2E probe renders. Returns true if a mini-player was found + tapped.
+function openNowPlaying() {
+  const cands = nodes(dump()).filter((n) => (n.text || '').includes(WORK_SUB));
+  if (!cands.length) return false;
+  const mp = cands.reduce((a, b) => (b.cy > a.cy ? b : a)); // bottom-most
+  tap(mp.cx, mp.cy);
+  return true;
+}
+
 // ── The mobile "DOM contract": the E2E{...} probe + the mini-player clock ─────
 // Latest E2E{...} line in the dump → parsed JSON, or null.
 function parseProbe(xml) {
@@ -259,13 +271,21 @@ async function connect() {
 
   // ---- play_and_hear: start playback, open the reader (📖) so the probe is on
   // screen, then confirm the player clock ADVANCES with wall time.
-  if (!/Playing/i.test(xml)) tapText(xml, 'Play book');
-  await waitFor((x) => /Playing|Pause/i.test(x), 8000);
-  // Open the reader via the mini-player 📖 button (present once playback started).
-  if (!tapText(dump(), '📖') && !tapText(dump(), 'Open reader')) {
-    // Some fixtures label the button by content-desc only ("Open reader").
-  }
-  await waitFor((x) => parseProbe(x) != null || parseClock(x) != null, 10000);
+  // Tap the play CIRCLE, not the "Play book" text (the text label has no
+  // onPress — only the circle is touchable, via its accessibilityLabel).
+  if (!/Playing/i.test(xml)) tapText(xml, 'Play this book');
+  // Playback started when the circle's label flips to Pause / the card says
+  // Playing / a mini-player carrying the title appears at the bottom.
+  await waitFor((x) => /Playing/i.test(x) || !!findNode(x, 'Pause'), 8000);
+  // Open the NOW-PLAYING karaoke screen so the E2E probe is on screen. The
+  // mini-player's 📖 (reader) button is UNLABELED in uiautomator, so tap the
+  // mini-player BODY instead (its title row opens Now-Playing) — the probe
+  // renders there too. The mini-player is the BOTTOM-MOST node carrying the
+  // work title; tap that. If playback never started (a broken work that won't
+  // play), there IS no mini-player → no probe → karaoke_advances fails loudly,
+  // which is correct.
+  openNowPlaying();
+  await waitFor((x) => parseProbe(x) != null, 10000);
   const a = snapshot();
   await sleep(10000);
   const b = snapshot();
