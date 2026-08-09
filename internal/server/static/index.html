@@ -5241,12 +5241,14 @@
       // book without waiting for the server round-trip.
       const work = allWorks.find(w => w.id === workId);
       if (work) work.display_text_id = bookId;
-      // Persist. Best-effort — if it fails the user still sees their
-      // pick this session; next reload will revert to the authority
-      // default. We surface a console warning rather than blocking the
-      // UI so a slow network doesn't make the picker feel sluggish.
+      // Persist only an EXPLICIT user pick — never the auto-degrade's own switch.
+      // Persisting the auto switch would silently overwrite the user's choice and
+      // suppress the honest note next session; leaving display_text_id alone means
+      // the degrade re-decides (and re-explains) each session, while a real user
+      // pick sticks across sessions (and is honoured by the seed in setupReaderFollow).
+      // Best-effort — a slow network shouldn't block the picker.
       try {
-        await fetch(`/api/works/${workId}`, {
+        if (!opts.auto) await fetch(`/api/works/${workId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ display_text_book_id: bookId }),
@@ -5403,6 +5405,14 @@
       currentReaderIsEbookKaraoke = false;
       const work = allWorks.find(w => w.id === workId);
       if (!work) { clearParagraphFollow(); paraSync = null; paintSyncPill('none'); return; }
+      // Seed the user's persisted source choice once. The PERSISTED pin is
+      // display_text_book_id (what the picker PUTs; the auto-degrade no longer
+      // persists), NOT the resolved display_text_id. So if the reader deliberately
+      // chose the ebook on a weak-chain work, the auto-degrade honours it across
+      // sessions instead of re-switching them to the transcript.
+      if (userPickedSource[workId] === undefined && work.display_text_book_id) {
+        userPickedSource[workId] = work.display_text_book_id;
+      }
       const book = (work.text_files || []).find(b => b.id === bookId);
 
       // The SERVER owns the per-chapter follow mode (word | paragraph | none) —
