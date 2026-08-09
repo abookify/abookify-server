@@ -14,8 +14,8 @@ span/count/monotonicity (timeline plausibility) measures.
 """
 import sqlite3,json,os,subprocess,time,statistics,re,sys,urllib.request,io
 
-DB='/home/pj/projects/jarvis/abookify/engineering/server/data/abookify.db'
-OUT=os.path.expanduser('~/tmp/claude-1000/-home-pj-projects-jarvis-abookify-engineering-server/77ca4a16-7ccd-4b76-bfa8-6d948ce25840/scratchpad/timing-probe-results.tsv')
+DB=os.environ.get('PROBE_DB','/home/pj/projects/jarvis/abookify/engineering/server/data/abookify.db')
+OUT=os.environ.get('PROBE_OUT') or os.path.expanduser('~/tmp/claude-1000/-home-pj-projects-jarvis-abookify-engineering-server/77ca4a16-7ccd-4b76-bfa8-6d948ce25840/scratchpad/timing-probe-results.tsv')
 WIN=20.0
 FRACS=(0.2,0.5,0.8)
 
@@ -23,7 +23,15 @@ def norm(w):
     return re.sub(r'[^a-z0-9]','',w.lower())
 
 def extract(container_path, off, out_host):
-    # cut inside the server container (sees /library and /generated), copy out
+    # Host-local paths (fixture servers) are cut with a throwaway ffmpeg
+    # container; the main server's /library and /generated paths are cut
+    # inside the server container.
+    if os.path.exists(container_path):
+        r=subprocess.run(['docker','run','--rm','-v',f'{container_path}:/in.mp3','-v',
+            f'{os.path.dirname(out_host)}:/out','--entrypoint','ffmpeg','linuxserver/ffmpeg',
+            '-y','-v','error','-ss',f'{off:.2f}','-t',f'{WIN:.0f}','-i','/in.mp3',
+            '-c:a','libmp3lame','-q:a','5',f'/out/{os.path.basename(out_host)}'],capture_output=True,text=True)
+        return r.returncode==0
     r=subprocess.run(['docker','exec','server-server-1','ffmpeg','-y','-v','error',
         '-ss',f'{off:.2f}','-t',f'{WIN:.0f}','-i',container_path,
         '-c:a','libmp3lame','-q:a','5','/tmp/probe-clip.mp3'],capture_output=True,text=True)

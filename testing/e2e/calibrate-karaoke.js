@@ -27,19 +27,21 @@ const clockSecs = t => { const p=(t||'').trim().split(':').map(Number); return p
     await page.waitForTimeout(3000);
   }
   if (MODE === 'empty') { // switch the reader to the (mangled) transcript source
-    await page.evaluate(() => {
+    const val = await page.evaluate(() => {
       const sel = document.getElementById('np-text-source');
-      const opt = [...sel.options].find(o => /transcript/i.test(o.textContent));
-      if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change')); if (typeof onTextSourceChange==='function') onTextSourceChange(opt.value); }
+      const opt = sel ? [...sel.options].find(o => /transcript/i.test(o.textContent)) : null;
+      return opt ? opt.value : null;
     });
-    await page.waitForTimeout(3000);
+    if (val) await page.selectOption('#np-text-source', val);
+    await page.waitForTimeout(4000);
   }
-  if (MODE === 'shift') { // fault injection: word map shifted 30s (wrong-sentence state)
-    await page.evaluate(() => { if (typeof activeSyncData !== 'undefined' && activeSyncData) activeSyncData.forEach(w => { w.s += 30; w.e += 30; }); });
-    await page.waitForTimeout(1500);
-  }
-  if (MODE === 'clockfreeze') { // fault injection: position stops advancing
-    await page.evaluate(() => document.querySelector('audio')?.pause());
+  // NOTE on the wrong-sentence state: a UNIFORMLY shifted word map stays
+  // self-consistent (the active index moves with it), so A4 cannot detect it
+  // by construction — A1-A5 certify UI-layer sync. Map-vs-AUDIO wrongness is
+  // the TIMING PROBE tier's job; its calibration (shift a real sync row 30s,
+  // probe must fail) lives in calibrate-probe.sh.
+  if (MODE === 'clockfreeze') { // position advances 4x slower than wall time
+    await page.evaluate(() => { [...document.querySelectorAll('audio')].forEach(a => a.playbackRate = 0.25); });
     await page.waitForTimeout(1000);
   }
   const state = () => page.evaluate(() => {
