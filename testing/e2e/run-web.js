@@ -292,6 +292,54 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     srcResult.map(s => `${s.fmt}:${s.chapters}ch/${s.nearEmptyInterior}empty`).join(' ') || 'no text sources');
   if (broken.length) await page.screenshot({ path: `${SHOTS}/switch_source-FAIL.png` });
 
+  // ---- surface_consistency (cross-surface assert, opened 2026-08-09;
+  // transcription owns the contract: GET /api/works/{id}/canon). web ==
+  // mobile == canon, so ONE canonical answer arbitrates all three surfaces.
+  // Red path 1: canon.coherent=false — the DATA itself cannot be presented
+  // consistently (PJ's edition-label split: one narration split across two
+  // edition labels); no renderer can be right, so every surface must fail.
+  // Red path 2: the web's OWN rendered numbers disagree with canon.active.
+  // Mobile asserts its numbers against the same canon in its runner.
+  try {
+    const canon = await page.evaluate(async (wid) => {
+      const r = await fetch(`/api/works/${wid}/canon`);
+      return r.ok ? r.json() : null;
+    }, WORK);
+    if (!canon) {
+      report('surface_consistency', false, 'canon endpoint missing/unreadable (transcription owns GET /api/works/{id}/canon)');
+    } else if (!canon.coherent) {
+      // The data can't be shown consistently — fail loudly on the root, not a symptom.
+      report('surface_consistency', false, 'DATA INCOHERENT (no surface can be right): ' + (canon.problems || []).join(' | '));
+    } else {
+      // Coherent data: assert the numbers the WEB ACTUALLY RENDERS (via the app's
+      // own displayEditionBooks edition resolution + the DOM count spans — NOT a
+      // body-text regex, which the current UI's "Audiobook · N chapters" wording
+      // doesn't match) equal the canonical active edition. This is server-web's
+      // half: web number == canon; mobile pins its number to the same canon.
+      const web = await page.evaluate((wid) => {
+        const w = (allWorks || []).find(x => x.id === Number(wid));
+        const da = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'audio') : (w.audio_files || []);
+        const dt = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text') : (w.text_files || []);
+        const span = document.getElementById('audio-count-' + w.id);
+        return {
+          audioFiles: da.length,
+          audioSpan: span ? parseInt(span.textContent, 10) : null, // the rendered "N chapters" count
+          textChapters: dt[0] ? dt[0].chapter_count : null,
+          textBookId: dt[0] ? dt[0].id : null,
+        };
+      }, WORK);
+      const okAudio = web.audioFiles === canon.active.audio_files
+        && (web.audioSpan == null || web.audioSpan === canon.active.audio_files);
+      const okText = web.textChapters == null || web.textChapters === canon.active.text_chapters;
+      report('surface_consistency', okAudio && okText,
+        `web renders ${web.audioFiles} audio files (span=${web.audioSpan}) / ${web.textChapters} text-ch ` +
+        `vs canon.active ${canon.active.audio_files} audio / ${canon.active.text_chapters} text-ch ` +
+        `(totals ${canon.total_audio_files}A/${canon.total_texts}T)`);
+    }
+  } catch (e) {
+    report('surface_consistency', false, 'error: ' + e.message.slice(0, 120));
+  }
+
   await browser.close();
   process.exit(finish());
 })().catch(e => { console.error('FATAL', e); process.exit(2); });
