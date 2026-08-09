@@ -633,6 +633,12 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 		})
 	}
 
+	// Belt against EVERY degenerate-chapter source (silence pairs, bogus
+	// sidecar chapters, future detectors): a text chapter spanning fewer than
+	// minTextChapterWords merges into its neighbor instead of shipping as a
+	// stub the reader renders as two words and nothing else.
+	ranges = mergeDegenerateTextChapters(ranges, len(sc.Words))
+
 	// Build word-index ranges for each chapter. Prefer explicit word_idx
 	// from the sidecar (precise, no boundary words missed); fall back to
 	// timestamp-range when word_idx isn't provided.
@@ -849,6 +855,11 @@ func detectPartsFromSilences(sc *sttSidecar) []sttChapter {
 //     is a segment boundary or interpolated zero.
 //   - Every silence carries a source tag (silencedetect/vad/both) so we
 //     could eventually weight by detector agreement.
+// minSilenceChapterGapSecs is the shortest span two silence-derived chapter
+// boundaries may be apart. Real chapters run minutes; sub-30s "chapters" are
+// artifacts of stacked silences (file joins + intro pauses).
+const minSilenceChapterGapSecs = 30.0
+
 func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 	if !sc.isV2() || len(sc.Silences) == 0 {
 		return nil
@@ -877,6 +888,17 @@ func detectChaptersFromSilences(sc *sttSidecar) []sttChapter {
 		// (can happen when multiple chapter-silences are adjacent without
 		// speech between them, e.g. file-boundary joins).
 		if len(chapters) > 0 && chapters[len(chapters)-1].WordIdx == wordIdx {
+			continue
+		}
+		// COALESCE boundaries that land almost on top of each other. A file
+		// join produces a chapter-grade silence at the join AND the intro's
+		// own first pause right after ("This is" ... "a LibriVox
+		// recording"), which minted a 2-word stub chapter per file — work
+		// 85's transcript alternated "This is" stubs with real chapters,
+		// and the reader faithfully showed a chapter containing only
+		// "This is". A real chapter is never seconds long: keep the FIRST
+		// boundary, drop any candidate inside the minimum gap.
+		if len(chapters) > 0 && sc.Words[wordIdx].Start-chapters[len(chapters)-1].Start < minSilenceChapterGapSecs {
 			continue
 		}
 		n := len(chapters) + 1
@@ -1959,4 +1981,41 @@ func reconcileSilenceChapterNumbers(chapters []sttChapter) []sttChapter {
 			"(STT mis-hearing); boundaries kept", fixed)
 	}
 	return chapters
+}
+
+// minTextChapterWords is the smallest word span a derived TEXT chapter may
+// hold. Below it the "chapter" is an artifact (work 85 shipped alternating
+// 2-word "This is" stubs), and it merges into a neighbor. Section headers
+// (Src=="part") are exempt — they are header-only by design.
+const minTextChapterWords = 15
+
+// mergeDegenerateTextChapters drops sub-minimum chapters so their word span
+// folds into the PREVIOUS kept chapter (or, for a leading stub, into the
+// following chapter by pulling its start back — words are never orphaned).
+func mergeDegenerateTextChapters(ranges []sttChapter, totalWords int) []sttChapter {
+	if len(ranges) <= 1 {
+		return ranges
+	}
+	span := func(i int) int {
+		if i == len(ranges)-1 {
+			return totalWords - ranges[i].WordIdx
+		}
+		return ranges[i+1].WordIdx - ranges[i].WordIdx
+	}
+	out := ranges[:0]
+	for i := range ranges {
+		if ranges[i].Src != "part" && span(i) < minTextChapterWords && len(ranges) > 1 {
+			if len(out) == 0 && i+1 < len(ranges) {
+				// Leading stub: absorb it into the next chapter.
+				ranges[i+1].WordIdx = ranges[i].WordIdx
+				ranges[i+1].Start = ranges[i].Start
+			}
+			continue // non-leading stubs fold into the previous kept chapter
+		}
+		out = append(out, ranges[i])
+	}
+	if len(out) == 0 {
+		return ranges // never return nothing
+	}
+	return out
 }

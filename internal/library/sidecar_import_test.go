@@ -778,3 +778,71 @@ func TestReimportWorkSidecarRoutesEditionsToTheirOwnBooks(t *testing.T) {
 		t.Errorf("transcript books = %d, want 2 (no duplicates created)", nTranscripts)
 	}
 }
+
+// Work 85's transcript shipped as alternating 2-word "This is" stubs and real
+// chapters: a file join stacks a chapter-grade silence with the intro's own
+// first pause, minting two boundaries 0.6s apart. Boundaries inside the
+// minimum gap must coalesce, and — belt over every source — a derived text
+// chapter under the word floor must merge into its neighbor.
+func TestSilenceChapterBoundariesCoalesce(t *testing.T) {
+	sc := &sttSidecar{Version: 2, Duration: 4000}
+	// Two "files": intro pattern at 0s and at 2000s. Words every ~0.4s.
+	mk := func(base float64, n int, txt string) {
+		for i := 0; i < n; i++ {
+			w := " w"
+			if i < 8 {
+				w = " " + []string{"This", "is", "a", "LibriVox", "recording.", "All", "rights", "waived."}[i]
+			}
+			_ = txt
+			sc.Words = append(sc.Words, sttWord{Start: base + float64(i)*0.4, End: base + float64(i)*0.4 + 0.3, Word: w})
+		}
+	}
+	mk(0, 400, "")
+	mk(2000, 400, "")
+	// Silences: chapter-grade at the file join (ends 2000) AND a second
+	// chapter-grade sliver right after the first two words of the intro
+	// (ends 2000.9) — the real-world stacking that made the stubs.
+	sc.Silences = []sttSilence{
+		{Start: 1990, End: 2000, Duration: 10, Kind: "chapter"},
+		{Start: 2000.75, End: 2000.9, Duration: 0.15, Kind: "chapter"},
+	}
+	chs := detectChaptersFromSilences(sc)
+	if len(chs) != 2 {
+		t.Fatalf("chapters = %d, want 2 (coalesced), got starts %v", len(chs),
+			func() []float64 { var s []float64; for _, c := range chs { s = append(s, c.Start) }; return s }())
+	}
+	for i := 1; i < len(chs); i++ {
+		if chs[i].Start-chs[i-1].Start < minSilenceChapterGapSecs {
+			t.Errorf("boundaries %d/%d only %.1fs apart", i-1, i, chs[i].Start-chs[i-1].Start)
+		}
+	}
+}
+
+func TestMergeDegenerateTextChapters(t *testing.T) {
+	ranges := []sttChapter{
+		{Title: "stub lead", WordIdx: 0},
+		{Title: "real 1", WordIdx: 2},
+		{Title: "stub mid", WordIdx: 500},
+		{Title: "real 2", WordIdx: 503},
+		{Title: "part hdr", WordIdx: 900, Src: "part"},
+		{Title: "real 3", WordIdx: 905},
+	}
+	out := mergeDegenerateTextChapters(ranges, 1400)
+	var titles []string
+	for _, r := range out {
+		titles = append(titles, r.Title)
+	}
+	want := []string{"real 1", "real 2", "part hdr", "real 3"}
+	if len(out) != 4 {
+		t.Fatalf("kept %v, want %v", titles, want)
+	}
+	for i := range want {
+		if out[i].Title != want[i] {
+			t.Fatalf("kept %v, want %v", titles, want)
+		}
+	}
+	// The leading stub's words must be absorbed by the first real chapter.
+	if out[0].WordIdx != 0 {
+		t.Errorf("leading stub words orphaned: first chapter starts at word %d, want 0", out[0].WordIdx)
+	}
+}
