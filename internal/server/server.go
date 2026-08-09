@@ -440,6 +440,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
+	mux.HandleFunc("GET /api/works/{id}/canon", s.handleWorkCanon)
 	mux.HandleFunc("GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}", s.handleTextSync)
 	mux.HandleFunc("GET /api/books/{bookId}/chapters/{idx}/summary", s.handleChapterSummary)
 	mux.HandleFunc("GET /api/books/{bookId}/recap", s.handleBookRecap)
@@ -1099,6 +1100,28 @@ func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 		words = []library.SyncWord{}
 	}
 	writeJSON(w, http.StatusOK, words)
+}
+
+// handleWorkCanon returns THE canonical description of a work — the numbers
+// every surface must render or be wrong (cross-surface consistency assert).
+// Coherent=false means the data itself cannot be presented consistently; the
+// suite must fail on it, because the disagreement lives in the data.
+func (s *Server) handleWorkCanon(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	c, err := library.BuildWorkCanon(s.store, id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if c == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "work not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
 }
 
 // handleWorkCoverage returns per-source-pair DIRECTIONAL coverage (#199): for

@@ -30,6 +30,14 @@ journeys:
     assert: download completes; playback + karaoke work offline
   - id: signout_signin
     assert: session ends and resumes; library still renders
+  - id: surface_consistency     # cross-surface assert (opened 2026-08-09)
+    assert: >
+      GET /api/works/{id}/canon is THE answer. Red if canon.coherent=false
+      (the data itself cannot be presented consistently — e.g. an edition
+      label split); red if the surface's header numbers disagree with canon.
+      Web asserts in run-web.js; mobile asserts its counts against the same
+      canon in its runner. This is the root-certifying journey: it gates the
+      canonical-edition contract (P1-4) red-on-old/green-on-new.
 fixtures:
   server: fresh --data-dir instance per run (testing/e2e/fixture-server.sh)
   library:
