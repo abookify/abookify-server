@@ -228,15 +228,32 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   await page.waitForTimeout(4000);
   const rs = await karaokeState();
   const rc = await uiClock();
+  // Is the follow even certifiable on this work? Reader-follow needs a REAL
+  // narration↔text mapping. A word-anchor ebook with NO word alignment shows a
+  // SYNTHETIC (uniform) map — there is nothing to follow, so a "stuck" reading is
+  // a FIXTURE property, not the product bug. Distinguish it (else the journey
+  // cries wolf on an unaligned work, e.g. clean 8199 with pairs:[]).
+  const ctx2 = await page.evaluate(async (wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    const isEbookKaraoke = (typeof currentReaderIsEbookKaraoke !== 'undefined') ? currentReaderIsEbookKaraoke : false;
+    let wordPairs = 0;
+    try {
+      const cov = await fetch(`/api/works/${w.id}/coverage`).then(r => r.json());
+      wordPairs = (cov.pairs || []).filter(p => p.unit === 'word').length;
+    } catch {}
+    return { isEbookKaraoke, wordPairs };
+  }, WORK).catch(() => ({ isEbookKaraoke: false, wordPairs: 0 }));
   // Reader followed iff the audio clock sits within the shown chapter's map extent.
   // Using the map EXTENT (not the highlighted word) avoids a false "harness" verdict
   // on a resume that hasn't reached its first word yet.
   const withinChapter = rs.mapMaxSec != null && rs.mapMinSec != null && rc != null
     && rc <= rs.mapMaxSec + 2.5 && rc >= rs.mapMinSec - 2.5;
-  const rFollows = rs.wordCount >= 50 && withinChapter;
+  const notApplicable = ctx2.isEbookKaraoke && ctx2.wordPairs === 0; // synthetic map, nothing to follow
+  const rFollows = notApplicable || (rs.wordCount >= 50 && withinChapter);
   const plantStr = planted ? `planted@~${planted.globalApprox}s(book ${planted.bookId} idx${planted.fileIdx}+${planted.local}s)` : 'plant FAILED';
   let rsig;
-  if (rs.wordCount === 0) rsig = `harness: reader never opened (words=0) while clock=${rc} [${plantStr}] — fix the resume drive`;
+  if (notApplicable) rsig = `n/a: display ebook has NO word alignment (synthetic map) — reader-follow not certifiable on this work; give it a real alignment to test`;
+  else if (rs.wordCount === 0) rsig = `harness: reader never opened (words=0) while clock=${rc} [${plantStr}] — fix the resume drive`;
   else if (!withinChapter) rsig = `stuck: clock=${rc} is PAST the shown chapter's map [${rs.mapMinSec == null ? '?' : rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec == null ? '?' : rs.mapMaxSec.toFixed(0)}s] [${plantStr}] — reader did NOT follow audio (PJ's 'Cratchit')`;
   else rsig = `reader followed: clock=${rc} within map [${rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec.toFixed(0)}s], ${rs.wordCount} words [${plantStr}]`;
   report('resume_flow', rFollows, rsig);

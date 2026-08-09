@@ -10,7 +10,9 @@ const PW = args.pw;
 const { chromium } = require(PW);
 (async () => {
   const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
-  const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage();
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  if (args.cookie) await ctx.addCookies([{ name: 'abookify_session', value: args.cookie, domain: new URL(BASE).hostname, path: '/' }]);
+  const page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: 'networkidle' });
   // plant deep
   const planted = await page.evaluate(async (wid) => {
