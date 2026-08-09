@@ -20,6 +20,9 @@ fs.mkdirSync(SHOTS, { recursive: true });
 const { chromium } = require(PW);
 
 const results = [];
+// What THIS run actually looked at — printed in the limits block so a green run
+// is green about something specific, not "the whole book is fine".
+const coverage = { karaokeChapter: null, karaokeWords: 0, karaokeAudioSec: null, sources: [] };
 function report(id, ok, detail) {
   results.push({ id, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${id}  ${detail || ''}`);
@@ -61,22 +64,34 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   // then start playback there — the karaoke .sync-word spans live in the reader
   // overlay, and front-matter chapters have no audio sync. Pick the displayed
   // text source + a chapter past the front matter.
-  await page.evaluate(async (wid) => {
+  // openWorkDetail shows the work page but does NOT open the reader overlay, so
+  // no word map (activeSyncData) exists yet. Two stages:
+  //   A. seek near the start to OPEN the reader + load a word map + start audio.
+  //   B. re-seat the audio to a point INSIDE that loaded map (~30% through its own
+  //      words) so reader and audio sit on the SAME span. The false positive was a
+  //      FIXED 20%-of-total-duration seek (1644s) landing OUTSIDE the loaded map
+  //      (~52s) — audio ran, but the active word never moved. Driving the audio to
+  //      the loaded text is exactly the invariant the product must hold.
+  await page.evaluate((wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
-    if (!w) return;
-    // DETERMINISTIC seed: seek to a fixed mid-book audio position (20% in, past
-    // front matter) via seekToAbsoluteBookTime — it plays from that book-global
-    // second AND follows the reader to the matching chapter, so audio and reader
-    // AGREE every run. (resumeOrPlay used a stale saved position, which desynced
-    // the reader and made karaoke_advances flap.)
-    const audio = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'audio') : (w.audio_files || []);
-    const total = audio.reduce((s, f) => s + (f.duration_secs || 0), 0);
-    const at = Math.max(30, Math.round(total * 0.2));
-    if (typeof seekToAbsoluteBookTime === 'function') await seekToAbsoluteBookTime(w, at, w.title);
+    if (typeof seekToAbsoluteBookTime === 'function') seekToAbsoluteBookTime(w, 20, w.title);
     const a = document.getElementById('audio-player');
-    if (a) { if (a.paused) await a.play().catch(() => {}); }
+    if (a && a.paused) a.play().catch(() => {});
   }, WORK).catch(() => {});
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(2200);
+  await page.evaluate((wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    const sd = (typeof activeSyncData !== 'undefined' && activeSyncData) ? activeSyncData : null;
+    if (sd && sd.length) {
+      const idx = Math.min(sd.length - 1, Math.max(0, Math.floor(sd.length * 0.3)));
+      const at = sd[idx].s;
+      if (typeof seekToAbsoluteBookTime === 'function') seekToAbsoluteBookTime(w, at, w.title);
+      else { const a = document.getElementById('audio-player'); if (a) a.currentTime = at; }
+    }
+    const a = document.getElementById('audio-player');
+    if (a && a.paused) a.play().catch(() => {});
+  }, WORK).catch(() => {});
+  await page.waitForTimeout(1500);
   const t0 = clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
   await page.waitForTimeout(6000);
   const t1 = clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
@@ -118,6 +133,14 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     `A4 |map ${s2.activeMapSec == null ? 'null' : s2.activeMapSec.toFixed(1)} - clock ${c2}| ` +
     `A5 clock +${c1 != null && c2 != null ? (c2 - c1).toFixed(1) : '?'}s over ${wall.toFixed(1)}s`);
   if (!ok) await page.screenshot({ path: `${SHOTS}/karaoke-FAIL.png` });
+  // Record WHICH chapter/window the karaoke checks actually watched, so the
+  // limits block can say what the green (or red) applies to.
+  coverage.karaokeChapter = await page.evaluate((wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    return (typeof currentReaderChapter !== 'undefined' && w && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : null;
+  }, WORK).catch(() => null);
+  coverage.karaokeWords = s2.wordCount;
+  coverage.karaokeAudioSec = c2;
 
   // ---- change_chapter: load a DIFFERENT chapter in the open reader; content changes.
   // Pause first so the audio-follow sync doesn't immediately pull the reader back
@@ -130,10 +153,14 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   const chg = await page.evaluate(async (wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
     const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
-    if (!(window.chapterCache && chapterCache[tf.id]?.chapters?.length) && typeof loadChapterList === 'function') {
+    // chapterCache is a top-level `const` in index.html — accessible as a bare
+    // identifier in evaluate (like allWorks/activeSyncData), NOT as window.chapterCache
+    // (that reads undefined and made chs always []). Use the bare binding.
+    const cc = (typeof chapterCache !== 'undefined') ? chapterCache : {};
+    if (!(cc[tf.id]?.chapters?.length) && typeof loadChapterList === 'function') {
       await loadChapterList(tf.id, w.id);
     }
-    const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
+    const chs = (cc[tf.id]?.chapters) || [];
     if (chs.length < 2) return { ok: false, why: `only ${chs.length} chapters in book ${tf.id}` };
     const cur = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : chs[0].index;
     const other = chs.find(c => c.index !== cur) || chs[chs.length - 1];
@@ -172,6 +199,7 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   // A source is broken if it holds real content overall yet has interior chapters
   // that render essentially nothing — a reader landing on one sees "This is".
   const broken = srcResult.filter(s => s.totalWords > 200 && s.nearEmptyInterior > 0);
+  coverage.sources = srcResult;
   report('switch_source', srcResult.length > 0 && broken.length === 0,
     srcResult.map(s => `${s.fmt}:${s.chapters}ch/${s.nearEmptyInterior}empty`).join(' ') || 'no text sources');
   if (broken.length) await page.screenshot({ path: `${SHOTS}/switch_source-FAIL.png` });
@@ -182,6 +210,24 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
 
 function finish() {
   const failed = results.filter(r => !r.ok);
+  // ---- WHAT THIS RUN CAN AND CANNOT SEE ----------------------------------
+  // A green run must be green about something specific. State the scope that
+  // was actually watched and the two fault classes these DOM checks cannot see
+  // by construction (calibrated with transcription; see README-calibration).
+  const srcScope = coverage.sources.length
+    ? coverage.sources.map(s => `${s.fmt} (${s.chapters}ch, all scanned)`).join(', ')
+    : 'none';
+  console.log('\n--- SCOPE OF THIS RUN ---');
+  console.log(`karaoke_advances watched: reader chapter ${coverage.karaokeChapter == null ? '?' : coverage.karaokeChapter}` +
+    `, ${coverage.karaokeWords} words on screen, audio near ${coverage.karaokeAudioSec == null ? '?' : coverage.karaokeAudioSec}s` +
+    ' — ONE ~10s window in ONE chapter.');
+  console.log(`switch_source scanned: ${srcScope} — near-empty INTERIOR chapters, every chapter of every source.`);
+  console.log('CANNOT SEE (by construction):');
+  console.log('  1. A UNIFORMLY shifted map. If every word time is off by the same amount the UI stays');
+  console.log('     internally consistent, so these DOM checks pass. That class belongs to the timing probe.');
+  console.log('  2. Timing/karaoke damage in chapters this run did not open. karaoke_advances samples ONE');
+  console.log('     window; per-chapter sweeps cost ~4x. A green karaoke means THAT window advanced, not the whole book.');
+  console.log('     (switch_source DOES cover all chapters, but only for the near-empty-render class.)');
   console.log(`\n${results.length - failed.length}/${results.length} journeys passed`);
   return failed.length ? 1 : 0;
 }
