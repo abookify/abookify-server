@@ -1207,6 +1207,23 @@ func (s *Server) handleListChapters(w http.ResponseWriter, r *http.Request) {
 	if chapters == nil {
 		chapters = []db.Chapter{}
 	}
+	// Word-anchor EPUB chapters carry no start_sec/end_sec (alignment never
+	// stamps them). Overlay the per-chapter audio ranges derived from the
+	// alignment timeline so the reader can follow the narration to the right
+	// chapter on a deep resume/seek — every client covering-chapter lookup keys
+	// on these. Only fill chapters that lack a real time (never clobber
+	// transcript/detected times). Best-effort: on any error, serve as-is.
+	if ranges, rerr := library.EbookChapterAudioRanges(s.store, id); rerr == nil && len(ranges) > 0 {
+		for i := range chapters {
+			if chapters[i].StartSec > 0 {
+				continue
+			}
+			if rng, ok := ranges[chapters[i].Index]; ok {
+				chapters[i].StartSec = rng[0]
+				chapters[i].EndSec = rng[1]
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, chapters)
 }
 

@@ -373,6 +373,100 @@ func BuildEbookWordSync(store *db.Store, workID, bookID int64, chapterIdx int) (
 	return out, nil
 }
 
+// EbookChapterAudioRanges returns the per-chapter book-continuous audio time
+// range [startSec, endSec] for a word-anchor-aligned EBOOK, keyed by the ebook
+// chapter index. It exists because word-anchor alignment never stamps
+// chapters.start_sec/end_sec (only transcript/detected chapters get those from
+// detection), so every covering-chapter lookup on the client — "which text
+// chapter does the audio second fall in?" — collapsed to chapter 0 and the
+// reader stayed frozen on the title page while the audio played deep (PJ's
+// stuck-"Cratchit"). The ranges come from the SAME baked timeline the reader's
+// word-karaoke uses (payload.Timeline), so a chapter's audio range and its word
+// map agree. Returns nil (no error) when the book is a transcript or has no
+// word alignment — callers overlay only when a range is present.
+func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64, error) {
+	book, err := store.GetBook(bookID)
+	if err != nil || book == nil {
+		return nil, err
+	}
+	if book.Origin == "whisper_transcript" || book.Format == "transcript" {
+		return nil, nil // transcript chapters already carry real times
+	}
+	work, err := store.GetWork(book.WorkID)
+	if err != nil || work == nil {
+		return nil, err
+	}
+	transIDs := map[int64]bool{}
+	for _, b := range work.TextFiles {
+		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
+			transIDs[b.ID] = true
+		}
+	}
+	aligns, err := store.ListAlignmentsForWork(book.WorkID)
+	if err != nil {
+		return nil, err
+	}
+	var best *db.Alignment
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Unit != "word" {
+			continue
+		}
+		paired := (a.FromBookID == bookID && transIDs[a.ToBookID]) ||
+			(a.ToBookID == bookID && transIDs[a.FromBookID])
+		if !paired {
+			continue
+		}
+		if best == nil || a.Confidence > best.Confidence {
+			best = a
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	var p AnchorAlignmentPayload
+	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
+		return nil, nil
+	}
+	ranges := map[int][2]float64{}
+	// Prefer the already-baked per-chapter timeline (what /word-sync renders from).
+	for _, tl := range p.Timeline {
+		if len(tl.Points) == 0 {
+			continue
+		}
+		ranges[tl.EbookChapterIdx] = [2]float64{tl.Points[0].Sec, tl.Points[len(tl.Points)-1].Sec}
+	}
+	// Fallback for pre-timeline alignments: min StartSec / max EndSec over the
+	// aligned segments overlapping each ebook chapter's token span.
+	if len(ranges) == 0 {
+		for _, s := range p.Segments {
+			if s.Kind != SegAligned || s.StartSec <= 0 {
+				continue
+			}
+			ci := chapterOfToken(p.EbookChapters, s.EbookStart)
+			if ci < 0 {
+				continue
+			}
+			cur, ok := ranges[ci]
+			if !ok {
+				ranges[ci] = [2]float64{s.StartSec, s.EndSec}
+				continue
+			}
+			if s.StartSec < cur[0] {
+				cur[0] = s.StartSec
+			}
+			if s.EndSec > cur[1] {
+				cur[1] = s.EndSec
+			}
+			ranges[ci] = cur
+		}
+	}
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	return ranges, nil
+}
+
 const (
 	minWordsForRateCheck    = 30 // don't rate-check tiny maps (a heading / one-line page)
 	maxPlausibleWordsPerSec = 8  // above this the per-word times are collapsed/garbage (real narration ~2–3)
