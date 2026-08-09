@@ -405,6 +405,59 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     report('narration_binding', false, 'error: ' + e.message.slice(0, 120));
   }
 
+  // ---- weak_chain_degrade (authorized 2026-08-09): when the printed edition's
+  // chain to the human narration is too weak to trust a word highlight, the reader
+  // must DEGRADE HONESTLY — actively show the TRANSCRIPT (synced to the narrator)
+  // with a plain-words note, never a confident wrong highlight nor a silent "no
+  // sync". This leg proves the degraded state is REACHED (reader switches to the
+  // transcript) and RENDERS (the note is visible), not merely that the threshold
+  // computes. n/a when the work has no weak-chain ebook to exercise it.
+  try {
+    const wc = await page.evaluate(async (wid) => {
+      const w = (allWorks || []).find(x => x.id === Number(wid));
+      const human = (w.audio_files || []).find(b => b.origin === 'narrator_recording' || b.origin === 'author_recording' || b.origin === 'librivox');
+      const epub = (w.text_files || []).find(b => b.format === 'epub');
+      const trans = (w.text_files || []).find(b => b.format === 'transcript');
+      if (!human || !epub || !trans) return { na: true, why: 'needs epub + human narration + transcript' };
+      // Is the epub chain weak for the human narration? Ask the server.
+      const chs = await fetch(`/api/books/${epub.id}/chapters`).then(r => r.json()).catch(() => []);
+      const list = Array.isArray(chs) ? chs : [];
+      const ch = list.filter(c => (c.word_count || 0) > 200)[Math.floor(list.length / 2)] || list[Math.floor(list.length / 2)] || list[0];
+      if (!ch) return { na: true, why: 'no epub chapter' };
+      const ts = await fetch(`/api/works/${w.id}/text-sync/${epub.id}/${ch.index}?audio=${human.id}`).then(r => r.json()).catch(() => ({}));
+      if (!ts.degrade_to) return { na: true, why: `strong chain (no degrade for epub ch${ch.index})` };
+      // Weak: drive the reader — play the human narration, open the epub chapter.
+      playAudio(human.id, 0, w.id, human.title || human.filename, w.title, 120);
+      window.__wc = { epubId: epub.id, chIndex: ch.index, transId: trans.id, degradeTo: ts.degrade_to, note: ts.degrade_note };
+      return { na: false, driving: true };
+    }, WORK);
+    if (wc.na) {
+      report('weak_chain_degrade', true, `n/a: ${wc.why}`);
+    } else {
+      await page.waitForTimeout(1200);
+      await page.evaluate(() => { const w = allWorks.find(x => x.id === currentWorkId); loadChapter(window.__wc.epubId, window.__wc.chIndex, w.id, { skipAudioSeek: true }); });
+      await page.waitForTimeout(3000);
+      const rr = await page.evaluate((wid) => {
+        const rc = (typeof currentReaderChapter !== 'undefined') ? currentReaderChapter[Number(wid)] : null;
+        const note = document.getElementById('reader-degrade-note');
+        return {
+          readerBookId: rc ? rc.bookId : null,
+          degradeTo: window.__wc.degradeTo,
+          noteVisible: note ? (note.style.display !== 'none' && note.offsetHeight > 0) : false,
+          noteMatches: note ? (note.textContent || '').trim() === (window.__wc.note || '').trim() : false,
+        };
+      }, WORK);
+      const reached = rr.readerBookId === rr.degradeTo;   // switched to the transcript
+      const renders = rr.noteVisible && rr.noteMatches;    // note is visible + correct
+      report('weak_chain_degrade', reached && renders,
+        `reader ${reached ? 'SWITCHED to transcript' : `stayed on ${rr.readerBookId} (wanted ${rr.degradeTo})`}; ` +
+        `note ${renders ? 'VISIBLE' : `NOT rendered (visible=${rr.noteVisible} matches=${rr.noteMatches})`}`);
+      if (!(reached && renders)) await page.screenshot({ path: `${SHOTS}/weak_chain_degrade-FAIL.png` });
+    }
+  } catch (e) {
+    report('weak_chain_degrade', false, 'error: ' + e.message.slice(0, 120));
+  }
+
   await browser.close();
   process.exit(finish());
 })().catch(e => { console.error('FATAL', e); process.exit(2); });
