@@ -50,7 +50,7 @@ func TestBuildTextSyncTTSByConstruction(t *testing.T) {
 	store.SaveSyncData(wid, ch0, 0, mk("one", "two", "three"))
 	store.SaveSyncData(wid, ch1, 1, mk("marley", "was", "dead", "to", "begin"))
 
-	ts, err := BuildTextSync(store, wid, epub, 1)
+	ts, err := BuildTextSync(store, wid, epub, 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestBuildTextSyncTTSByConstruction(t *testing.T) {
 
 	// Word-count mismatch = not built from this text: refuse, mode none.
 	store.SaveSyncData(wid, ch1, 1, mk("different", "length"))
-	ts, _ = BuildTextSync(store, wid, epub, 1)
+	ts, _ = BuildTextSync(store, wid, epub, 0, 1)
 	if ts.Mode != "none" {
 		t.Errorf("mismatched sync must yield mode none, got %s", ts.Mode)
 	}

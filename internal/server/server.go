@@ -1059,7 +1059,10 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
 		return
 	}
-	ts, err := library.BuildTextSync(s.store, id, bookID, chapterIdx)
+	// ?audio={audioBookId} = the narration playing; lets the mode gate the ebook
+	// on chain confidence for the human narration (and never for a TTS one).
+	playingAudioBookID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("audio")), 10, 64)
+	ts, err := library.BuildTextSync(s.store, id, bookID, playingAudioBookID, chapterIdx)
 	if err != nil {
 		writeServerError(w, r, err)
 		return

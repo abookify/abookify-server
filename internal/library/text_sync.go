@@ -40,6 +40,78 @@ type TextSync struct {
 	Unit       string         `json:"unit"`
 	Confidence float64        `json:"confidence"`
 	Spans      []TextSyncSpan `json:"spans"`
+	// DegradeTo / DegradeNote: when the displayed EBOOK's anchor chain to the
+	// playing (human) narration is too weak to trust a word highlight, the reader
+	// should show the TRANSCRIPT (book id DegradeTo) — synced natively to that
+	// narration — and surface DegradeNote in plain words. Absent when the ebook is
+	// trustworthy or the narration is a TTS edition (word-perfect by construction).
+	DegradeTo   int64  `json:"degrade_to,omitempty"`
+	DegradeNote string `json:"degrade_note,omitempty"`
+}
+
+// minChainConfidence — below this measured audio_to_ebook (the QUALITY signal: how
+// much of the narration is backed by the printed edition), the anchor chain is too
+// weak to trust a word highlight on the ebook, so the reader degrades to the
+// transcript (synced natively to the human narration). Chosen to err toward the
+// transcript — an honest lesser experience beats a confident wrong one; PJ's
+// library splits cleanly around it (41 works ≥0.86, a weak cluster ≤0.63).
+const minChainConfidence = 0.8
+
+// degradeReason — the plain-words note when the reader falls back to the transcript
+// (PJ/META-approved, provisional; in-app copy is PJ's to override).
+const degradeReason = "Following the narrator's own words — this recording and the printed edition don't line up closely enough to highlight the book text in sync."
+
+// weakChainTranscript returns (transcriptBookID, true) when the displayed ebook's
+// anchor chain to the playing HUMAN narration is too weak to trust a word highlight.
+// (0, false) when the ebook is trustworthy, IS a transcript, has no transcript to
+// fall back to, or the playing narration is a TTS edition (authoritative — never
+// degrade that).
+func weakChainTranscript(store *db.Store, work *db.Work, bookID, playingAudioBookID int64) (int64, bool) {
+	if playingAudioBookID > 0 {
+		if pb, _ := store.GetBook(playingAudioBookID); pb != nil && pb.Origin == "tts_kokoro" {
+			return 0, false // TTS-by-construction map, no chain to be weak
+		}
+	}
+	var transID int64
+	transIDs := map[int64]bool{}
+	for _, b := range work.TextFiles {
+		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
+			transIDs[b.ID] = true
+			if transID == 0 {
+				transID = b.ID
+			}
+		}
+	}
+	if transID == 0 || transIDs[bookID] {
+		return 0, false
+	}
+	aligns, err := store.ListAlignmentsForWork(work.ID)
+	if err != nil {
+		return 0, false
+	}
+	var best *db.Alignment
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Unit != "word" {
+			continue
+		}
+		if (a.FromBookID == bookID && transIDs[a.ToBookID]) || (a.ToBookID == bookID && transIDs[a.FromBookID]) {
+			if best == nil || a.Confidence > best.Confidence {
+				best = a
+			}
+		}
+	}
+	if best == nil {
+		return 0, false // no anchor chain (e.g. TTS-only) — not the weak-chain case
+	}
+	var p AnchorAlignmentPayload
+	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
+		return 0, false
+	}
+	if directionalFrom(p, 0, 0).AudioToEbook < minChainConfidence {
+		return transID, true
+	}
+	return 0, false
 }
 
 type fracAnchor struct {
@@ -49,7 +121,7 @@ type fracAnchor struct {
 
 // BuildTextSync resolves the displayed source's follow mode and, for the
 // paragraph case, the per-paragraph time windows for one chapter.
-func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*TextSync, error) {
+func BuildTextSync(store *db.Store, workID, bookID, playingAudioBookID int64, chapterIdx int) (*TextSync, error) {
 	work, err := store.GetWork(workID)
 	if err != nil || work == nil {
 		return &TextSync{Mode: "none"}, err
@@ -60,6 +132,13 @@ func BuildTextSync(store *db.Store, workID, bookID int64, chapterIdx int) (*Text
 		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
 			transIDs[b.ID] = true
 		}
+	}
+	// Weak-chain degradation: if the printed edition's chain to the human
+	// narration is too weak to trust a highlight, tell the reader to show the
+	// transcript (synced natively to that narration) and say why. Not for a
+	// displayed transcript or a TTS narration (handled inside the helper).
+	if transID, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
+		return &TextSync{Mode: "none", Method: "anchor", Unit: "word", DegradeTo: transID, DegradeNote: degradeReason}, nil
 	}
 	if transIDs[bookID] {
 		// A transcript is word-timed STT output, so its default mode is word-by-word.
@@ -586,6 +665,11 @@ func BuildDisplayWordSync(store *db.Store, workID, bookID, playingAudioBookID in
 				return tts, nil
 			}
 		}
+	}
+	// Weak anchor chain → no trustworthy ebook highlight; return empty so the
+	// reader degrades to the transcript (BuildTextSync carries the DegradeTo/note).
+	if _, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
+		return nil, nil
 	}
 	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err != nil || len(wm) > 0 {
 		// Guard the anchor map against a narration it is not timed to: if we know

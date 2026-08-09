@@ -48,7 +48,7 @@ func TestTranscriptWordModeHonesty(t *testing.T) {
 	}
 
 	// Chapter 0: words present → mode=word, non-empty map.
-	ts, _ := BuildTextSync(store, workID, transID, 0)
+	ts, _ := BuildTextSync(store, workID, transID, 0, 0)
 	if ts == nil || ts.Mode != "word" {
 		t.Fatalf("ch0: want mode=word, got %+v", ts)
 	}
@@ -57,7 +57,7 @@ func TestTranscriptWordModeHonesty(t *testing.T) {
 	}
 
 	// Chapter 1: no words in range → honest none, NOT a hollow word promise.
-	ts, _ = BuildTextSync(store, workID, transID, 1)
+	ts, _ = BuildTextSync(store, workID, transID, 0, 1)
 	if ts == nil || ts.Mode != "none" {
 		t.Fatalf("ch1: want mode=none (no word timing), got %+v", ts)
 	}

@@ -118,7 +118,7 @@ func (s *Server) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				for _, ch := range content {
-					ts, e := library.BuildTextSync(s.store, work.ID, b.ID, ch.Index)
+					ts, e := library.BuildTextSync(s.store, work.ID, b.ID, 0, ch.Index) // health: narration-agnostic
 					switch {
 					case e != nil || ts == nil:
 						h.None++
