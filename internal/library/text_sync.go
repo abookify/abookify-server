@@ -133,6 +133,18 @@ func BuildTextSync(store *db.Store, workID, bookID, playingAudioBookID int64, ch
 			transIDs[b.ID] = true
 		}
 	}
+	// STICKY whole-book degrade: if the printed edition's WORD chain to the human
+	// narration is too weak to trust, show the transcript for the WHOLE book — every
+	// chapter — so the reader never flaps between sources as uneven anchors come and
+	// go across chapters (the swap-the-text-out-from-under-you bug). Decided per-WORK
+	// (the alignment's overall audio_to_ebook), held for the whole book, NOT
+	// re-evaluated per chapter. A STRONG book stays on the ebook; a weak CHAPTER there
+	// just pauses the highlight (BuildEbookWordSync returns empty -> mode none) without
+	// swapping the text. weakChainTranscript is false for a displayed transcript, a TTS
+	// narration, or a work with no word alignment (paragraph-only follows are untouched).
+	if transID, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
+		return &TextSync{Mode: "none", Method: "anchor", Unit: "word", DegradeTo: transID, DegradeNote: degradeReason}, nil
+	}
 	if transIDs[bookID] {
 		// A transcript is word-timed STT output, so its default mode is word-by-word.
 		// But only claim mode=word when this chapter ACTUALLY has retrievable word
@@ -186,14 +198,6 @@ func BuildTextSync(store *db.Store, workID, bookID, playingAudioBookID int64, ch
 	// built 0 spans → dead text that never highlighted (Republic, and word chapters
 	// of works whose top row is paragraph).
 	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err == nil && len(wm) > 0 {
-		// The ebook WOULD show a word highlight here — but only trust it if the chain
-		// to the playing narration is strong enough. Below the threshold, degrade to
-		// the transcript (synced natively) with a plain-words note instead of a
-		// drifting highlight. Gated on the word map existing, so works that show a
-		// coarser paragraph follow (e.g. Meditations) are untouched.
-		if transID, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
-			return &TextSync{Mode: "none", Method: "anchor", Unit: "word", DegradeTo: transID, DegradeNote: degradeReason}, nil
-		}
 		return &TextSync{Mode: "word", Method: best.Method, Unit: "word", Confidence: best.Confidence}, nil
 	}
 
@@ -667,6 +671,13 @@ func BuildDisplayWordSync(store *db.Store, workID, bookID, playingAudioBookID in
 			}
 		}
 	}
+	// STICKY whole-book weak-chain degrade: if the word chain is too weak to trust,
+	// return no word map for ANY chapter so the reader shows the transcript for the
+	// whole book (the mode endpoint carries the DegradeTo/note) — never a per-chapter
+	// swap. Matches BuildTextSync so map and mode agree.
+	if _, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
+		return nil, nil
+	}
 	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err != nil || len(wm) > 0 {
 		// Guard the anchor map against a narration it is not timed to: if we know
 		// which narration is playing and the map's words run well past that
@@ -675,15 +686,6 @@ func BuildDisplayWordSync(store *db.Store, workID, bookID, playingAudioBookID in
 		if err == nil && len(wm) > 0 && playingAudioBookID > 0 &&
 			!anchorMapFitsNarration(store, work, playingAudioBookID, wm) {
 			return nil, nil
-		}
-		// Weak chain → no trustworthy highlight even though a map exists; return
-		// empty so the reader degrades to the transcript (mode endpoint carries the
-		// DegradeTo/note). Only when a word map WOULD show, so paragraph works are
-		// untouched.
-		if err == nil && len(wm) > 0 {
-			if _, degrade := weakChainTranscript(store, work, bookID, playingAudioBookID); degrade {
-				return nil, nil
-			}
 		}
 		return wm, err
 	}
