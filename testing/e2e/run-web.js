@@ -64,17 +64,17 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   await page.evaluate(async (wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
     if (!w) return;
-    const tf = (typeof displayEditionBooks === 'function')
-      ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
-    if (!tf) return;
-    // Load the chapter list, pick a mid-book chapter (skips front matter).
-    if (typeof loadChapterList === 'function') await loadChapterList(tf.id, w.id);
-    const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
-    const mid = chs.length ? chs[Math.min(chs.length - 1, Math.max(1, Math.floor(chs.length / 2)))] : { index: 1 };
-    if (typeof loadChapter === 'function') await loadChapter(tf.id, mid.index, w.id); // opens the reader overlay
-    if (typeof resumeOrPlay === 'function') await resumeOrPlay(w.id);                 // starts audio
+    // DETERMINISTIC seed: seek to a fixed mid-book audio position (20% in, past
+    // front matter) via seekToAbsoluteBookTime — it plays from that book-global
+    // second AND follows the reader to the matching chapter, so audio and reader
+    // AGREE every run. (resumeOrPlay used a stale saved position, which desynced
+    // the reader and made karaoke_advances flap.)
+    const audio = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'audio') : (w.audio_files || []);
+    const total = audio.reduce((s, f) => s + (f.duration_secs || 0), 0);
+    const at = Math.max(30, Math.round(total * 0.2));
+    if (typeof seekToAbsoluteBookTime === 'function') await seekToAbsoluteBookTime(w, at, w.title);
     const a = document.getElementById('audio-player');
-    if (a && a.paused) a.play();
+    if (a) { if (a.paused) await a.play().catch(() => {}); }
   }, WORK).catch(() => {});
   await page.waitForTimeout(1200);
   const t0 = clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
