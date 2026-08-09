@@ -479,28 +479,31 @@ func TestSilenceBareNumberAnnouncement_173(t *testing.T) {
 // v2 silence-based chapter detection: chapter-kind silences become the
 // chapter boundaries. First chapter is always at word 0.
 func TestDetectChaptersFromSilences_V2(t *testing.T) {
-	// 10 words, two chapter-grade silences between words 3-4 and 7-8.
+	// 10 words, two chapter-grade silences — spaced like a REAL book
+	// (chapters minutes apart). The original toy fixture put "chapters"
+	// seconds apart, which the minSilenceChapterGapSecs coalescing now
+	// correctly rejects as stacked-boundary artifacts.
 	words := []sttWord{
 		{Start: 0.0, End: 0.3, Word: "one"},
-		{Start: 0.3, End: 0.6, Word: " two"},
-		{Start: 0.6, End: 0.9, Word: " three"},
-		{Start: 0.9, End: 1.2, Word: " four"},
-		// chapter silence 1.2-5.0
-		{Start: 5.0, End: 5.3, Word: " five"},
-		{Start: 5.3, End: 5.6, Word: " six"},
-		{Start: 5.6, End: 5.9, Word: " seven"},
-		{Start: 5.9, End: 6.2, Word: " eight"},
-		// chapter silence 6.2-10.0
-		{Start: 10.0, End: 10.3, Word: " nine"},
-		{Start: 10.3, End: 10.6, Word: " ten"},
+		{Start: 20.3, End: 20.6, Word: " two"},
+		{Start: 40.6, End: 40.9, Word: " three"},
+		{Start: 60.9, End: 61.2, Word: " four"},
+		// chapter silence 61.2-65.0
+		{Start: 65.0, End: 65.3, Word: " five"},
+		{Start: 85.3, End: 85.6, Word: " six"},
+		{Start: 105.6, End: 105.9, Word: " seven"},
+		{Start: 125.9, End: 126.2, Word: " eight"},
+		// chapter silence 126.2-130.0
+		{Start: 130.0, End: 130.3, Word: " nine"},
+		{Start: 150.3, End: 150.6, Word: " ten"},
 	}
 	sc := &sttSidecar{
 		Version:  2,
-		Duration: 11.0,
+		Duration: 151.0,
 		Words:    words,
 		Silences: []sttSilence{
-			{Start: 1.2, End: 5.0, Duration: 3.8, Kind: "chapter"},
-			{Start: 6.2, End: 10.0, Duration: 3.8, Kind: "chapter"},
+			{Start: 61.2, End: 65.0, Duration: 3.8, Kind: "chapter"},
+			{Start: 126.2, End: 130.0, Duration: 3.8, Kind: "chapter"},
 		},
 	}
 	chs := detectChaptersFromSilences(sc)
