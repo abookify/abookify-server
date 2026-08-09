@@ -57,7 +57,7 @@ func TestBuildTextSyncTTSByConstruction(t *testing.T) {
 	if ts.Mode != "word" || ts.Method != "tts" {
 		t.Fatalf("mode=%s method=%s, want word/tts", ts.Mode, ts.Method)
 	}
-	wm, err := BuildDisplayWordSync(store, wid, epub, 1)
+	wm, err := BuildDisplayWordSync(store, wid, epub, 0, 1)
 	if err != nil || len(wm) != 5 {
 		t.Fatalf("word map len=%d err=%v, want 5", len(wm), err)
 	}

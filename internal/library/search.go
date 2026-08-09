@@ -50,7 +50,7 @@ func SearchWork(store *db.Store, workID int64, query string, limit int) ([]Searc
 		if wm, ok := wmCache[k]; ok {
 			return wm
 		}
-		wm, _ := BuildDisplayWordSync(store, workID, bookID, ch)
+		wm, _ := BuildDisplayWordSync(store, workID, bookID, 0, ch) // search: narration-agnostic
 		wmCache[k] = wm
 		return wm
 	}

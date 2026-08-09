@@ -1091,7 +1091,10 @@ func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
 		return
 	}
-	words, err := library.BuildDisplayWordSync(s.store, id, bookID, chapterIdx)
+	// ?audio={audioBookId} binds the returned map to the narration actually
+	// playing (multi-edition fix). Absent → 0 → legacy narration-agnostic map.
+	playingAudioBookID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("audio")), 10, 64)
+	words, err := library.BuildDisplayWordSync(s.store, id, bookID, playingAudioBookID, chapterIdx)
 	if err != nil {
 		writeServerError(w, r, err)
 		return

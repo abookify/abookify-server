@@ -52,7 +52,7 @@ func TestTranscriptWordModeHonesty(t *testing.T) {
 	if ts == nil || ts.Mode != "word" {
 		t.Fatalf("ch0: want mode=word, got %+v", ts)
 	}
-	if wm, _ := BuildDisplayWordSync(store, workID, transID, 0); len(wm) == 0 {
+	if wm, _ := BuildDisplayWordSync(store, workID, transID, 0, 0); len(wm) == 0 {
 		t.Fatal("ch0: word map must be non-empty when mode=word")
 	}
 
@@ -61,7 +61,7 @@ func TestTranscriptWordModeHonesty(t *testing.T) {
 	if ts == nil || ts.Mode != "none" {
 		t.Fatalf("ch1: want mode=none (no word timing), got %+v", ts)
 	}
-	if wm, _ := BuildDisplayWordSync(store, workID, transID, 1); len(wm) != 0 {
+	if wm, _ := BuildDisplayWordSync(store, workID, transID, 0, 1); len(wm) != 0 {
 		t.Fatalf("ch1: word map must be empty, got %d words", len(wm))
 	}
 }

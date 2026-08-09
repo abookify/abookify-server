@@ -555,7 +555,19 @@ func SliceTranscriptChapter(all []SyncWord, start, end float64) []SyncWord {
 // (BuildEbookWordSync) — so the /word-sync endpoint delivers a real map whichever
 // source the reader shows. Empty (nil) when the source has no per-word timing for
 // the chapter, which is the honest "fall back to paragraph / none" signal.
-func BuildDisplayWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
+// playingAudioBookID BINDS the returned map to the narration actually playing
+// (0 = unknown → legacy anchor-first behaviour, unchanged). A multi-narration
+// work has ONE anchor map (timed to the transcript's human narration) but may
+// ALSO carry a TTS narration generated from this same ebook (word-perfect by
+// construction). Picking the anchor map while a DIFFERENT narration plays is the
+// multi-edition desync: right chapter, wrong sentence. So:
+//   - playing a TTS edition of this ebook → its by-construction map (authoritative
+//     for THAT narration), preferred over the anchor map;
+//   - playing the human narration the anchor is timed to → the anchor map;
+//   - playing a narration the anchor map does NOT fit (its words run well past that
+//     narration's own duration) → nil, so the reader degrades to the transcript
+//     rather than confidently highlighting the wrong word.
+func BuildDisplayWordSync(store *db.Store, workID, bookID, playingAudioBookID int64, chapterIdx int) ([]SyncWord, error) {
 	work, err := store.GetWork(workID)
 	if err != nil || work == nil {
 		return nil, err
@@ -565,12 +577,65 @@ func BuildDisplayWordSync(store *db.Store, workID, bookID int64, chapterIdx int)
 			return BuildTranscriptWordSync(store, workID, bookID, chapterIdx)
 		}
 	}
+	// Narration-aware: if the playing narration is a TTS edition of this ebook, its
+	// by-construction map is the correct timing for it — prefer it over the anchor
+	// map (which is timed to the human narration and would desync here).
+	if playingAudioBookID > 0 {
+		if pb, _ := store.GetBook(playingAudioBookID); pb != nil && pb.Origin == "tts_kokoro" {
+			if tts, _ := BuildTTSEditionWordSync(store, workID, bookID, chapterIdx); len(tts) > 0 {
+				return tts, nil
+			}
+		}
+	}
 	if wm, err := BuildEbookWordSync(store, workID, bookID, chapterIdx); err != nil || len(wm) > 0 {
+		// Guard the anchor map against a narration it is not timed to: if we know
+		// which narration is playing and the map's words run well past that
+		// narration's own audio duration, it belongs to a DIFFERENT (longer)
+		// narration — degrade rather than highlight the wrong word.
+		if err == nil && len(wm) > 0 && playingAudioBookID > 0 &&
+			!anchorMapFitsNarration(store, work, playingAudioBookID, wm) {
+			return nil, nil
+		}
 		return wm, err
 	}
 	// No anchor-composed map — the TTS-by-construction path (see
 	// BuildTTSEditionWordSync).
 	return BuildTTSEditionWordSync(store, workID, bookID, chapterIdx)
+}
+
+// anchorMapFitsNarration reports whether an anchor word map (times on the
+// transcript's narration timeline) plausibly belongs to the narration currently
+// playing. A map whose last word lands well beyond the playing narration's own
+// total duration is timed to a different, longer narration — the multi-edition
+// desync. Grouped by origin (all files of one narration share it); generous
+// margin so a legitimately-matching narration never false-degrades.
+func anchorMapFitsNarration(store *db.Store, work *db.Work, playingAudioBookID int64, wm []SyncWord) bool {
+	var origin string
+	for i := range work.AudioFiles {
+		if work.AudioFiles[i].ID == playingAudioBookID {
+			origin = work.AudioFiles[i].Origin
+			break
+		}
+	}
+	if origin == "" {
+		return true // unknown narration — don't second-guess
+	}
+	var narrationDur float64
+	for i := range work.AudioFiles {
+		if work.AudioFiles[i].Origin == origin {
+			narrationDur += work.AudioFiles[i].Duration
+		}
+	}
+	if narrationDur <= 0 {
+		return true
+	}
+	var lastWord float64
+	for i := range wm {
+		if wm[i].S > lastWord {
+			lastWord = wm[i].S
+		}
+	}
+	return lastWord <= narrationDur*1.1+60 // generous: only a clear overshoot fails
 }
 
 func clamp01(f float64) float64 {
