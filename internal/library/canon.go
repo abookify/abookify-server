@@ -180,17 +180,31 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 	// (weak human chain -> transcript + note) carries the cost of the honest choice.
 	// Among the same kind, the longest. Deterministic — the point is ONE answer.
 	var best *CanonEdition
-	for i := range c.Editions {
-		e := &c.Editions[i]
-		eTTS := e.Origin == "tts_kokoro"
-		bTTS := best != nil && best.Origin == "tts_kokoro"
-		switch {
-		case best == nil:
-			best = e
-		case bTTS && !eTTS: // a human edition beats our TTS — it's their content
-			best = e
-		case eTTS == bTTS && e.Duration > best.Duration: // same kind → longest
-			best = e
+	// Honour the user's explicit narration pick first (display_audio_book_id) — the
+	// same sticky override as the text source. If they chose OUR TTS over their own
+	// human reading, that holds; a preference we forget is a preference we override.
+	if w.DisplayAudioBookID != 0 {
+		for i := range c.Editions {
+			for _, id := range c.Editions[i].BookIDs {
+				if id == w.DisplayAudioBookID {
+					best = &c.Editions[i]
+				}
+			}
+		}
+	}
+	if best == nil {
+		for i := range c.Editions {
+			e := &c.Editions[i]
+			eTTS := e.Origin == "tts_kokoro"
+			bTTS := best != nil && best.Origin == "tts_kokoro"
+			switch {
+			case best == nil:
+				best = e
+			case bTTS && !eTTS: // a human edition beats our TTS — it's their content
+				best = e
+			case eTTS == bTTS && e.Duration > best.Duration: // same kind → longest
+				best = e
+			}
 		}
 	}
 	if best != nil {
