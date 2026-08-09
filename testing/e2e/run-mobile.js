@@ -72,6 +72,32 @@ function apiJson(pathAndQuery) {
   catch { return null; }
 }
 
+// Preflight: distinguish INFRA failure from APP failure so a wedged emulator or
+// a wrong build is NEVER read as a broken app (the cry-wolf that makes the loop
+// untrustworthy). Infra problems exit 3 with a distinct reason. (App/journey
+// failures exit 1; bad-usage/no-adb exit 2; infra exit 3.) Each check answers a
+// specific "did the harness itself fail?" question BEFORE any journey runs.
+function preflight() {
+  let devs;
+  try { devs = adb('devices').split('\n').slice(1).filter((l) => /\tdevice$/.test(l)); }
+  catch (e) { console.error('INFRA(3) adb not available:', e.message); process.exit(3); }
+  if (!devs.length) { console.error('INFRA(3) no adb device — start the emulator (a run with no device is not a red journey)'); process.exit(3); }
+  if (devs.length > 1 && !process.env.E2E_SERIAL) { console.error(`INFRA(3) ${devs.length} devices attached — set E2E_SERIAL`); process.exit(3); }
+  let booted = '';
+  try { booted = adb('shell getprop sys.boot_completed').trim(); } catch {}
+  if (booted !== '1') { console.error(`INFRA(3) emulator not fully booted (sys.boot_completed="${booted}") — half-booted, not a red journey. Wait/cold-relaunch.`); process.exit(3); }
+  // Responsive: a wedged emulator still answers `adb` but hangs/empties the
+  // uiautomator dump. An empty dump would make EVERY journey fail ambiguously.
+  let xml = '';
+  try { xml = dump(); } catch {}
+  if (!xml || xml.length < 200) { console.error('INFRA(3) emulator UNRESPONSIVE — uiautomator dump empty/failed (wedged). Cold-relaunch the AVD; this is NOT an app failure.'); process.exit(3); }
+  try { if (!adb(`shell pm path ${PKG}`).includes('package:')) throw 0; }
+  catch { console.error(`INFRA(3) ${PKG} not installed — install the EXPO_PUBLIC_E2E=1 APK before running.`); process.exit(3); }
+  try { sh(`curl -sf -m5 -o /dev/null "http://localhost:${PORT}/api/ready"`); }
+  catch { console.error(`INFRA(3) fixture server not reachable at localhost:${PORT} — start testing/e2e/fixture-server.sh. A journey red here would be a lie.`); process.exit(3); }
+  console.log(`preflight OK — device booted + responsive, ${PKG} installed, fixture :${PORT} ready`);
+}
+
 function tap(x, y) { adb(`shell input tap ${x} ${y}`); }
 function keyBack() { adb('shell input keyevent 4'); }
 function typeText(s) {
@@ -198,6 +224,18 @@ function finish() {
     console.log(`\n\x1b[31m${failed.length} journey(s) FAILED:\x1b[0m ${failed.map((f) => f.id).join(', ')}`);
   }
   console.log(`\n${results.length - failed.length}/${results.length} implemented journeys passed`);
+  // A green run must state what it is green ABOUT — the opposite of the
+  // confident-wrong-answer pattern this whole effort exists to kill.
+  if (!failed.length) {
+    console.log('\nGREEN is scoped: this run verifies the ANDROID surface, on the sampled work' +
+      `${process.env.E2E_WORK ? ` ("${process.env.E2E_WORK}")` : ''}, on the CHAPTER the playhead sampled.`);
+    console.log('It does NOT and CANNOT tell you: (a) a UNIFORMLY-shifted map — if every word is wrong by the ' +
+      'same amount the UI is internally consistent, so on-device checks are blind to it (that belongs to the ' +
+      "timing probe); (b) UNSAMPLED chapters — green here is green about this chapter, not the whole book; " +
+      '(c) anything iOS-specific (lock-screen, background audio, foreground deep-link, layout).');
+  }
+  // Exit codes: 0 = all implemented journeys pass; 1 = an app/journey failed;
+  // (2 = usage; 3 = INFRA — emitted directly by preflight/probe-absent, never here).
   return failed.length ? 1 : 0;
 }
 
@@ -255,11 +293,9 @@ async function connect() {
 
 // ── Journeys ──────────────────────────────────────────────────────────────────
 (async () => {
-  // Sanity: a device must be attached.
-  try {
-    const devs = adb('devices').split('\n').slice(1).filter((l) => /\tdevice$/.test(l));
-    if (!devs.length) { console.error('FATAL no adb device/emulator attached (see prereqs in the header)'); process.exit(2); }
-  } catch (e) { console.error('FATAL adb not available:', e.message); process.exit(2); }
+  // Preflight distinguishes infra failure (exit 3) from app/journey failure
+  // (exit 1) — a wedged emulator or wrong build must never look like a red app.
+  preflight();
 
   // ---- open_library
   const connected = await connect();
@@ -336,6 +372,22 @@ async function connect() {
   // which is correct.
   openNowPlaying();
   await waitFor((x) => parseProbe(x) != null, 10000);
+  // Probe-absent = INFRA, not app. If playback IS running (a clock/Pause is on
+  // screen) but the E2E probe never rendered, the app is almost certainly NOT
+  // the EXPO_PUBLIC_E2E=1 build — karaoke_advances would then red for the wrong
+  // reason (a false app-fail). Distinguish it loudly. (If play never started —
+  // no clock/Pause — that's a real app failure; let the journeys red normally.)
+  {
+    const pf = dump();
+    const playing = /\d+:\d{2}(?::\d{2})?\s*\/\s*\d+:\d{2}/.test(pf) || !!findNode(pf, 'Pause');
+    if (playing && parseProbe(pf) == null) {
+      console.error('INFRA(3) E2E probe ABSENT while playing — this is NOT an EXPO_PUBLIC_E2E=1 build ' +
+        '(a full `./gradlew clean` after adding .env.local is required). karaoke_advances cannot run; ' +
+        'refusing to report a false app-fail.');
+      shot('probe-absent');
+      process.exit(3);
+    }
+  }
   const a = snapshot();
   await sleep(10000);
   const b = snapshot();
