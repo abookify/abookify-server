@@ -44,24 +44,39 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   report('open_library', cards >= 1 && consoleErrors.length === 0,
     `cards=${cards} pageErrors=${consoleErrors.length}`);
 
-  // ---- open_book (by explicit work: click the card whose detail we asked for)
-  // Navigate via the card grid; WORK selects the nth card if numeric selection fails.
-  let opened = false;
-  const cardLoc = page.locator('.work-card, [class*=card]');
-  for (let i = 0; i < Math.min(cards, 12) && !opened; i++) {
-    await cardLoc.nth(i).click().catch(() => {});
-    await page.waitForTimeout(1500);
-    if (await page.locator('text=/AUDIOBOOK|EBOOK/i').count()) opened = true;
-    else await page.goto(BASE, { waitUntil: 'networkidle' });
-  }
-  report('open_book', opened, opened ? '' : 'no work page reached');
+  // ---- open_book (DETERMINISTIC: open the work under test by id, via the app's
+  // own openWorkDetail, so the journey exercises a KNOWN work — not whichever
+  // card happens to be first. server-web owns this navigation.)
+  let opened = await page.evaluate((wid) => {
+    if (typeof openWorkDetail !== 'function') return false;
+    openWorkDetail(Number(wid));
+    return true;
+  }, WORK).catch(() => false);
+  await page.waitForTimeout(1800);
+  opened = opened && (await page.locator('text=/AUDIOBOOK|EBOOK/i').count()) > 0;
+  report('open_book', opened, opened ? '' : 'openWorkDetail did not render the work');
   if (!opened) { await page.screenshot({ path: `${SHOTS}/open_book-FAIL.png` }); process.exit(finish()); }
 
-  // ---- play_and_hear: click first playable chapter row, then play
-  await page.locator('.chapter-row, [class*=chapter]').first().click().catch(() => {});
-  await page.waitForTimeout(800);
-  const play = page.locator('button:has-text("▶"), [aria-label*="play" i]').first();
-  if (await play.count()) await play.click().catch(() => {});
+  // ---- play_and_hear: open the READER overlay on a mid-book (narrated) chapter,
+  // then start playback there — the karaoke .sync-word spans live in the reader
+  // overlay, and front-matter chapters have no audio sync. Pick the displayed
+  // text source + a chapter past the front matter.
+  await page.evaluate(async (wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    if (!w) return;
+    const tf = (typeof displayEditionBooks === 'function')
+      ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
+    if (!tf) return;
+    // Load the chapter list, pick a mid-book chapter (skips front matter).
+    if (typeof loadChapterList === 'function') await loadChapterList(tf.id, w.id);
+    const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
+    const mid = chs.length ? chs[Math.min(chs.length - 1, Math.max(1, Math.floor(chs.length / 2)))] : { index: 1 };
+    if (typeof loadChapter === 'function') await loadChapter(tf.id, mid.index, w.id); // opens the reader overlay
+    if (typeof resumeOrPlay === 'function') await resumeOrPlay(w.id);                 // starts audio
+    const a = document.getElementById('audio-player');
+    if (a && a.paused) a.play();
+  }, WORK).catch(() => {});
+  await page.waitForTimeout(1200);
   const t0 = clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
   await page.waitForTimeout(6000);
   const t1 = clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
@@ -104,13 +119,23 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     `A5 clock +${c1 != null && c2 != null ? (c2 - c1).toFixed(1) : '?'}s over ${wall.toFixed(1)}s`);
   if (!ok) await page.screenshot({ path: `${SHOTS}/karaoke-FAIL.png` });
 
-  // ---- change_chapter: click a different chapter row; reader content changes
-  const before = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 120));
-  const rows = page.locator('.chapter-row, [class*=chapter]');
-  if (await rows.count() > 2) await rows.nth(2).click().catch(() => {});
+  // ---- change_chapter: load a DIFFERENT chapter in the open reader; content changes.
+  // Pause first so the audio-follow sync doesn't immediately pull the reader back
+  // to the playing chapter.
+  await page.evaluate(() => { const a = document.getElementById('audio-player'); if (a && !a.paused) a.pause(); });
+  await page.waitForTimeout(400);
+  const before = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 160));
+  await page.evaluate((wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
+    const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
+    const cur = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : -1;
+    const other = chs.find(c => c.index !== cur) || chs[0];
+    if (other && typeof loadChapter === 'function') loadChapter(tf.id, other.index, w.id);
+  }, WORK).catch(() => {});
   await page.waitForTimeout(2500);
-  const after = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 120));
-  report('change_chapter', before !== after, before === after ? 'reader content unchanged' : '');
+  const after = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 160));
+  report('change_chapter', before !== after, before === after ? 'reader content unchanged after loadChapter' : '');
 
   // ---- switch_source: every text source renders real content
   // (covered richly only when the work has >1 text source; report words seen)
