@@ -3090,8 +3090,11 @@
         const pinned = groups.find(g => g.some(b => b.id === pinId));
         if (pinned) return pinned;
       }
-      // Most complete edition; ties → highest source authority.
+      // Prefer the HUMAN narration over our own TTS (their content wins — matches
+      // canon.active, META d-sw-humandefault); then most complete; then authority.
+      const isTTS = g => (g[0] && g[0].origin) === 'tts_kokoro';
       return groups.slice().sort((a, b) =>
+        (isTTS(a) - isTTS(b)) ||
         (b.length - a.length) ||
         (Math.max(...b.map(editionAuthority)) - Math.max(...a.map(editionAuthority))))[0];
     }

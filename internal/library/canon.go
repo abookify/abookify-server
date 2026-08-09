@@ -172,17 +172,24 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 			c.Active.TextChapters = t.Chapters
 		}
 	}
-	// Prefer our own TTS edition (word-synced by construction); otherwise the
-	// longest narration. Deterministic and simple — the point is ONE answer.
+	// Prefer the HUMAN narration when one exists (META d-sw-humandefault): the human
+	// recording is THEIRS — bought, ripped, or downloaded; our TTS is something WE
+	// generated on their machine. Silently defaulting to our own voice over the one
+	// they own would contradict "your library, your content". Our TTS syncs perfectly
+	// by construction, but that is not a reason to substitute it — the honest degrade
+	// (weak human chain -> transcript + note) carries the cost of the honest choice.
+	// Among the same kind, the longest. Deterministic — the point is ONE answer.
 	var best *CanonEdition
 	for i := range c.Editions {
 		e := &c.Editions[i]
+		eTTS := e.Origin == "tts_kokoro"
+		bTTS := best != nil && best.Origin == "tts_kokoro"
 		switch {
 		case best == nil:
 			best = e
-		case e.Origin == "tts_kokoro" && best.Origin != "tts_kokoro":
+		case bTTS && !eTTS: // a human edition beats our TTS — it's their content
 			best = e
-		case (e.Origin == "tts_kokoro") == (best.Origin == "tts_kokoro") && e.Duration > best.Duration:
+		case eTTS == bTTS && e.Duration > best.Duration: // same kind → longest
 			best = e
 		}
 	}
