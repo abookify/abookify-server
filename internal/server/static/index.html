@@ -5388,7 +5388,12 @@
       if (ts.mode === 'word' && book && !bookIsTranscript(book)) {
         clearParagraphFollow(); paraSync = null;
         try {
-          const wres = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}`);
+          // Bind the word map to the narration ACTUALLY playing (multi-edition):
+          // a work can carry both a TTS edition (word-perfect by construction) and
+          // a human recording (anchor-aligned); the server returns the map timed to
+          // the playing narration, or empty if none fits (→ honest degradation).
+          const audioQ = currentPlayingId ? `?audio=${currentPlayingId}` : '';
+          const wres = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}${audioQ}`);
           if (!wres.ok) throw new Error('word-sync ' + wres.status);
           const words = await wres.json();
           const reader = document.getElementById('reader-' + workId);
