@@ -112,6 +112,8 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
         active,
         activeMapSec: (map && active != null && map[active]) ? map[active].s : null,
         mapLen: map ? map.length : 0,
+        mapMinSec: (map && map.length) ? map[0].s : null,
+        mapMaxSec: (map && map.length) ? map[map.length - 1].s : null,
       };
     });
   }
@@ -171,6 +173,75 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   }, WORK).catch((e) => ({ ok: false, why: String(e) }));
   report('change_chapter', chg.ok, chg.ok ? `chapter ${chg.from}->${chg.to}` : (chg.why || `stayed on ${chg.from}`));
 
+  // ---- resume_flow: the stuck-'Cratchit' catch. PJ's most damning screenshot —
+  // the highlight frozen on "Cratchit ,," at a chapter's END while the audio played
+  // on ELSEWHERE. It is the report that most looks like the product simply not
+  // working, because the words are visibly there and visibly wrong.
+  //
+  // THIS IS A RESUME JOURNEY, NOT A PLAY-THROUGH — do NOT "simplify" it to play
+  // from 0:00. The bug only appears when playback picks up somewhere OTHER than the
+  // start (the failure lives at the transition, same lesson as mobile's
+  // auto-advance). We resume from the work's SAVED position via the product's own
+  // resumeOrPlay path (messy 8198 carries an imported position at 1591.8s, mid
+  // Stave Two). PASS = the reader navigates to the chapter the audio is in — the
+  // audio clock falls INSIDE the shown chapter's word-map extent. FAIL signatures:
+  //   * "stuck": words>0 but the clock is PAST the shown chapter's whole map — the
+  //     reader did NOT auto-navigate to the narrated chapter. THIS IS PJ'S BUG, real.
+  //   * "harness": words==0 / reader never opened while the clock advances — fix the
+  //     runner's resume drive, not the product.
+  // Reload FIRST so the audio player is empty — otherwise this goto's pagehide
+  // fires flushPositionBeacon(), which re-saves the shallow position still loaded
+  // from play_and_hear and CLOBBERS the deep position we are about to plant.
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  // PRECONDITION: plant a DEEP saved position, because the fixture's imported one
+  // (1591.8s) is clobbered by any prior playback autosave — including this suite's
+  // own earlier journeys. resume_flow owns its precondition so it is deterministic
+  // regardless of run order. Plant AFTER the reload (no live player to re-clobber),
+  // ~50% through the book (mid a later file), then resume via the real resumeOrPlay
+  // with NO further reload between plant and resume.
+  const planted = await page.evaluate(async (wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    const files = (w.audio_files || []);
+    if (!files.length) return null;
+    const total = files.reduce((s, f) => s + (f.duration_secs || 0), 0);
+    const target = total * 0.5;
+    let acc = 0, book = files[0], idx = 0, local = 0;
+    for (let i = 0; i < files.length; i++) {
+      const d = files[i].duration_secs || 0;
+      if (acc + d >= target) { book = files[i]; idx = i; local = Math.round(target - acc); break; }
+      acc += d;
+    }
+    await fetch(`/api/works/${w.id}/position`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ book_id: book.id, file_index: idx, position_secs: local }),
+    }).catch(() => {});
+    return { bookId: book.id, fileIdx: idx, local, globalApprox: Math.round(target) };
+  }, WORK).catch(() => null);
+  await page.evaluate((wid) => { if (typeof openWorkDetail === 'function') openWorkDetail(Number(wid)); }, WORK).catch(() => {});
+  await page.waitForTimeout(1500);
+  await page.evaluate((wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    if (w && typeof resumeOrPlay === 'function') resumeOrPlay(w.id); // resumes at the DEEP planted position
+    const a = document.getElementById('audio-player');
+    if (a && a.paused) a.play().catch(() => {});
+  }, WORK).catch(() => {});
+  await page.waitForTimeout(4000);
+  const rs = await karaokeState();
+  const rc = await uiClock();
+  // Reader followed iff the audio clock sits within the shown chapter's map extent.
+  // Using the map EXTENT (not the highlighted word) avoids a false "harness" verdict
+  // on a resume that hasn't reached its first word yet.
+  const withinChapter = rs.mapMaxSec != null && rs.mapMinSec != null && rc != null
+    && rc <= rs.mapMaxSec + 2.5 && rc >= rs.mapMinSec - 2.5;
+  const rFollows = rs.wordCount >= 50 && withinChapter;
+  const plantStr = planted ? `planted@~${planted.globalApprox}s(book ${planted.bookId} idx${planted.fileIdx}+${planted.local}s)` : 'plant FAILED';
+  let rsig;
+  if (rs.wordCount === 0) rsig = `harness: reader never opened (words=0) while clock=${rc} [${plantStr}] — fix the resume drive`;
+  else if (!withinChapter) rsig = `stuck: clock=${rc} is PAST the shown chapter's map [${rs.mapMinSec == null ? '?' : rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec == null ? '?' : rs.mapMaxSec.toFixed(0)}s] [${plantStr}] — reader did NOT follow audio (PJ's 'Cratchit')`;
+  else rsig = `reader followed: clock=${rc} within map [${rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec.toFixed(0)}s], ${rs.wordCount} words [${plantStr}]`;
+  report('resume_flow', rFollows, rsig);
+  if (!rFollows) await page.screenshot({ path: `${SHOTS}/resume_flow-FAIL.png` });
+
   // ---- switch_source: EVERY text source must render real content for a mid-book
   // chapter. This is the one that catches a source rendering almost nothing —
   // Carol's transcript today ("This is", then nothing). A source under the floor
@@ -228,11 +299,10 @@ function finish() {
   console.log('  2. Timing/karaoke damage in chapters this run did not open. karaoke_advances samples ONE');
   console.log('     window; per-chapter sweeps cost ~4x. A green karaoke means THAT window advanced, not the whole book.');
   console.log('     (switch_source DOES cover all chapters, but only for the near-empty-render class.)');
-  console.log('  3. The reader-does-NOT-follow-audio gap (PJ\'s stuck-"Cratchit"). karaoke_advances co-locates');
-  console.log('     reader+audio by construction (seats the audio inside the loaded chapter\'s map), so it never');
-  console.log('     exercises resume/auto-navigate — audio in chapter N while the reader shows chapter M. That');
-  console.log('     product gap needs the resume-flow journey (open at the saved position, assert the reader');
-  console.log('     navigates to the narrated chapter). Specced, NOT yet in this runner.');
+  console.log('NOW COVERED (was a blind spot; added as its own journey):');
+  console.log('  * The reader-does-NOT-follow-audio gap (PJ\'s stuck-"Cratchit") is caught by resume_flow, which');
+  console.log('    RESUMES from a deep planted position (not a play-through — the bug lives at the transition).');
+  console.log('    karaoke_advances alone cannot see it (it co-locates reader+audio by construction).');
   console.log(`\n${results.length - failed.length}/${results.length} journeys passed`);
   return failed.length ? 1 : 0;
 }
