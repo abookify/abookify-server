@@ -130,8 +130,11 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   const chg = await page.evaluate(async (wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
     const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
+    if (!(window.chapterCache && chapterCache[tf.id]?.chapters?.length) && typeof loadChapterList === 'function') {
+      await loadChapterList(tf.id, w.id);
+    }
     const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
-    if (chs.length < 2) return { ok: false, why: 'work has <2 text chapters' };
+    if (chs.length < 2) return { ok: false, why: `only ${chs.length} chapters in book ${tf.id}` };
     const cur = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : chs[0].index;
     const other = chs.find(c => c.index !== cur) || chs[chs.length - 1];
     await loadChapter(tf.id, other.index, w.id);
@@ -141,11 +144,37 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   }, WORK).catch((e) => ({ ok: false, why: String(e) }));
   report('change_chapter', chg.ok, chg.ok ? `chapter ${chg.from}->${chg.to}` : (chg.why || `stayed on ${chg.from}`));
 
-  // ---- switch_source: every text source renders real content
-  // (covered richly only when the work has >1 text source; report words seen)
-  const wordsNow = await page.evaluate(() => document.querySelectorAll('.sync-word').length
-    || (document.querySelector('.reader-content')?.textContent || '').split(/\s+/).length);
-  report('switch_source', wordsNow >= 50, `rendered words=${wordsNow}`);
+  // ---- switch_source: EVERY text source must render real content for a mid-book
+  // chapter. This is the one that catches a source rendering almost nothing —
+  // Carol's transcript today ("This is", then nothing). A source under the floor
+  // fails LOUDLY instead of passing because the OTHER (good) source was showing.
+  // For EACH source, check TWO things: (a) it renders content when switched to,
+  // and (b) it has no near-empty INTERIOR chapters — the failure that renders
+  // "This is" and nothing when the reader lands on one. Sampling a single
+  // mid-book chapter is too weak (Carol's transcript alternates 2-word fragments
+  // with real chapters; a mid pick can hit a good one). So scan every chapter's
+  // rendered length across each source.
+  const srcResult = await page.evaluate(async (wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    const texts = (w.text_files || []).filter(b => b.visibility !== 'internal');
+    const out = [];
+    for (const tf of texts) {
+      const chs = await fetch(`/api/books/${tf.id}/chapters`).then(r => r.json()).catch(() => []);
+      const list = Array.isArray(chs) ? chs : (chs.chapters || []);
+      // Interior chapters (drop first + last: legit short front/back matter).
+      const interior = list.slice(1, -1);
+      const nearEmpty = interior.filter(c => (c.word_count || 0) < 10).length;
+      const total = list.reduce((s, c) => s + (c.word_count || 0), 0);
+      out.push({ fmt: tf.format, chapters: list.length, nearEmptyInterior: nearEmpty, totalWords: total });
+    }
+    return out;
+  }, WORK).catch(() => []);
+  // A source is broken if it holds real content overall yet has interior chapters
+  // that render essentially nothing — a reader landing on one sees "This is".
+  const broken = srcResult.filter(s => s.totalWords > 200 && s.nearEmptyInterior > 0);
+  report('switch_source', srcResult.length > 0 && broken.length === 0,
+    srcResult.map(s => `${s.fmt}:${s.chapters}ch/${s.nearEmptyInterior}empty`).join(' ') || 'no text sources');
+  if (broken.length) await page.screenshot({ path: `${SHOTS}/switch_source-FAIL.png` });
 
   await browser.close();
   process.exit(finish());
