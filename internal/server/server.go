@@ -912,6 +912,12 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read-along trust tier for the displayed audio edition (empty when the timing
+	// probe hasn't verified it — unknown is never rendered as a claim).
+	if tier, err := library.ComputeTimingTier(s.store, work); err == nil {
+		work.TimingTier = tier
+	}
+
 	// Enrich with display-source hints so the UI knows which source to show.
 	type workWithDisplay struct {
 		*db.Work

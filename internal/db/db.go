@@ -44,6 +44,11 @@ type Work struct {
 	TextFiles          []Book        `json:"text_files,omitempty"`
 	ChapterLinks       []ChapterLink `json:"chapter_links,omitempty"`
 	TotalSize          int64         `json:"total_size"`
+	// TimingTier is the read-along trust tier for the displayed audio edition,
+	// computed by the SERVER (library.ComputeTimingTier) from the timing probe +
+	// provenance + text peer. Empty = not yet checked (unknown) → never rendered
+	// as a verified claim. The reader-facing LABEL is a separate product decision.
+	TimingTier string `json:"timing_tier,omitempty"`
 	// Local-first sync stamps. SchemaVersion is the book.db shape this work
 	// would export under; ContentVersion is the RFC3339 UTC time of its last
 	// (re)process. See StampVersions and design/local-first-sync.md.
@@ -625,6 +630,23 @@ func migrate(db *sql.DB) error {
 			zero_at       INTEGER NOT NULL DEFAULT 0,
 			zero_bytes    INTEGER NOT NULL DEFAULT 0,
 			FOREIGN KEY (book_id) REFERENCES books(id)
+		);
+
+		-- Audio-timing soundness probe results (the timing-tier signal). One row
+		-- per work+narration-edition; edition_key is the audio directory, matching
+		-- the probe's grouping (testing/timing-probe.py). windows = probe windows
+		-- that ran, passed = windows meeting the >=60%-word-match + median|Δt|<=1.5s
+		-- bar. The probe (transcription's lane, GPU whisper re-transcribe) WRITES
+		-- these; the server READS them to compute the reader-facing tier. No row =
+		-- "not yet checked" → the tier is UNKNOWN, never a claim we haven't earned.
+		CREATE TABLE IF NOT EXISTS timing_results (
+			work_id      INTEGER NOT NULL,
+			edition_key  TEXT NOT NULL,
+			checked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			windows      INTEGER NOT NULL DEFAULT 0,
+			passed       INTEGER NOT NULL DEFAULT 0,
+			median_delta REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (work_id, edition_key)
 		);
 	`)
 	if err != nil {
@@ -1623,14 +1645,14 @@ func (s *Store) SetBookStartSec(bookID int64, startSec float64) error {
 // question could not be asked. That is NOT the same as a clean result and the UI
 // must not render it as one.
 type TextTrustRow struct {
-	WorkID        int64  `json:"work_id"`
-	CheckedAt     string `json:"checked_at,omitempty"`
-	HasConfidence bool   `json:"has_confidence"`
-	SuspectWords  int    `json:"suspect_words"`
-	TotalWords    int    `json:"total_words"`
+	WorkID        int64   `json:"work_id"`
+	CheckedAt     string  `json:"checked_at,omitempty"`
+	HasConfidence bool    `json:"has_confidence"`
+	SuspectWords  int     `json:"suspect_words"`
+	TotalWords    int     `json:"total_words"`
 	WorstAtSec    float64 `json:"worst_at_sec,omitempty"`
-	ChaptersJSON  string `json:"-"`
-	PassagesJSON  string `json:"-"`
+	ChaptersJSON  string  `json:"-"`
+	PassagesJSON  string  `json:"-"`
 }
 
 // SaveTextTrust records (or replaces) a work's verdict. A clean result is stored
