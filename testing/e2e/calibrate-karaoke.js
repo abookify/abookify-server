@@ -6,7 +6,7 @@
 const PW = '/home/pj/projects/web/youarehereart/laravel-web/frontend/node_modules/playwright-core';
 const { chromium } = require(PW);
 const BASE = process.argv[2] || 'http://localhost:8199';
-const MODE = process.argv[3] || 'broken'; // broken | good
+const MODE = process.argv[3] || 'broken'; // broken | good | empty | shift | clockfreeze
 const clockSecs = t => { const p=(t||'').trim().split(':').map(Number); return p.some(isNaN)||!p.length?null:p.reduce((a,b)=>a*60+b,0); };
 (async () => {
   const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox','--autoplay-policy=no-user-gesture-required'] });
@@ -19,12 +19,28 @@ const clockSecs = t => { const p=(t||'').trim().split(':').map(Number); return p
   const play = page.locator('button:has-text("▶"), [aria-label*="play" i]').first();
   if (await play.count()) await play.click().catch(()=>{});
   await page.waitForTimeout(2000);
-  if (MODE === 'good') { // navigate the READER to the narrated chapter
+  if (MODE !== 'broken') { // navigate the READER to the narrated chapter
     for (const r of await page.locator('text=/STAVE\\s+ONE/i').all()) {
       const b = await r.boundingBox();
       if (b && b.x > 700) { await r.click(); break; }
     }
     await page.waitForTimeout(3000);
+  }
+  if (MODE === 'empty') { // switch the reader to the (mangled) transcript source
+    await page.evaluate(() => {
+      const sel = document.getElementById('np-text-source');
+      const opt = [...sel.options].find(o => /transcript/i.test(o.textContent));
+      if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change')); if (typeof onTextSourceChange==='function') onTextSourceChange(opt.value); }
+    });
+    await page.waitForTimeout(3000);
+  }
+  if (MODE === 'shift') { // fault injection: word map shifted 30s (wrong-sentence state)
+    await page.evaluate(() => { if (typeof activeSyncData !== 'undefined' && activeSyncData) activeSyncData.forEach(w => { w.s += 30; w.e += 30; }); });
+    await page.waitForTimeout(1500);
+  }
+  if (MODE === 'clockfreeze') { // fault injection: position stops advancing
+    await page.evaluate(() => document.querySelector('audio')?.pause());
+    await page.waitForTimeout(1000);
   }
   const state = () => page.evaluate(() => {
     const read=[...document.querySelectorAll('.sync-word.read')].map(e=>+e.dataset.widx).filter(n=>!isNaN(n));
