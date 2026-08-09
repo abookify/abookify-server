@@ -124,18 +124,22 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   // to the playing chapter.
   await page.evaluate(() => { const a = document.getElementById('audio-player'); if (a && !a.paused) a.pause(); });
   await page.waitForTimeout(400);
-  const before = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 160));
-  await page.evaluate((wid) => {
+  // Assert on the reader's CHAPTER STATE, not text-content diff: a Gutenberg EPUB
+  // has near-identical front-matter sections, so two chapters can look the same
+  // even when the load worked. currentReaderChapter[work].index is the truth.
+  const chg = await page.evaluate(async (wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
     const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
     const chs = (window.chapterCache && chapterCache[tf.id]?.chapters) || [];
-    const cur = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : -1;
-    const other = chs.find(c => c.index !== cur) || chs[0];
-    if (other && typeof loadChapter === 'function') loadChapter(tf.id, other.index, w.id);
-  }, WORK).catch(() => {});
-  await page.waitForTimeout(2500);
-  const after = await page.evaluate(() => (document.querySelector('.reader-content')?.textContent || '').slice(0, 160));
-  report('change_chapter', before !== after, before === after ? 'reader content unchanged after loadChapter' : '');
+    if (chs.length < 2) return { ok: false, why: 'work has <2 text chapters' };
+    const cur = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : chs[0].index;
+    const other = chs.find(c => c.index !== cur) || chs[chs.length - 1];
+    await loadChapter(tf.id, other.index, w.id);
+    await new Promise(r => setTimeout(r, 1500));
+    const now = (typeof currentReaderChapter !== 'undefined' && currentReaderChapter[w.id]) ? currentReaderChapter[w.id].index : cur;
+    return { ok: now === other.index && now !== cur, from: cur, to: now, wanted: other.index };
+  }, WORK).catch((e) => ({ ok: false, why: String(e) }));
+  report('change_chapter', chg.ok, chg.ok ? `chapter ${chg.from}->${chg.to}` : (chg.why || `stayed on ${chg.from}`));
 
   // ---- switch_source: every text source renders real content
   // (covered richly only when the work has >1 text source; report words seen)
