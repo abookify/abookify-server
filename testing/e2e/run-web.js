@@ -228,6 +228,11 @@ function finish() {
   console.log('  2. Timing/karaoke damage in chapters this run did not open. karaoke_advances samples ONE');
   console.log('     window; per-chapter sweeps cost ~4x. A green karaoke means THAT window advanced, not the whole book.');
   console.log('     (switch_source DOES cover all chapters, but only for the near-empty-render class.)');
+  console.log('  3. The reader-does-NOT-follow-audio gap (PJ\'s stuck-"Cratchit"). karaoke_advances co-locates');
+  console.log('     reader+audio by construction (seats the audio inside the loaded chapter\'s map), so it never');
+  console.log('     exercises resume/auto-navigate — audio in chapter N while the reader shows chapter M. That');
+  console.log('     product gap needs the resume-flow journey (open at the saved position, assert the reader');
+  console.log('     navigates to the narrated chapter). Specced, NOT yet in this runner.');
   console.log(`\n${results.length - failed.length}/${results.length} journeys passed`);
   return failed.length ? 1 : 0;
 }
