@@ -3585,12 +3585,12 @@
             <div class="work-progressbar" id="work-progressbar-${work.id}" style="display:none;"><i style="width:0%"></i></div>
             <div class="work-badges">
               ${work.has_audio
-                ? `<span class="media-pill audio">${audioFiles.length} audio</span>`
+                ? `<span class="media-pill audio">${displayEditionBooks(work, 'audio').length} audio</span>`
                 : `<span class="media-pill missing">no audio</span>`}
               ${work.needs_text_conversion
                 ? `<span class="media-pill missing" title="This file's text couldn't be read (PDFs aren't supported). Convert it to EPUB — e.g. with Calibre — and re-add it.">PDF — convert to EPUB</span>`
                 : work.has_text
-                ? `<span class="media-pill text">${textFiles.length} text</span>`
+                ? `<span class="media-pill text">${displayEditionBooks(work, 'text').length} text</span>`
                 : `<span class="media-pill missing">no text</span>`}
               ${renderGapBadge(work.id)}
               ${renderAlignBadge(work)}
