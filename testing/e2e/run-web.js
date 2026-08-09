@@ -419,14 +419,20 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
       const epub = (w.text_files || []).find(b => b.format === 'epub');
       const trans = (w.text_files || []).find(b => b.format === 'transcript');
       if (!human || !epub || !trans) return { na: true, why: 'needs epub + human narration + transcript' };
-      // Is the epub chain weak for the human narration? Ask the server.
+      // SCAN the epub's content chapters for the FIRST that actually degrades on
+      // the human narration (a word map that fails the confidence gate). Front
+      // matter has no word map and never degrades — testing a fixed index would
+      // pick it and miss the real path. n/a when no chapter degrades (strong chain
+      // or all-paragraph epub).
       const chs = await fetch(`/api/books/${epub.id}/chapters`).then(r => r.json()).catch(() => []);
-      const list = Array.isArray(chs) ? chs : [];
-      const ch = list.filter(c => (c.word_count || 0) > 200)[Math.floor(list.length / 2)] || list[Math.floor(list.length / 2)] || list[0];
-      if (!ch) return { na: true, why: 'no epub chapter' };
-      const ts = await fetch(`/api/works/${w.id}/text-sync/${epub.id}/${ch.index}?audio=${human.id}`).then(r => r.json()).catch(() => ({}));
-      if (!ts.degrade_to) return { na: true, why: `strong chain (no degrade for epub ch${ch.index})` };
-      // Weak: drive the reader — play the human narration, open the epub chapter.
+      const content = (Array.isArray(chs) ? chs : []).filter(c => (c.word_count || 0) > 200);
+      let ch = null, ts = null;
+      for (const c of content) {
+        const t = await fetch(`/api/works/${w.id}/text-sync/${epub.id}/${c.index}?audio=${human.id}`).then(r => r.json()).catch(() => ({}));
+        if (t && t.degrade_to) { ch = c; ts = t; break; }
+      }
+      if (!ch) return { na: true, why: 'no degrading word chapter on this epub (strong chain or paragraph-only)' };
+      // Weak: drive the reader — play the human narration, open the degrading chapter.
       playAudio(human.id, 0, w.id, human.title || human.filename, w.title, 120);
       window.__wc = { epubId: epub.id, chIndex: ch.index, transId: trans.id, degradeTo: ts.degrade_to, note: ts.degrade_note };
       return { na: false, driving: true };
