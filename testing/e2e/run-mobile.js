@@ -64,6 +64,13 @@ function sh(cmd, opts = {}) {
 }
 function adb(args, opts = {}) { return sh(`${ADB} ${args}`, opts); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The runner is on the HOST, so it reaches the fixture server directly at
+// localhost:PORT (the emulator uses 10.0.2.2:PORT — same server). Used by the
+// cross-surface counts assert to read the API canonical.
+function apiJson(pathAndQuery) {
+  try { return JSON.parse(sh(`curl -s -m8 "http://localhost:${PORT}${pathAndQuery}"`)); }
+  catch { return null; }
+}
 
 function tap(x, y) { adb(`shell input tap ${x} ${y}`); }
 function keyBack() { adb('shell input keyevent 4'); }
@@ -268,6 +275,49 @@ async function connect() {
   const onWork = /Play book|Playing|Paused/i.test(xml) && !!findNode(xml, WORK_SUB);
   report('open_book', onWork, onWork ? '' : 'work page (title + "Play book") did not render');
   if (!onWork) { shot('open_book'); process.exit(finish()); }
+
+  // ---- cross_surface_counts (META-elevated): the counts the MOBILE surface
+  // shows for this work must match the API canonical (transcription owns the
+  // canonical definition; this is the mobile half of web==mobile==API). MUST go
+  // RED on today's messy fixture, where the Kokoro edition splits across two
+  // rows. Reads the work-page badges ("N audio chapters" / "M chapters") + the
+  // count of distinct SOURCE rows, and compares to /api/works/{id}.
+  // NOTE: the exact canonical QUANTITY is being finalized with transcription;
+  // until then the API's own audio_files / text_files / distinct-edition counts
+  // are the canonical proxy. This asserts the mobile UI renders that faithfully.
+  {
+    const list = apiJson('/api/works') || [];
+    const works = Array.isArray(list) ? list : (list.works || []);
+    const w = works.find((x) => (x.title || '').includes(WORK_SUB));
+    const full = w ? apiJson(`/api/works/${w.id}`) : null;
+    if (!full) {
+      report('cross_surface_counts', false, `could not read API canonical for "${WORK_SUB}"`);
+    } else {
+      const af = full.audio_files || [];
+      const tf = full.text_files || [];
+      // Canonical: distinct audio EDITIONS (a work should have ONE narration
+      // edition per origin+voice; the messy fixture wrongly splits Kokoro into
+      // two). Files and text-sources counts too.
+      const editionKey = (b) => `${b.origin || b.source_type || ''}|${b.voice || ''}`;
+      const apiEditions = new Set(af.map(editionKey)).size;
+      // Mobile UI: "N audio chapters", "M chapters", and the SOURCE row count.
+      const mAudio = (xml.match(/(\d+)\s*audio chapters?/i) || [])[1];
+      const mChapters = (xml.match(/\b(\d+)\s*chapters?\b/i) || [])[1];
+      const mSourceRows = (xml.match(/·\s*\d+\s*files?/gi) || []).length;
+      // IMPORTANT: do NOT assert mobile == raw API. For the messy fixture the
+      // Kokoro split lives in the DATA (two edition labels), so the raw API AND
+      // mobile both report the split — a "mobile == API" check would PASS on the
+      // broken data (measuring the wrong thing, the exact trap META flagged).
+      // The RED must come from comparing to transcription's CORRECT canonical
+      // (one Kokoro edition), which is not yet published. So: EMIT the mobile
+      // half's numbers now (the cheap "probe line"), and SKIP the pass/fail
+      // until the canonical comparator lands — never a false green.
+      skip('cross_surface_counts',
+        `mobile[audioCh=${mAudio} chapters=${mChapters} sourceRows=${mSourceRows}] ` +
+        `rawAPI[editions=${apiEditions} files=${af.length} text=${tf.length}] — ` +
+        `pending transcription canonical (do NOT assert vs raw API: split is in the data)`);
+    }
+  }
 
   // ---- play_and_hear: start playback, open the reader (📖) so the probe is on
   // screen, then confirm the player clock ADVANCES with wall time.
