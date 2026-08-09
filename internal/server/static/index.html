@@ -5190,7 +5190,13 @@
       const sel = document.getElementById('np-text-source');
       if (!sel) return;
       const sources = work ? orderedTextSources(work) : [];
-      const current = work ? resolveDisplayTextBook(work) : null;
+      // Reflect the source ACTUALLY on screen — the reader's loaded book — so the
+      // picker never labels a source the app isn't showing (e.g. it says "EPUB"
+      // while a weak-chain work is degraded to the transcript). Fall back to the
+      // resolved default before the reader has loaded a chapter.
+      const loaded = work && currentReaderChapter[work.id]
+        ? sources.find(b => b.id === currentReaderChapter[work.id].bookId) : null;
+      const current = loaded || (work ? resolveDisplayTextBook(work) : null);
       // Follow-mode indicator shows for any active source (even a lone one);
       // the picker itself only when there's a real choice (>1 source).
       if (work && current) updateSyncModeIndicator(work.id, current.id);
@@ -5447,6 +5453,9 @@
       } else {
         hideReaderNote(); delete readerDegradeNote[workId];
       }
+      // Re-sync the source picker to the book now on screen (the degrade may have
+      // switched it), so the control never labels a source the reader isn't showing.
+      refreshTextSourcePicker(work);
       paintSyncPill(ts.mode || 'none', ts);
 
       // Word-by-word karaoke from the composed per-word map. The tick highlights
