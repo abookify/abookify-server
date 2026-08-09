@@ -1371,7 +1371,16 @@
       border-left: 3px solid var(--epub);
       padding-left: calc(0.75rem - 3px);
     }
-    #np-reader-host { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+    #np-reader-host { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+    /* Weak-chain degrade note: shown when we display the transcript because the
+       printed edition doesn't line up closely enough to highlight in sync. Reads
+       as a deliberate choice, not an error — warm, quiet, above the reader. */
+    #np-reader-host > .reader-degrade-note {
+      flex: 0 0 auto; padding: 0.6rem 2rem; font-size: 0.86rem; line-height: 1.4;
+      color: var(--text); background: var(--accent-soft, rgba(180,120,60,0.10));
+      border-bottom: 1px solid var(--border); display: none;
+    }
+    #np-reader-host > .reader-degrade-note::before { content: '♪ '; opacity: 0.7; }
     #np-reader-host > .reader-content {
       flex: 1; max-height: none; border-top: none; padding: 1.5rem 2rem;
       overflow-y: auto;
@@ -5199,8 +5208,12 @@
     // Switch to a different text source when the user picks from the gear
     // menu. Persists the choice on the work so subsequent reloads (and other
     // clients on the same library) see the same source.
-    async function switchTextEdition(workId, bookId) {
+    async function switchTextEdition(workId, bookId, opts) {
       bookId = parseInt(bookId);
+      opts = opts || {};
+      // A manual pick (gear menu) is an explicit choice — record it so the
+      // weak-chain auto-degrade never overrides the user. opts.auto = our own switch.
+      if (!opts.auto) userPickedSource[workId] = bookId;
       // Remember where we were so we can keep the reader near the same place
       // in the new source. Sources can have very different chapter counts
       // (e.g. EPUB front-matter sections vs. timed transcript chapters), so a
@@ -5296,6 +5309,30 @@
     // | unavailable. 'unavailable' is the HONEST state when a sync fetch failed
     // (e.g. a 502 during a tunnel blip) — the reader says so rather than silently
     // rendering unsynced text that never highlights.
+    // Weak-chain degradation state (per work): the note to show while we display
+    // the transcript in place of an untrustworthy ebook highlight, and the source
+    // the user explicitly picked (so we never override an intentional choice).
+    const readerDegradeNote = {};
+    const userPickedSource = {};
+
+    function showReaderNote(text) {
+      const host = document.getElementById('np-reader-host');
+      if (!host) return;
+      let n = document.getElementById('reader-degrade-note');
+      if (!n) {
+        n = document.createElement('div');
+        n.id = 'reader-degrade-note';
+        n.className = 'reader-degrade-note';
+        host.insertBefore(n, host.firstChild);
+      }
+      n.textContent = text;
+      n.style.display = 'block'; // explicit — '' would fall back to the CSS display:none
+    }
+    function hideReaderNote() {
+      const n = document.getElementById('reader-degrade-note');
+      if (n) n.style.display = 'none';
+    }
+
     function paintSyncPill(mode, opts) {
       const el = document.getElementById('np-sync-mode');
       if (!el) return;
@@ -5375,11 +5412,30 @@
       // instead of silently rendering unsynced text that never highlights.
       let ts;
       try {
-        const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}`);
+        // ?audio binds the mode/degrade decision to the narration playing.
+        const audioQ = currentPlayingId ? `?audio=${currentPlayingId}` : '';
+        const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}${audioQ}`);
         if (!res.ok) throw new Error('text-sync ' + res.status);
         ts = await res.json();
       } catch (e) {
         clearParagraphFollow(); paraSync = null; paintSyncPill('unavailable'); return;
+      }
+      // Weak-chain degradation: the printed edition doesn't line up closely enough
+      // with THIS narration to trust a word highlight. Actively show the TRANSCRIPT
+      // (a real reading experience, synced natively to the narrator) and say why —
+      // never a quiet "no sync" that reads as broken. Respect an explicit user pick
+      // of this ebook (they can still read it un-highlighted).
+      if (ts.degrade_to && Number(ts.degrade_to) !== bookId && userPickedSource[workId] !== bookId) {
+        readerDegradeNote[workId] = ts.degrade_note || '';
+        await switchTextEdition(workId, Number(ts.degrade_to), { auto: true });
+        return;
+      }
+      if (readerDegradeNote[workId] && book && bookIsTranscript(book)) {
+        showReaderNote(readerDegradeNote[workId]); // showing the transcript BECAUSE we degraded
+      } else if (readerDegradeNote[workId] && userPickedSource[workId] === bookId) {
+        showReaderNote(readerDegradeNote[workId]); // user forced the ebook back — keep the honest note
+      } else {
+        hideReaderNote(); delete readerDegradeNote[workId];
       }
       paintSyncPill(ts.mode || 'none', ts);
 
