@@ -83,7 +83,20 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     const w = (allWorks || []).find(x => x.id === Number(wid));
     const sd = (typeof activeSyncData !== 'undefined' && activeSyncData) ? activeSyncData : null;
     if (sd && sd.length) {
-      const idx = Math.min(sd.length - 1, Math.max(0, Math.floor(sd.length * 0.3)));
+      // Seed with RUNWAY. The karaoke checks play ~18s after this seed; if the
+      // loaded chapter's map is short (e.g. a 25s title page) a fixed 30%-in seed
+      // overflows the chapter end and the highlight freezes at the last word — a
+      // harness false-red, not a product stall (that class is resume_flow's).
+      // Target ~30% in but never within RUNWAY secs of the map end, never before a
+      // small head offset. Seek to the word nearest that time.
+      const RUNWAY = 22;
+      const first = sd[0].s, last = sd[sd.length - 1].s, span = last - first;
+      let target = first + span * 0.3;
+      target = Math.min(target, last - RUNWAY);   // keep runway before the chapter ends
+      target = Math.max(target, first + 2);        // ...but past the very first word
+      if (target > last) target = first + Math.min(2, span / 2); // ultra-short map: just after start
+      let idx = 0, bestD = Infinity;
+      for (let i = 0; i < sd.length; i++) { const d = Math.abs(sd[i].s - target); if (d < bestD) { bestD = d; idx = i; } }
       const at = sd[idx].s;
       if (typeof seekToAbsoluteBookTime === 'function') seekToAbsoluteBookTime(w, at, w.title);
       else { const a = document.getElementById('audio-player'); if (a) a.currentTime = at; }
@@ -236,23 +249,29 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   const ctx2 = await page.evaluate(async (wid) => {
     const w = (allWorks || []).find(x => x.id === Number(wid));
     const isEbookKaraoke = (typeof currentReaderIsEbookKaraoke !== 'undefined') ? currentReaderIsEbookKaraoke : false;
-    let wordPairs = 0;
+    let wordPairs = 0, coherent = true;
     try {
       const cov = await fetch(`/api/works/${w.id}/coverage`).then(r => r.json());
       wordPairs = (cov.pairs || []).filter(p => p.unit === 'word').length;
     } catch {}
-    return { isEbookKaraoke, wordPairs };
-  }, WORK).catch(() => ({ isEbookKaraoke: false, wordPairs: 0 }));
+    try {
+      const canon = await fetch(`/api/works/${w.id}/canon`).then(r => r.ok ? r.json() : null);
+      if (canon && canon.coherent === false) coherent = false;
+    } catch {}
+    return { isEbookKaraoke, wordPairs, coherent };
+  }, WORK).catch(() => ({ isEbookKaraoke: false, wordPairs: 0, coherent: true }));
   // Reader followed iff the audio clock sits within the shown chapter's map extent.
   // Using the map EXTENT (not the highlighted word) avoids a false "harness" verdict
   // on a resume that hasn't reached its first word yet.
   const withinChapter = rs.mapMaxSec != null && rs.mapMinSec != null && rc != null
     && rc <= rs.mapMaxSec + 2.5 && rc >= rs.mapMinSec - 2.5;
   const notApplicable = ctx2.isEbookKaraoke && ctx2.wordPairs === 0; // synthetic map, nothing to follow
-  const rFollows = notApplicable || (rs.wordCount >= 50 && withinChapter);
+  const blockedByIncoherent = rs.wordCount === 0 && !ctx2.coherent; // resume can't build a coherent map on incoherent data
+  const rFollows = notApplicable || blockedByIncoherent || (rs.wordCount >= 50 && withinChapter);
   const plantStr = planted ? `planted@~${planted.globalApprox}s(book ${planted.bookId} idx${planted.fileIdx}+${planted.local}s)` : 'plant FAILED';
   let rsig;
   if (notApplicable) rsig = `n/a: display ebook has NO word alignment (synthetic map) — reader-follow not certifiable on this work; give it a real alignment to test`;
+  else if (blockedByIncoherent) rsig = `n/a: canon.coherent=false — resume cannot build a coherent map on multi-edition-split data; the ROOT is surface_consistency's, not this drive`;
   else if (rs.wordCount === 0) rsig = `harness: reader never opened (words=0) while clock=${rc} [${plantStr}] — fix the resume drive`;
   else if (!withinChapter) rsig = `stuck: clock=${rc} is PAST the shown chapter's map [${rs.mapMinSec == null ? '?' : rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec == null ? '?' : rs.mapMaxSec.toFixed(0)}s] [${plantStr}] — reader did NOT follow audio (PJ's 'Cratchit')`;
   else rsig = `reader followed: clock=${rc} within map [${rs.mapMinSec.toFixed(0)}..${rs.mapMaxSec.toFixed(0)}s], ${rs.wordCount} words [${plantStr}]`;
