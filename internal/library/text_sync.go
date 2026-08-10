@@ -554,7 +554,13 @@ func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64,
 		}
 	}
 	if best == nil {
-		return nil, nil
+		// No aligner ever ran — but a TTS edition is word-synced BY CONSTRUCTION
+		// (its sync_data words ARE this ebook's words). Derive each chapter's audio
+		// range from that sync so the reader can still FOLLOW the narration to the
+		// right chapter on play/seek/resume — otherwise the chapters stay untimed,
+		// the covering-chapter lookup finds nothing, and the reader strands on the
+		// front matter while word-by-word karaoke sits one chapter away, unreachable.
+		return ttsChapterAudioRanges(store, work, bookID)
 	}
 	var p AnchorAlignmentPayload
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
@@ -849,6 +855,78 @@ func interpFrac(anchors []fracAnchor, frac float64) float64 {
 // player's clock), and the map is served only when the sync row's word count
 // EXACTLY matches the chapter's — the construction guarantee, verified rather
 // than assumed.
+// ttsChapterAudioRanges derives per-ebook-chapter audio time ranges for a work
+// whose narration is a TTS edition (word-synced by construction, no aligner). It
+// mirrors BuildTTSEditionWordSync's file→chapter mapping: each `chapter-NNN.mp3`
+// TTS file narrates ebook chapter NNN, and its sync_data words carry that file's
+// local timings; the continuous-timeline range is [offset+firstWord, offset+lastWord]
+// where offset sums the durations of earlier files in chapter order. Only chapters
+// whose sync word count MATCHES the ebook chapter (the construction guarantee) get a
+// range — never stamp a time we can't stand behind. Returns nil when the work has no
+// parseable TTS files, so a non-TTS work falls through unchanged.
+func ttsChapterAudioRanges(store *db.Store, work *db.Work, bookID int64) (map[int][2]float64, error) {
+	type ttsFile struct {
+		book *db.Book
+		idx  int
+	}
+	var files []ttsFile
+	for i := range work.AudioFiles {
+		b := &work.AudioFiles[i]
+		if b.Origin != "tts_kokoro" {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(b.Filename, "chapter-%d.", &n); err != nil {
+			continue
+		}
+		files = append(files, ttsFile{book: b, idx: n})
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].idx < files[j].idx })
+
+	chapters, err := store.ListChapters(bookID)
+	if err != nil {
+		return nil, err
+	}
+	wcByIdx := map[int]int{}
+	for _, ch := range chapters {
+		wcByIdx[ch.Index] = ch.WordCount
+	}
+	rows, err := store.ListSyncForWork(work.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	ranges := map[int][2]float64{}
+	offset := 0.0
+	for _, f := range files {
+		// Pick this file's fullest sync blob (mirrors BuildTTSEditionWordSync).
+		var words []SyncWord
+		for _, r := range rows {
+			if r.AudioBookID != f.book.ID {
+				continue
+			}
+			var ws []SyncWord
+			if json.Unmarshal([]byte(r.Timestamps), &ws) != nil {
+				continue
+			}
+			if len(ws) > len(words) {
+				words = ws
+			}
+		}
+		if len(words) > 0 && len(words) == wcByIdx[f.idx] {
+			ranges[f.idx] = [2]float64{words[0].S + offset, words[len(words)-1].E + offset}
+		}
+		offset += f.book.Duration
+	}
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	return ranges, nil
+}
+
 func BuildTTSEditionWordSync(store *db.Store, workID, bookID int64, chapterIdx int) ([]SyncWord, error) {
 	work, err := store.GetWork(workID)
 	if err != nil || work == nil {

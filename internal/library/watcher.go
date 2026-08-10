@@ -94,9 +94,7 @@ func NewWatcher(store *db.Store, root string, onChange func()) (*Watcher, error)
 			return nil
 		}
 		if d.IsDir() {
-			rel, _ := filepath.Rel(root, path)
-			top := strings.SplitN(rel, string(filepath.Separator), 2)[0]
-			if top == "incoming" || top == "processing" || top == "failed" || top == "tts-previews" || top == "abooks" {
+			if excludedTop(root, path) {
 				return filepath.SkipDir
 			}
 			return fsw.Add(path)
@@ -139,7 +137,35 @@ func (w *Watcher) loop() {
 	}
 }
 
+// excludedTop reports whether a path under root lives in a directory the library
+// watcher must never ingest — the ingest queue's working dirs and the .abook
+// import staging (abooks/), whose contents are owned by their own pipelines.
+// Checked at BOTH startup (WalkDir) AND runtime (queuePath): abooks/ usually does
+// NOT exist at startup — the first import creates it — so a startup-only skip let
+// the watcher pick up the freshly-extracted audio and re-ingest it under its
+// physical book-{id}.mp3 name, clobbering the import's real filename (chapter-NNN.mp3,
+// which the TTS-by-construction word-sync keys on → karaoke silently died on every
+// imported TTS work).
+func excludedTop(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	switch strings.SplitN(rel, string(filepath.Separator), 2)[0] {
+	case "incoming", "processing", "failed", "tts-previews", "abooks":
+		return true
+	}
+	return false
+}
+
 func (w *Watcher) queuePath(path string) {
+	// Never ingest the ingest-queue working dirs or the .abook import staging —
+	// their files are managed by their own pipelines. abooks/ is created at
+	// runtime by the first import, so this guard (not just the startup WalkDir
+	// skip) is what actually keeps imported files from being re-ingested.
+	if excludedTop(w.root, path) {
+		return
+	}
 	// Sidecars are .stt.json files — landed here by remote-stt or syncthing.
 	// They aren't books themselves; they describe an existing audio book.
 	// Queue them in the same debounce buffer so processPending can dispatch.

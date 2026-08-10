@@ -116,9 +116,15 @@ type Chapter struct {
 	Title     string `json:"title"`
 	Src       string `json:"src,omitempty"`
 	WordCount int    `json:"word_count"`
-	// Time range within the audio book (0 for text chapters).
-	StartSec   float64 `json:"start_sec,omitempty"`
-	EndSec     float64 `json:"end_sec,omitempty"`
+	// Time range within the audio book. ALWAYS serialized (no omitempty) so the
+	// timed-chapter DISCRIMINATOR is expressible on every consumer: a chapter is
+	// TIMED iff end_sec > start_sec. With omitempty a chapter starting at 0.0 (a
+	// real first chapter, or a whole-book TTS range) dropped start_sec, became
+	// indistinguishable from "no timing," and the covering-chapter lookup misread
+	// it — stranding the reader on front matter. (Transcription's start_sec ack;
+	// consumers already tolerate the zeros — mobile 0f4afcf, web pm162.)
+	StartSec   float64 `json:"start_sec"`
+	EndSec     float64 `json:"end_sec"`
 	Confidence float64 `json:"confidence,omitempty"`
 	// Content is plaintext — used for search, alignment, word counting.
 	// Only loaded on demand, not in list responses.

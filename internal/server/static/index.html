@@ -2485,8 +2485,13 @@
         }
         btn.textContent = data.status === 'skipped' ? '✓ Already in your library' : '✓ Added';
         // The library is no longer empty — reload works so the welcome gives way
-        // to the book, and the reader can press play.
-        if (typeof loadWorks === 'function') loadWorks();
+        // to the book, then OPEN it straight into the reader so a first-run visitor
+        // reaches the actual read-along in one tap (not a tour of a one-book grid).
+        // The reader is one Play press from word-by-word karaoke — the whole point.
+        if (typeof loadWorks === 'function') await loadWorks();
+        if (data.work_id && typeof openWorkDetail === 'function') {
+          try { openWorkDetail(Number(data.work_id)); } catch {}
+        }
       } catch {
         btn.disabled = false;
         btn.textContent = original;
