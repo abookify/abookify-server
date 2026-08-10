@@ -1882,8 +1882,8 @@
       <option value="genre">By genre</option>
     </select>
     <div class="stats" id="stats"></div>
-    <label class="filter-btn" style="cursor:pointer;" title="Import .abook file">
-      Import .abook
+    <label class="filter-btn" style="cursor:pointer;" title="Import a .abook file — a book bundled as audio + text + word-by-word sync">
+      Import a .abook file
       <input type="file" accept=".abook" style="display:none;" onchange="importAbook(this)">
     </label>
     <button class="filter-btn" onclick="openMergeDialog()" title="Merge two books together">Merge books</button>
@@ -2969,6 +2969,24 @@
       setTimeout(() => loadWorks(), 400);
     }
 
+    // Resolve the download filename for a work's .abook: the server's
+    // Content-Disposition name ("Title - Author.abook") wins; else build it from
+    // the work's own title/author; only as a last resort a row id (never the
+    // user-facing default). The no-audio variant gets a clear " (text sync)" marker.
+    function abookDownloadName(disposition, workId, noAudio) {
+      let base = '';
+      if (disposition) {
+        const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
+        if (m) base = decodeURIComponent(m[1]).replace(/"/g, '').replace(/\.abook$/i, '').trim();
+      }
+      if (!base) {
+        const w = (allWorks || []).find(x => x.id === workId);
+        if (w) base = [w.title, w.author].filter(Boolean).join(' - ').trim();
+      }
+      if (!base) base = `work-${workId}`;
+      return base + (noAudio ? ' (text sync)' : '') + '.abook';
+    }
+
     // Menu version of downloadAbook: no pill element to mutate, so just
     // trigger the download and let the browser handle progress.
     async function downloadAbookFromMenu(workId, noAudio) {
@@ -2981,7 +2999,11 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `work-${workId}${noAudio ? '-text-sync' : ''}.abook`;
+        // Name the file for the BOOK, not our internal row id — this is the artifact
+        // a person keeps and hands to another device. Prefer the server's own
+        // self-describing name ("Title - Author.abook", set in Content-Disposition);
+        // fall back to building it from the work, never to "work-<id>".
+        a.download = abookDownloadName(res.headers.get('Content-Disposition'), workId, noAudio);
         a.click();
         URL.revokeObjectURL(url);
         if (status) status.textContent = 'Downloaded';
