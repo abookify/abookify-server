@@ -2,6 +2,7 @@ package library
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -105,6 +106,12 @@ type PairCoverage struct {
 	// different text / unknown) with the raw signal alongside — see
 	// edition_verdict.go. Never nil for emitted pairs.
 	Verdict *EditionVerdict `json:"verdict,omitempty"`
+	// ByConstruction marks a pair whose word sync comes from the TTS
+	// chapter-file rail rather than an alignment run: the narration was
+	// GENERATED from this text, so every narrated word is backed by it by
+	// construction. There is no alignments row to derive numbers from — the
+	// 1.0s are a statement of provenance, not a measurement.
+	ByConstruction bool `json:"by_construction,omitempty"`
 }
 
 // WorkCoverage is the GET /api/works/{id}/coverage payload (#199): per-pair
@@ -428,6 +435,72 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 			DirectionalCoverage: dir,
 			Verdict:             computeEditionVerdict(dir.AudioToEbook, hasEmb, emb.quality, emb.share),
 		})
+	}
+
+	// BY-CONSTRUCTION pairs: a TTS edition narrating its source text is
+	// word-synced by the chapter-file rail, not by an alignment run — so it
+	// has no alignments row, and this endpoint returned pairs:[] for such a
+	// work, indistinguishable from "nothing aligned at all". Mobile read
+	// exactly that on the clean fixture and concluded it could not certify
+	// karaoke, while /word-sync was serving a real per-word map the whole
+	// time. Emit the pair explicitly, labeled, so the property is a stated
+	// fact rather than an absence. The per-request word-count guard in
+	// BuildTTSEditionWordSync still protects every chapter individually;
+	// the probe below only proves the rail engages for this text at all.
+	if w, err := store.GetWork(workID); err == nil && w != nil {
+		var tts *db.Book
+		for i := range w.AudioFiles {
+			b := &w.AudioFiles[i]
+			var n int
+			if b.Origin == "tts_kokoro" {
+				if _, e := fmt.Sscanf(b.Filename, "chapter-%d.", &n); e == nil {
+					tts = b
+					break
+				}
+			}
+		}
+		if tts != nil {
+			for i := range w.TextFiles {
+				t := &w.TextFiles[i]
+				if t.Origin == "whisper_transcript" || t.Format == "transcript" {
+					continue
+				}
+				chapters, cerr := store.ListChapters(t.ID)
+				if cerr != nil {
+					continue
+				}
+				engaged := false
+				for probes, j := 0, 0; j < len(chapters) && probes < 3; j++ {
+					if chapters[j].WordCount == 0 {
+						continue
+					}
+					probes++
+					if ws, werr := BuildTTSEditionWordSync(store, workID, t.ID, chapters[j].Index); werr == nil && len(ws) > 0 {
+						engaged = true
+						break
+					}
+				}
+				if !engaged {
+					continue
+				}
+				out.Pairs = append(out.Pairs, PairCoverage{
+					Ebook:      DiffSource{BookID: t.ID, Origin: t.Origin, Label: bookLabel(t)},
+					Transcript: DiffSource{BookID: tts.ID, Origin: tts.Origin, Label: bookLabel(tts)},
+					Method:     "tts_construction",
+					Unit:       "word",
+					DirectionalCoverage: DirectionalCoverage{
+						AudioToEbook: 1,
+						EbookToAudio: 1,
+					},
+					Verdict: &EditionVerdict{
+						Bucket:        VerdictSameEdition,
+						Detail:        "word-synced by construction: this narration was generated from this text",
+						AnchorQuality: 1,
+					},
+					ByConstruction: true,
+				})
+			}
+		}
 	}
 	return out, nil
 }
