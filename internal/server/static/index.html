@@ -5406,12 +5406,20 @@
     // word karaoke (#210b) — used to keep the transcript-follow machinery from
     // resetting the reader back to the transcript text.
     let currentReaderIsEbookKaraoke = false;
+    // Monotonic nav generation. Every loadChapter bumps it; the async auto-degrade
+    // redirect captures it at setup and aborts if a NEWER nav has superseded it —
+    // so an explicit chapter choice always beats an in-flight automatic redirect
+    // (the override law, applied to navigation). Without this, a degrading epub
+    // chapter's late switch-to-transcript pinned a degraded user back to chapter 1,
+    // swallowing their explicit nav.
+    let readerNavSeq = 0;
 
     // Resolve the follow mode for the displayed source, paint the indicator,
     // and set up the matching render: word-by-word karaoke for the transcript /
     // word-anchor ebooks, paragraph-follow for embedding/paragraph ebooks.
-    async function setupReaderFollow(workId, bookId, chapterIdx) {
+    async function setupReaderFollow(workId, bookId, chapterIdx, navSeq) {
       currentReaderIsEbookKaraoke = false;
+      const navSeqAtStart = (navSeq !== undefined) ? navSeq : readerNavSeq; // abort a stale setup if a newer nav wins
       const work = allWorks.find(w => w.id === workId);
       if (!work) { clearParagraphFollow(); paraSync = null; paintSyncPill('none'); return; }
       // Seed the user's persisted source choice once. The PERSISTED pin is
@@ -5440,12 +5448,17 @@
       } catch (e) {
         clearParagraphFollow(); paraSync = null; paintSyncPill('unavailable'); return;
       }
+      // A newer navigation superseded us while the fetch was in flight — this whole
+      // setup (its degrade redirect AND its follow wiring) is stale; abort so it can't
+      // pin the reader back to an older chapter or wire an epub follow over transcript.
+      if (navSeqAtStart !== readerNavSeq) return;
       // Weak-chain degradation: the printed edition doesn't line up closely enough
       // with THIS narration to trust a word highlight. Actively show the TRANSCRIPT
       // (a real reading experience, synced natively to the narrator) and say why —
       // never a quiet "no sync" that reads as broken. Respect an explicit user pick
       // of this ebook (they can still read it un-highlighted).
-      if (ts.degrade_to && Number(ts.degrade_to) !== bookId && userPickedSource[workId] !== bookId) {
+      if (ts.degrade_to && Number(ts.degrade_to) !== bookId && userPickedSource[workId] !== bookId
+          && navSeqAtStart === readerNavSeq) { // a newer explicit nav supersedes this redirect
         readerDegradeNote[workId] = ts.degrade_note || '';
         await switchTextEdition(workId, Number(ts.degrade_to), { auto: true });
         return;
@@ -5733,6 +5746,7 @@
 
     async function loadChapter(bookId, index, workId, opts) {
       opts = opts || {};
+      const myNavSeq = ++readerNavSeq; // this nav supersedes any in-flight auto-degrade redirect
       // Reader now lives in the floating overlay — promote the host to this
       // work, then auto-open the overlay unless the user explicitly closed it.
       ensureActiveReader(workId);
@@ -5796,7 +5810,7 @@
         reader.scrollTop = 0;
         // Set up audio-follow AFTER the content is in the DOM — word-anchor
         // ebooks re-render the pane as paragraphed word-karaoke text (#210).
-        setupReaderFollow(workId, bookId, index);
+        setupReaderFollow(workId, bookId, index, myNavSeq);
         return;
       }
 
@@ -5812,7 +5826,7 @@
         reader.scrollTop = 0;
         // Apply divergence dimming (if alignment data is available).
         applyDivergence(workId, index);
-        setupReaderFollow(workId, bookId, index);
+        setupReaderFollow(workId, bookId, index, myNavSeq);
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';
       }
