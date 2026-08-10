@@ -186,13 +186,27 @@ func CheckWorkCoherence(store *db.Store, workID int64) (*WorkCoherence, error) {
 
 	// The sync stream (word timing) — loaded once; feeds both the sync check and the
 	// text-trust freshness check, which share the sidecar word basis.
-	syncWords, _ := LoadWorkSyncWords(store, workID)
+	//
+	// EDITION-AWARE (the multi-edition false-positive trap, hit live on work 85):
+	// a TTS edition's sync words map to the EPUB it was generated from — word-
+	// synced by construction, never transcript-derived — so they must not be
+	// reconciled against transcript text. Counting them doubled the stream on a
+	// two-narration work (human 29k + TTS 28.6k vs one 28.8k transcript) and
+	// flagged a healthy work incoherent. Only non-TTS narrations feed the
+	// transcript/trust comparisons.
+	ttsAudio := map[int64]bool{}
+	for i := range w.AudioFiles {
+		if w.AudioFiles[i].Origin == "tts_kokoro" {
+			ttsAudio[w.AudioFiles[i].ID] = true
+		}
+	}
+	syncWords, _ := LoadWorkSyncWordsExcluding(store, workID, ttsAudio)
 
 	// Sync stream vs the transcript text (work-level, INCOHERENT — karaoke lands on
-	// the wrong words). The sync stream spans every narrated edition, so it
-	// reconciles against the SUM of all transcript editions' words — a repaired
-	// transcript that grew/shrank with stale sync diverges far past the tolerance;
-	// a coexisting second edition does not.
+	// the wrong words). The (non-TTS) sync stream spans every transcribed
+	// narration, so it reconciles against the SUM of all transcript editions'
+	// words — a repaired transcript that grew/shrank with stale sync diverges far
+	// past the tolerance; a coexisting second edition does not.
 	if totalTransWords > 0 {
 		switch {
 		case len(syncWords) == 0:

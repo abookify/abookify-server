@@ -659,6 +659,28 @@ func LoadWorkSyncWords(store *db.Store, workID int64) ([]SyncWord, error) {
 	return all, nil
 }
 
+// LoadWorkSyncWordsExcluding is LoadWorkSyncWords minus the rows belonging to
+// the given audio books. Coherence uses it to keep TTS editions' sync (epub-
+// basis by construction) out of transcript-basis comparisons.
+func LoadWorkSyncWordsExcluding(store *db.Store, workID int64, skipAudio map[int64]bool) ([]SyncWord, error) {
+	rows, err := store.ListSyncForWork(workID)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	var all []SyncWord
+	for _, r := range rows {
+		if skipAudio[r.AudioBookID] {
+			continue
+		}
+		var ws []SyncWord
+		if json.Unmarshal([]byte(r.Timestamps), &ws) != nil {
+			continue
+		}
+		all = append(all, ws...)
+	}
+	return all, nil
+}
+
 // SliceTranscriptChapter returns the words overlapping a chapter's [start,end)
 // audio window. A single-chapter transcript carries no per-chapter bounds
 // (start==end==0) — then the whole blob IS the chapter. Returns nil when nothing
