@@ -5798,7 +5798,9 @@
           const work = allWorks.find(w => w.id === workId);
           if (work) {
             const title = meta.title || `Chapter ${index + 1}`;
-            seekToAbsoluteBookTime(work, meta.start_sec, title);
+            // Only seek the AUDIO — the reader is already on this chapter (we just
+            // navigated it); letting the seek re-navigate would override that pick.
+            seekToAbsoluteBookTime(work, meta.start_sec, title, { skipReaderNav: true });
           }
         }
       }
@@ -5842,7 +5844,8 @@
     // Also navigates the reader pane to the text chapter whose [start,end)
     // time range contains absSecs, so clicking a chapter from the audio side
     // also updates the text side (and vice versa).
-    async function seekToAbsoluteBookTime(work, absSecs, title) {
+    async function seekToAbsoluteBookTime(work, absSecs, title, opts) {
+      opts = opts || {};
       const files = displayEditionBooks(work, 'audio');
       if (files.length === 0) return;
 
@@ -5861,8 +5864,13 @@
 
       // Sync the reader pane: find the text chapter whose time range covers
       // absSecs and load it. Skip the recursive audio seek since we're
-      // about to call playAudio ourselves.
-      const textFile = displayEditionBooks(work, 'text')[0];
+      // about to call playAudio ourselves. opts.skipReaderNav: the caller has
+      // ALREADY navigated the reader explicitly (loadChapter's own audio seek) —
+      // re-navigating here to displayEditionBooks(text)[0]'s covering chapter would
+      // OVERRIDE the user's explicit choice (and to the wrong book: the epub, not
+      // the transcript they picked). The override law: an automatic reader-nav must
+      // never clobber the explicit one that triggered it.
+      const textFile = opts.skipReaderNav ? null : displayEditionBooks(work, 'text')[0];
       if (textFile) {
         const cached = chapterCache[textFile.id]?.chapters;
         if (cached && cached.length) {
@@ -5885,7 +5893,7 @@
 
       playAudio(files[fileIdx].id, fileIdx, work.id,
         title || files[fileIdx].title || files[fileIdx].filename,
-        work.title, localSec);
+        work.title, localSec, { skipReaderNav: opts.skipReaderNav });
     }
 
     let currentWorkId = null;
@@ -5989,7 +5997,12 @@
       // absolute time range contains the current playback position. This
       // supersedes the old chapter_links lookup which was broken for
       // multi-file audiobooks (linker assumed 1:1 text_chapter↔mp3_file).
-      if (syncEnabled[workId] !== false && work) {
+      // opts.skipReaderNav: the caller (a loadChapter-initiated seek) has ALREADY
+      // put the reader on the chapter the user explicitly chose — re-navigating here
+      // to displayEditionBooks(text)[0]'s covering chapter would OVERRIDE that pick
+      // (and to the wrong book). The override law: automatic reader-nav never clobbers
+      // the explicit nav that triggered it.
+      if (syncEnabled[workId] !== false && work && !opts.skipReaderNav) {
         const textFile = displayEditionBooks(work, 'text')[0];
         if (textFile) {
           await loadChapterList(textFile.id, workId);
