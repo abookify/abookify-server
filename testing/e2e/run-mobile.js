@@ -50,7 +50,12 @@ const path = require('path');
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const PORT = process.env.E2E_PORT || '8199';
-const HOST_URL = `http://10.0.2.2:${PORT}`;        // emulator → host server
+// The emulator normally reaches the host at 10.0.2.2 (AVD NAT alias). If that
+// NAT is broken (some headless/older AVD states have no route), set up
+// `adb reverse tcp:PORT tcp:PORT` and pass E2E_HOST=127.0.0.1 — the app then
+// reaches the host fixture through adb instead of the guest NAT.
+const HOST = process.env.E2E_HOST || '10.0.2.2';
+const HOST_URL = `http://${HOST}:${PORT}`;         // emulator → host server
 const PKG = 'com.abookify.app';
 const WORK_SUB = process.env.E2E_WORK || 'Carol';  // work-title substring to open
 const SERIAL = process.env.E2E_SERIAL || '';       // optional `adb -s` target
@@ -383,22 +388,27 @@ async function connect() {
   // work title; tap that. If playback never started (a broken work that won't
   // play), there IS no mini-player → no probe → karaoke_advances fails loudly,
   // which is correct.
-  openNowPlaying();
-  await waitFor((x) => parseProbe(x) != null, 10000);
-  // Probe-absent = INFRA, not app. If playback IS running (a clock/Pause is on
-  // screen) but the E2E probe never rendered, the app is almost certainly NOT
-  // the EXPO_PUBLIC_E2E=1 build — karaoke_advances would then red for the wrong
-  // reason (a false app-fail). Distinguish it loudly. (If play never started —
-  // no clock/Pause — that's a real app failure; let the journeys red normally.)
-  {
-    const pf = dump();
-    const playing = /\d+:\d{2}(?::\d{2})?\s*\/\s*\d+:\d{2}/.test(pf) || !!findNode(pf, 'Pause');
-    if (playing && parseProbe(pf) == null) {
-      console.error('INFRA(3) E2E probe ABSENT while playing — this is NOT an EXPO_PUBLIC_E2E=1 build ' +
-        '(a full `./gradlew clean` after adding .env.local is required). karaoke_advances cannot run; ' +
-        'refusing to report a false app-fail.');
-      shot('probe-absent');
-      process.exit(3);
+  // Now-Playing can take a moment to navigate + render; retry the open a few
+  // times and wait on the SAME xml the probe check uses (a racy re-dump caused
+  // false "probe absent" triggers). If the probe appears, proceed.
+  let probeXml = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    openNowPlaying();
+    probeXml = await waitFor((x) => parseProbe(x) != null, 8000);
+    if (parseProbe(probeXml) != null) break;
+  }
+  // Probe-absent = INFRA, not app — but ONLY decide it from the very xml we
+  // waited on (not a fresh racy dump). If playback IS running (a clock/Pause is
+  // on screen) yet the probe NEVER rendered across the retries, the app is not
+  // the EXPO_PUBLIC_E2E=1 build → exit 3, never a false karaoke app-fail. If
+  // play never started (no clock/Pause), that's a real app failure — let the
+  // journeys red normally below.
+  if (parseProbe(probeXml) == null) {
+    const playing = /\d+:\d{2}(?::\d{2})?\s*\/\s*\d+:\d{2}/.test(probeXml) || !!findNode(probeXml, 'Pause');
+    if (playing) {
+      console.error('INFRA(3) E2E probe ABSENT while playing — NOT an EXPO_PUBLIC_E2E=1 build ' +
+        '(needs .env.local + a full `./gradlew clean`). Refusing a false app-fail.');
+      shot('probe-absent'); process.exit(3);
     }
   }
   const a = snapshot();
