@@ -126,6 +126,55 @@ function screencap(file) {
   try { adb(`exec-out screencap -p > "${file}"`); } catch { /* best-effort */ }
 }
 
+// ── Media-session state (the reliable playback truth) ────────────────────────
+// `uiautomator dump` FAILS with "could not get idle state" on any screen with a
+// live animation — the karaoke highlight + the mini-player waveform never let
+// the window go idle. So the on-screen probe can only be read while PAUSED. The
+// player's own state, however, is always available from `dumpsys media_session`
+// (no idle needed, works mid-playback) — this is the source of truth for
+// "is it playing" and "did the clock advance".
+function mediaState() {
+  let out = '';
+  try { out = adb('shell dumpsys media_session'); } catch { return null; }
+  // The app's media3 session line: state=PlaybackState {state=PLAYING(3), position=12345, ...}
+  const m = out.match(/state=PlaybackState \{state=([A-Z]+)\((\d)\), position=(-?\d+), buffered position=(-?\d+), speed=([-0-9.]+)/);
+  if (!m) return null;
+  return { state: m[1], pos: +m[3] / 1000, buf: +m[4] / 1000, speed: +m[5] };
+}
+// Send a media transport key and confirm the player reached the target state.
+// 126 = KEYCODE_MEDIA_PLAY, 127 = KEYCODE_MEDIA_PAUSE (explicit, not the 85
+// toggle — a toggle races the current state).
+async function mediaSet(wantPlaying, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  const want = wantPlaying ? 'PLAYING' : 'PAUSED';
+  while (Date.now() < deadline) {
+    const s = mediaState();
+    if (s && s.state === want) return s;
+    adb(`shell input keyevent ${wantPlaying ? 126 : 127}`);
+    await sleep(800);
+  }
+  return mediaState();
+}
+const mediaPause = () => mediaSet(false);
+const mediaPlay = () => mediaSet(true);
+
+// ── The karaoke probe over LOGCAT (idle-proof) ───────────────────────────────
+// The Reader/NowPlaying screens ALSO emit the E2E probe to logcat (console.log →
+// tag ReactNativeJS). This is the only way to read karaoke state WHILE PLAYING:
+// a uiautomator dump fails on the animating screen, and pausing to dump clears
+// the reader's sync (it loads only while playingThisWork). logcatClear() before
+// a play window, then logcatProbes() parses every probe emitted during it.
+function logcatClear() { try { adb('logcat -c'); } catch {} }
+function logcatProbes() {
+  let out = '';
+  try { out = adb('logcat -d'); } catch { return []; }
+  const probes = [];
+  for (const m of out.matchAll(/E2E(\{.*?\})/g)) {
+    try { probes.push(JSON.parse(m[1])); } catch { /* skip a torn line */ }
+  }
+  return probes;
+}
+
 // ── uiautomator dump + parse ──────────────────────────────────────────────────
 function dump() {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -179,24 +228,66 @@ function tapText(xml, sub) {
   return true;
 }
 
-// Open the Now-Playing karaoke screen by tapping the mini-player body. The
-// mini-player is the BOTTOM-MOST node whose text carries the work title (the
-// work-screen title is higher up); tapping it navigates to Now-Playing where
-// the E2E probe renders. Returns true if a mini-player was found + tapped.
-function openNowPlaying() {
-  const cands = nodes(dump()).filter((n) => (n.text || '').includes(WORK_SUB));
-  if (!cands.length) return false;
-  const mp = cands.reduce((a, b) => (b.cy > a.cy ? b : a)); // bottom-most
-  tap(mp.cx, mp.cy);
-  return true;
+// Playback is live when the work's play circle has flipped to Pause, the work
+// card reads "Playing", or a mini-player ("Now playing:") is on screen. NOT
+// "Paused" (the work is loaded but stopped) — we require audio actually running.
+function isPlaying(xml) {
+  return /\bPlaying\b/i.test(xml) || /Now playing:/i.test(xml) || !!findNode(xml, 'Pause');
+}
+
+// Start playback robustly. The 'Play this book' circle tap is INTERMITTENT on
+// the emulator: resumeWork() is async (it fetches saved position before the
+// clock engages), a "Not checked against the audio" trust banner can shift the
+// button's coordinates between the dump and the tap, and a single tap sometimes
+// lands before the screen settled. So: re-dump for FRESH coordinates each try,
+// tap the play circle by its accessibilityLabel, then wait for a real playing
+// state; retry up to `tries` times. Returns true once playing.
+async function startPlayback(tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    const s = mediaState();
+    if (s && s.state === 'PLAYING') return true;
+    // The work screen (not yet playing) is static → dumpable. Tap the play
+    // CIRCLE (label 'Play this book'), never the "Play book" text (no onPress).
+    // Fresh node each try so a shifted layout can't stale the tap. Confirm via
+    // the media session (the on-screen "Playing" text is unreliable — while
+    // playing the work-screen dump barely reaches idle and captures a stale
+    // frame; the player state never lies).
+    const xml = dump();
+    if (!tapText(xml, 'Play this book')) { await sleep(1500); continue; }
+    const after = await mediaSet(true, 6000);
+    if (after && after.state === 'PLAYING') return true;
+  }
+  const s = mediaState();
+  return !!(s && s.state === 'PLAYING');
+}
+
+// Open the Reader (a probe screen) from the mini-player. The mini-player overlay
+// is DROPPED from the accessibility tree while its waveform animates, but it
+// reappears — with a labelled "Open reader" (📖) control — once PLAYBACK IS
+// PAUSED. So: pause → dump → tap "Open reader". Returns true if it navigated
+// (the paused Reader carries the E2E probe). Leaves playback PAUSED.
+async function openReaderPaused() {
+  await mediaPause();
+  const xml = dump(); // paused → window idle → dump succeeds
+  if (parseProbe(xml) != null) return true; // already on a probe screen
+  if (!tapText(xml, 'Open reader')) return false;
+  const r = await waitFor((x) => parseProbe(x) != null, 6000);
+  return parseProbe(r) != null;
 }
 
 // ── The mobile "DOM contract": the E2E{...} probe + the mini-player clock ─────
 // Latest E2E{...} line in the dump → parsed JSON, or null.
+// uiautomator quotes an attribute VALUE with single quotes when the value itself
+// contains double quotes — and our probe JSON does (`{"widx":...}`). So the node
+// arrives as text='E2E{"widx":...}' (single-quoted attr, LITERAL inner quotes),
+// NOT text="E2E{&quot;widx&quot;:...}" (double-quoted attr, escaped quotes). We
+// match BOTH forms — this exact mismatch made a rendering probe read as absent.
 function parseProbe(xml) {
-  const all = [...xml.matchAll(/text="(E2E\{.*?\})"/g)];
-  if (!all.length) return null;
-  try { return JSON.parse(decode(all[all.length - 1][1]).slice(3)); } catch { return null; }
+  const re = /text=(?:"(E2E\{.*?\})"|'(E2E\{.*?\})')/g;
+  let last = null, m;
+  while ((m = re.exec(xml)) !== null) last = m[1] || m[2];
+  if (last == null) return null;
+  try { return JSON.parse(decode(last).slice(3)); } catch { return null; }
 }
 // "1:34" / "1:02:03" → seconds (same reducer as run-web.js clockSecs).
 function clockSecs(txt) {
@@ -373,70 +464,114 @@ async function connect() {
     }
   }
 
-  // ---- play_and_hear: start playback, open the reader (📖) so the probe is on
-  // screen, then confirm the player clock ADVANCES with wall time.
-  // Tap the play CIRCLE, not the "Play book" text (the text label has no
-  // onPress — only the circle is touchable, via its accessibilityLabel).
-  if (!/Playing/i.test(xml)) tapText(xml, 'Play this book');
-  // Playback started when the circle's label flips to Pause / the card says
-  // Playing / a mini-player carrying the title appears at the bottom.
-  await waitFor((x) => /Playing/i.test(x) || !!findNode(x, 'Pause'), 8000);
-  // Open the NOW-PLAYING karaoke screen so the E2E probe is on screen. The
-  // mini-player's 📖 (reader) button is UNLABELED in uiautomator, so tap the
-  // mini-player BODY instead (its title row opens Now-Playing) — the probe
-  // renders there too. The mini-player is the BOTTOM-MOST node carrying the
-  // work title; tap that. If playback never started (a broken work that won't
-  // play), there IS no mini-player → no probe → karaoke_advances fails loudly,
-  // which is correct.
-  // Now-Playing can take a moment to navigate + render; retry the open a few
-  // times and wait on the SAME xml the probe check uses (a racy re-dump caused
-  // false "probe absent" triggers). If the probe appears, proceed.
-  let probeXml = '';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    openNowPlaying();
-    probeXml = await waitFor((x) => parseProbe(x) != null, 8000);
-    if (parseProbe(probeXml) != null) break;
-  }
-  // Probe-absent = INFRA, not app — but ONLY decide it from the very xml we
-  // waited on (not a fresh racy dump). If playback IS running (a clock/Pause is
-  // on screen) yet the probe NEVER rendered across the retries, the app is not
-  // the EXPO_PUBLIC_E2E=1 build → exit 3, never a false karaoke app-fail. If
-  // play never started (no clock/Pause), that's a real app failure — let the
-  // journeys red normally below.
-  if (parseProbe(probeXml) == null) {
-    const playing = /\d+:\d{2}(?::\d{2})?\s*\/\s*\d+:\d{2}/.test(probeXml) || !!findNode(probeXml, 'Pause');
-    if (playing) {
-      console.error('INFRA(3) E2E probe ABSENT while playing — NOT an EXPO_PUBLIC_E2E=1 build ' +
-        '(needs .env.local + a full `./gradlew clean`). Refusing a false app-fail.');
-      shot('probe-absent'); process.exit(3);
+  // ---- Reset the saved playback position to the START before measuring.
+  // resumeWork() resumes to the server-saved position; a prior run (or a real
+  // user) can leave it at the END of the book, where the clock is parked and
+  // CANNOT advance — every timing assert would then false-fail. Seeking to 0
+  // gives a known low starting point (chapter 1) with room to advance. This is
+  // legitimate test setup, not masking a bug: the end-state is created by
+  // earlier playback, never a defect. (Sampling chapter 1 is also why the
+  // book-global-vs-chapter-relative map scale can't bite here — both ~0 — a
+  // limitation finish() already discloses.)
+  // A book's FIRST audio file is often a short spoken title card ("A CHRISTMAS
+  // CAROL") that carries NO word-sync, so karaoke can't advance there. On a
+  // multi-file work, seek into the SECOND file (the first narrated chapter) a
+  // bit past its start; on a single-file work, 20s in. E2E_START_FILE /
+  // E2E_START_SEC override.
+  {
+    const list = apiJson('/api/works') || [];
+    const works = Array.isArray(list) ? list : (list.works || []);
+    const w = works.find((x) => (x.title || '').includes(WORK_SUB));
+    const af = (w && w.audio_files) || [];
+    const idx = process.env.E2E_START_FILE != null ? +process.env.E2E_START_FILE : (af.length > 1 ? 1 : 0);
+    const secs = process.env.E2E_START_SEC != null ? +process.env.E2E_START_SEC : (af.length > 1 ? 90 : 20);
+    const bookId = (af[idx] || af[0] || {}).id;
+    if (w && bookId != null) {
+      try {
+        sh(`curl -s -m8 -X POST "http://localhost:${PORT}/api/works/${w.id}/position" ` +
+           `-H 'Content-Type: application/json' ` +
+           `-d '{"work_id":${w.id},"book_id":${bookId},"file_index":${idx},"position_secs":${secs}}'`);
+        console.log(`seeded position: work ${w.id} file_index=${idx} (book ${bookId}) @ ${secs}s`);
+      } catch { /* best-effort; a nonzero start just narrows the advance window */ }
     }
   }
-  const a = snapshot();
+
+  // ---- play_and_hear: start playback and confirm the PLAYER CLOCK advances
+  // with wall time. The clock is read from `dumpsys media_session` (the real
+  // player state) — NOT a UI dump, which fails to reach idle while the karaoke
+  // and waveform animate. startPlayback() taps 'Play this book' (retrying on the
+  // intermittent tap) and confirms PLAYING via the media session.
+  const started = await startPlayback();
+  if (!started) {
+    // Playback never engaged — the actual "F1 won't play" failure PJ hit on the
+    // messy Carol. Red it here and stop (nothing downstream can run).
+    report('play_and_hear', false, 'playback never started (Play tap did not reach a PLAYING media session after retries)');
+    shot('play_and_hear');
+    report('karaoke_advances', false, 'skipped — playback never started');
+    shot('karaoke_advances');
+    skip('change_chapter', 'playback never started');
+    skip('switch_source', 'playback never started');
+    skip('export_import_populated', 'playback never started');
+    skip('download_offline_play', 'playback never started');
+    skip('signout_signin', 'playback never started');
+    process.exit(finish());
+  }
+  const t0 = Date.now(); const m1 = mediaState();
   await sleep(10000);
-  const b = snapshot();
-  const wall = (b.t - a.t) / 1000;
-  const delta = a.clock != null && b.clock != null ? b.clock - a.clock : null;
-  const heard = delta != null && delta >= 3 && Math.abs(delta - wall) <= 3;
-  report('play_and_hear', heard, `clock ${a.clock}s -> ${b.clock}s (+${delta == null ? '?' : delta.toFixed(1)}s) over ${wall.toFixed(1)}s wall`);
+  const m2 = mediaState(); const wall = (Date.now() - t0) / 1000;
+  const delta = m1 && m2 ? m2.pos - m1.pos : null;
+  const heard = delta != null && delta >= 3 && Math.abs(delta - wall) <= 3 && m2.state === 'PLAYING';
+  report('play_and_hear', heard,
+    `player ${m1 ? m1.pos.toFixed(1) : '?'}s -> ${m2 ? m2.pos.toFixed(1) : '?'}s ` +
+    `(+${delta == null ? '?' : delta.toFixed(1)}s) over ${wall.toFixed(1)}s wall, state=${m2 ? m2.state : '?'}`);
   if (!heard) shot('play_and_hear');
 
-  // ---- karaoke_advances: A1-A5, exactly as calibrate-karaoke.js.
-  const s1 = snapshot();
-  await sleep(10000);
-  const s2 = snapshot();
-  const p1 = s1.p || {}; const p2 = s2.p || {};
-  const wall2 = (s2.t - s1.t) / 1000;
+  // ---- karaoke_advances: A1-A5, the same karaoke contract as calibrate-karaoke.js,
+  // read over LOGCAT while PLAYING. The probe only renders on the Reader/
+  // NowPlaying, which never go idle while animating (uiautomator dump fails), and
+  // pausing to dump clears the reader's sync. So: reach the Reader (pause just to
+  // tap "Open reader"), then RESUME and read the probe stream the app emits to
+  // logcat over a 11s play window. p1/p2 are the first/last probes → A3 (widx
+  // advanced) and A5 (clock advanced) measure REAL motion during real playback.
+  if (!(await openReaderPaused())) {
+    console.error('INFRA(3) could not reach the Reader (no "Open reader" control while paused) — ' +
+      'cannot place the probe on screen.');
+    shot('probe-absent'); process.exit(3);
+  }
+  logcatClear();
+  const tPlay = Date.now();
+  await mediaPlay(); // resume — the Reader now streams E2E probes to logcat
+  await sleep(11000);
+  // Read the probe stream BEFORE pausing: pausing clears the reader's sync
+  // (isPlayingThisWork → false), which emits a trailing widx:-1/words:0 frame
+  // that must not be mistaken for the end-of-window sample.
+  const probesRaw = logcatProbes();
+  const playWall = (Date.now() - tPlay) / 1000;
+  await mediaPause();
+  if (!probesRaw.length) {
+    // No probe in logcat while the Reader played → the installed APK lacks the
+    // probe (not an EXPO_PUBLIC_E2E=1 build). Refuse a false karaoke app-fail.
+    console.error('INFRA(3) no E2E probe in logcat while playing the Reader — ' +
+      'not an EXPO_PUBLIC_E2E=1 build (needs .env.local + a full `./gradlew clean`).');
+    shot('probe-absent'); process.exit(3);
+  }
+  // Keep only real karaoke frames (sync loaded, a word active): drops the
+  // pre-sync-load frames right after resume and any transient reset on a chapter
+  // auto-advance. If NONE are valid, karaoke genuinely never engaged → A1 reds.
+  const probes = probesRaw.filter((p) => typeof p.widx === 'number' && p.widx >= 0 && (p.words || 0) > 0);
+  const p1 = probes[0] || {}; const p2 = probes[probes.length - 1] || {};
+  const clockAdv = (typeof p1.pos === 'number' && typeof p2.pos === 'number') ? p2.pos - p1.pos : null;
   const A1 = (p2.words || 0) >= 50;
   const A2 = typeof p2.widx === 'number' && p2.widx >= 0;
   const A3 = A2 && typeof p1.widx === 'number' && p1.widx >= 0 && p2.widx > p1.widx;
   const A4 = typeof p2.mapS === 'number' && p2.mapS >= 0 && typeof p2.pos === 'number'
     && Math.abs(p2.mapS - p2.pos) <= 2.5;
-  const A5 = s1.clock != null && s2.clock != null && Math.abs((s2.clock - s1.clock) - wall2) <= 2.5;
+  const A5 = clockAdv != null && clockAdv >= 3 && Math.abs(clockAdv - playWall) <= 3;
   const karaokeOk = A1 && A2 && A3 && A4 && A5;
   report('karaoke_advances', karaokeOk,
-    `A1 words=${p2.words} A2 widx=${p2.widx} A3 ${p1.widx}->${p2.widx} ` +
+    `[${probes.length}/${probesRaw.length} valid probes] A1 words=${p2.words} A2 widx=${p2.widx} A3 ${p1.widx}->${p2.widx} ` +
     `A4 |map ${p2.mapS == null ? 'null' : (+p2.mapS).toFixed(1)} - pos ${p2.pos == null ? 'null' : (+p2.pos).toFixed(1)}| ` +
-    `A5 clock +${s1.clock != null && s2.clock != null ? (s2.clock - s1.clock).toFixed(1) : '?'}s over ${wall2.toFixed(1)}s`);
+    `A5 clock +${clockAdv == null ? '?' : clockAdv.toFixed(1)}s over ${playWall.toFixed(1)}s play`);
   if (!karaokeOk) shot('karaoke_advances');
 
   // ---- change_chapter / switch_source / export_import_populated — later.
@@ -447,8 +582,12 @@ async function connect() {
   // ---- download_offline_play (mobile-owned): download to the device, then play
   // with the radio OFF. MUST fail loudly if the download stalls (Resume / error)
   // — that's PJ's download bug.
+  // E2E_SKIP_DOWNLOAD=1 skips this leg (a 100+MB fetch + airplane-mode toggle
+  // that destabilizes adb on this emulator) for a fast KARAOKE-only calibration.
   let airplaneOn = false;
-  try {
+  if (process.env.E2E_SKIP_DOWNLOAD === '1') {
+    skip('download_offline_play', 'E2E_SKIP_DOWNLOAD=1 (karaoke-only calibration)');
+  } else try {
     // Back out of the reader to the work page where the download control lives.
     keyBack();
     xml = await waitFor((x) => /Add to device|On device|Resume \(|Update available/i.test(x), 10000);
@@ -470,20 +609,20 @@ async function connect() {
     }
     if (!done) throw new Error(stalled ? `download stalled: "${stalled}"` : 'download did not reach "On device" within 180s');
 
-    // Go offline and confirm local playback still advances.
+    // Go offline and confirm local playback still advances — measured from the
+    // media session (same idle-proof approach as play_and_hear).
     adb('shell cmd connectivity airplane-mode enable'); airplaneOn = true;
     await sleep(2500);
-    xml = dump();
-    if (!/Playing/i.test(xml)) { if (!tapText(xml, 'Play book')) tapText(xml, 'Play'); }
-    await waitFor((x) => /Playing|Pause/i.test(x), 8000);
-    const o1 = snapshot();
+    const playingOffline = await startPlayback();
+    if (!playingOffline) throw new Error('offline: playback did not start (no PLAYING media session)');
+    const ot0 = Date.now(); const om1 = mediaState();
     await sleep(10000);
-    const o2 = snapshot();
-    const owall = (o2.t - o1.t) / 1000;
-    const odelta = o1.clock != null && o2.clock != null ? o2.clock - o1.clock : null;
-    const offlineOk = odelta != null && odelta >= 3 && Math.abs(odelta - owall) <= 3;
+    const om2 = mediaState(); const owall = (Date.now() - ot0) / 1000;
+    const odelta = om1 && om2 ? om2.pos - om1.pos : null;
+    const offlineOk = odelta != null && odelta >= 3 && Math.abs(odelta - owall) <= 3 && om2.state === 'PLAYING';
     report('download_offline_play', offlineOk,
-      `downloaded; offline clock ${o1.clock}s -> ${o2.clock}s (+${odelta == null ? '?' : odelta.toFixed(1)}s) over ${owall.toFixed(1)}s`);
+      `downloaded; offline player ${om1 ? om1.pos.toFixed(1) : '?'}s -> ${om2 ? om2.pos.toFixed(1) : '?'}s ` +
+      `(+${odelta == null ? '?' : odelta.toFixed(1)}s) over ${owall.toFixed(1)}s`);
     if (!offlineOk) shot('download_offline_play');
   } catch (e) {
     report('download_offline_play', false, e.message);
