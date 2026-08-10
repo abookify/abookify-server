@@ -94,3 +94,34 @@ func TestWorkCanonHumanNarrationDefaults(t *testing.T) {
 		t.Errorf("active edition has %d files — the (shorter) HUMAN narration must win the default, not our (longer) TTS", c.Active.AudioFiles)
 	}
 }
+
+// The anchor book holding an edition's whole-timeline chapters is not always
+// files[0] (the list-projection discovery defect) — canon must name it so
+// consumers probe exactly one book, correctly.
+func TestWorkCanonNamesChaptersAnchor(t *testing.T) {
+	store := testStoreForLib(t)
+	wid, _ := store.CreateWork("Anchored", "")
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/lib/a/06.mp3", Filename: "06.mp3",
+		Format: "mp3", MediaType: "audio", Origin: "narrator_recording", Duration: 100})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/lib/a/01.mp3", Filename: "01.mp3",
+		Format: "mp3", MediaType: "audio", Origin: "narrator_recording", Duration: 100})
+	w, _ := store.GetWork(wid)
+	var anchor int64
+	for _, b := range w.AudioFiles {
+		if b.Filename == "01.mp3" {
+			anchor = b.ID
+		}
+	}
+	for i := 0; i < 3; i++ {
+		store.InsertChapter(db.Chapter{BookID: anchor, Index: i, Title: "Ch", WordCount: 10,
+			StartSec: float64(i) * 50, EndSec: float64(i)*50 + 50})
+	}
+	c, err := BuildWorkCanon(store, wid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Active.ChaptersAnchorBookID != anchor {
+		t.Errorf("anchor = %d, want %d (the book actually holding the chapter rows, not files[0])",
+			c.Active.ChaptersAnchorBookID, anchor)
+	}
+}

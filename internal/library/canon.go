@@ -35,6 +35,14 @@ type CanonEdition struct {
 	Voice      string  `json:"voice,omitempty"` // TTS voice when known
 	Dir        string  `json:"dir"`             // grouping key (audio file directory)
 	BookIDs    []int64 `json:"book_ids"`
+	// ChaptersAnchorBookID names the book holding this edition's
+	// whole-timeline chapter rows (sidecar convention: chapters land on one
+	// anchor book with edition-continuous times). Consumers probing for
+	// detected chapters must ask THIS book — probing files[0] worked on
+	// live 85 only because its anchor happened to sort first, and broke on
+	// 8195 where it didn't (the list-projection discovery defect). Absent
+	// (0) = the edition has no chapter rows anywhere.
+	ChaptersAnchorBookID int64 `json:"chapters_anchor_book_id,omitempty"`
 	Files      int     `json:"files"`
 	Duration   float64 `json:"duration_secs"`
 	AudioChaps int     `json:"audio_chapters"` // chapter rows across the edition's books
@@ -68,6 +76,9 @@ type WorkCanon struct {
 		// run on repaired data went red precisely because the assert compared
 		// a chapters span against this struct's files count.
 		AudioChapters int `json:"audio_chapters"`
+		// ChaptersAnchorBookID mirrors the active edition's anchor (see
+		// CanonEdition) so a consumer needs exactly one probe.
+		ChaptersAnchorBookID int64 `json:"chapters_anchor_book_id,omitempty"`
 		TextBookID   int64  `json:"text_book_id"`
 		TextChapters int    `json:"text_chapters"`
 	} `json:"active"`
@@ -102,6 +113,7 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 	for _, d := range dirs {
 		bs := groups[d]
 		ed := CanonEdition{Dir: d}
+		anchorChaps := 0
 		labels := map[string]int{}
 		voices := map[string]bool{}
 		for _, b := range bs {
@@ -116,6 +128,10 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 			}
 			n, _ := store.ChapterCount(b.ID)
 			ed.AudioChaps += n
+			if n > anchorChaps {
+				anchorChaps = n
+				ed.ChaptersAnchorBookID = b.ID
+			}
 		}
 		for l := range labels {
 			if l != "" {
@@ -236,6 +252,7 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 		if c.Active.AudioChapters == 0 {
 			c.Active.AudioChapters = best.Files
 		}
+		c.Active.ChaptersAnchorBookID = best.ChaptersAnchorBookID
 	}
 	return c, nil
 }
