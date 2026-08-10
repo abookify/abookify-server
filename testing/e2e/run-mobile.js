@@ -104,6 +104,21 @@ function preflight() {
   let booted = '';
   try { booted = adb('shell getprop sys.boot_completed').trim(); } catch {}
   if (booted !== '1') { console.error(`INFRA(3) emulator not fully booted (sys.boot_completed="${booted}") — half-booted, not a red journey. Wait/cold-relaunch.`); process.exit(3); }
+  // Out of disk: a nearly-full guest /data makes the app crash on launch
+  // ("Failed to free … on /data") and can wedge the dump — presenting as a
+  // crashing app or a red journey when the real cause is storage. Name it here.
+  // Fix at the SOURCE: raise disk.dataPartition.size in the AVD's config.ini and
+  // relaunch with -wipe-data (the image, not the host disk, is the ceiling).
+  try {
+    const dfLine = adb('shell df /data').trim().split('\n').pop();
+    const availKb = +(dfLine.match(/\s(\d+)\s+\d+%/) || [])[1]; // Avail is the col before Use%
+    if (availKb && availKb < 700000) {
+      console.error(`INFRA(3) emulator OUT OF DISK — guest /data has only ${(availKb / 1024).toFixed(0)} MB free ` +
+        `(<700 MB). The app crashes on launch / installs fail at this level; this is NOT an app failure. ` +
+        `Raise disk.dataPartition.size in ~/.android/avd/<AVD>.avd/config.ini and relaunch with -wipe-data.`);
+      process.exit(3);
+    }
+  } catch { /* df parse best-effort; don't block on a parse miss */ }
   // Responsive: a wedged emulator still answers `adb` but hangs/empties the
   // uiautomator dump. An empty dump would make EVERY journey fail ambiguously.
   let xml = '';
