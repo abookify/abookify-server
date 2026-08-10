@@ -499,33 +499,47 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 		// the book row may have been removed (edition deleted) while the mp3
 		// remained, so a regenerate-after-remove must re-attach the edition.
 		if _, err := os.Stat(mp3Path); err != nil {
-			// Preprocess text for natural speech
-			processedText := PreprocessForTTS(chMeta.Title, ch.Content)
-
-			// Split long text into chunks for TTS (~500 words each)
-			textChunks := SplitTextForTTS(processedText, 500)
-			var audioChunks [][]byte
-
-			for ci, chunk := range textChunks {
-				if len(textChunks) > 1 {
-					job.CurrentStep = fmt.Sprintf("Generating chapter %d/%d: %s (part %d/%d)",
-						i+1, len(chapters), chMeta.Title, ci+1, len(textChunks))
-					g.updateJob(job)
+			// Preprocess into pause-aware segments (title, then paragraphs) —
+			// the cadence work: real silence is inserted at the joins, since
+			// punctuation alone barely moves Kokoro's rhythm. Word content is
+			// identical to the old single-string path (tested), so word-sync
+			// alignment is unaffected.
+			segments := PreprocessForTTSSegments(chMeta.Title, ch.Content)
+			var pieces []ttsPiece
+			total := 0
+			for _, seg := range segments {
+				total += len(SplitTextForTTS(seg.Text, 500))
+			}
+			done := 0
+			for _, seg := range segments {
+				// Long paragraphs still split (~500 words); the pause attaches
+				// only after the segment's LAST chunk.
+				textChunks := SplitTextForTTS(seg.Text, 500)
+				for ci, chunk := range textChunks {
+					done++
+					if total > 1 {
+						job.CurrentStep = fmt.Sprintf("Generating chapter %d/%d: %s (part %d/%d)",
+							i+1, len(chapters), chMeta.Title, done, total)
+						g.updateJob(job)
+					}
+					audioData, err := g.tts().Synthesize(chunk, voice)
+					if err != nil {
+						log.Printf("tts: synthesis failed for chapter %d chunk %d: %v", chMeta.Index, ci, err)
+						job.Status = "failed"
+						job.Error = fmt.Sprintf("chapter %d: %v", chMeta.Index, err)
+						g.updateJob(job)
+						return
+					}
+					pause := 0
+					if ci == len(textChunks)-1 {
+						pause = seg.PauseAfterMs
+					}
+					pieces = append(pieces, ttsPiece{audio: audioData, pauseAfterMs: pause})
 				}
-
-				audioData, err := g.tts().Synthesize(chunk, voice)
-				if err != nil {
-					log.Printf("tts: synthesis failed for chapter %d chunk %d: %v", chMeta.Index, ci, err)
-					job.Status = "failed"
-					job.Error = fmt.Sprintf("chapter %d: %v", chMeta.Index, err)
-					g.updateJob(job)
-					return
-				}
-				audioChunks = append(audioChunks, audioData)
 			}
 
 			// Never byte-concatenate the chunks — see concatAudioChunks.
-			if err := concatAudioChunks(audioChunks, mp3Path); err != nil {
+			if err := concatAudioPieces(pieces, mp3Path); err != nil {
 				job.Status = "failed"
 				job.Error = err.Error()
 				g.updateJob(job)
