@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,6 +38,60 @@ type ExportOptions struct {
 	// transcript along. Alignments, sync rows and chapter links referencing
 	// excluded books are dropped with them, never left dangling.
 	OnlyBookIDs map[int64]bool
+	// AllowIncoherent bypasses the coherence gate. Off by default: a .abook that
+	// carries an edition-label split (one narration presented as multiple editions)
+	// must not be produced — the showcase featured artifact once shipped exactly that
+	// to strangers. The escape hatch exists only for deliberate diagnostics.
+	AllowIncoherent bool
+}
+
+// abookCoherenceProblems checks the distribution invariant INDEPENDENTLY of canon
+// (which groups by audio directory — meaningless once export flattens files into
+// audio/): a single narration, keyed by (origin, voice/album), must carry ONE edition
+// label, and a label must not span two narrations. A split is the two-editions-of-three
+// defect. Empty result = coherent.
+func abookCoherenceProblems(work *db.Work) []string {
+	type key struct{ origin, album string }
+	labels := map[key]map[string]bool{}
+	for i := range work.AudioFiles {
+		b := &work.AudioFiles[i]
+		k := key{b.Origin, b.Album}
+		if labels[k] == nil {
+			labels[k] = map[string]bool{}
+		}
+		labels[k][b.Edition] = true
+	}
+	var probs []string
+	for k, ls := range labels {
+		if len(ls) > 1 {
+			var lst []string
+			for l := range ls {
+				lst = append(lst, fmt.Sprintf("%q", l))
+			}
+			sort.Strings(lst)
+			probs = append(probs, fmt.Sprintf("edition-label split: narration (%s, voice=%q) carries %d labels [%s]",
+				k.origin, k.album, len(ls), strings.Join(lst, ", ")))
+		}
+	}
+	labelNarr := map[string]map[key]bool{}
+	for k, ls := range labels {
+		for l := range ls {
+			if l == "" {
+				continue
+			}
+			if labelNarr[l] == nil {
+				labelNarr[l] = map[key]bool{}
+			}
+			labelNarr[l][k] = true
+		}
+	}
+	for l, narrs := range labelNarr {
+		if len(narrs) > 1 {
+			probs = append(probs, fmt.Sprintf("label %q spans %d narrations", l, len(narrs)))
+		}
+	}
+	sort.Strings(probs)
+	return probs
 }
 
 // isOriginalEbookFormat reports whether a text book is an ORIGINAL user-supplied
@@ -68,6 +123,15 @@ func ExportWithDirs(store *db.Store, work *db.Work, outputPath, libraryDir strin
 func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opts ExportOptions) error {
 	if len(opts.OnlyBookIDs) > 0 {
 		work = filterWorkBooks(work, opts.OnlyBookIDs)
+	}
+	// COHERENCE GATE: refuse to produce a .abook that carries an edition-label split.
+	// Runs AFTER the OnlyBookIDs filter — a deliberate single-narration carve is
+	// coherent even when the full library work is not. Today's clean sweep is a
+	// snapshot; this makes it a property that holds without anyone remembering to look.
+	if !opts.AllowIncoherent {
+		if probs := abookCoherenceProblems(work); len(probs) > 0 {
+			return fmt.Errorf("refusing to export an incoherent work (would ship a split): %s", strings.Join(probs, "; "))
+		}
 	}
 	sum := SummarizeWork(store, work)
 

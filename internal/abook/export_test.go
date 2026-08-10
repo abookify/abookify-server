@@ -104,6 +104,46 @@ func seedWork(t *testing.T, dir string) (*db.Store, *db.Work) {
 	return store, work
 }
 
+// The coherence gate refuses to produce a .abook that carries an edition-label
+// split (one narration presented as multiple editions) — the defect that once
+// shipped in the showcase artifact — and the escape hatch still works.
+func TestExportV2_RefusesEditionSplit(t *testing.T) {
+	dir := t.TempDir()
+	store, work := seedWork(t, dir)
+	defer store.Close()
+
+	// Coherent as seeded → exports fine.
+	if err := ExportV2(store, work, filepath.Join(dir, "ok.abook"), dir, ExportOptions{}); err != nil {
+		t.Fatalf("coherent work should export: %v", err)
+	}
+
+	// Add two TTS files of the SAME narration (origin tts_kokoro, voice bm_fable) with
+	// DIFFERENT edition labels — the split.
+	for i, ed := range []string{"Kokoro · Fable", ""} {
+		p := filepath.Join(dir, "tts0"+string(rune('1'+i))+".mp3")
+		os.WriteFile(p, []byte("ID3 fake"), 0644)
+		if err := store.UpsertBook(db.Book{
+			WorkID: work.ID, Path: p, Filename: filepath.Base(p), Format: "mp3", MediaType: "audio",
+			Title: "Kokoro " + string(rune('1'+i)), Duration: 100, Origin: "tts_kokoro", Album: "bm_fable", Edition: ed,
+		}); err != nil {
+			t.Fatalf("upsert tts: %v", err)
+		}
+	}
+	work, _ = store.GetWork(work.ID)
+
+	err := ExportV2(store, work, filepath.Join(dir, "split.abook"), dir, ExportOptions{})
+	if err == nil {
+		t.Fatal("expected the gate to REFUSE an incoherent (edition-split) work")
+	}
+	if !strings.Contains(err.Error(), "edition-label split") {
+		t.Fatalf("error should name the split, got: %v", err)
+	}
+	// Escape hatch still produces the file.
+	if err := ExportV2(store, work, filepath.Join(dir, "forced.abook"), dir, ExportOptions{AllowIncoherent: true}); err != nil {
+		t.Fatalf("AllowIncoherent should bypass the gate: %v", err)
+	}
+}
+
 func TestExportV2_ManifestAndAssets(t *testing.T) {
 	dir := t.TempDir()
 	store, work := seedWork(t, dir)
