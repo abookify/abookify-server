@@ -2146,7 +2146,7 @@
       </select>
       <select id="np-text-source" onchange="onTextSourceChange(this.value)" title="Text source" style="display:none;"></select>
       <span id="np-sync-mode" class="np-sync-mode" style="display:none;"></span>
-      <button id="np-ai-btn" onclick="toggleNpAI()" title="AI tools — recap + ask about this book" aria-label="AI tools" style="display:none;">&#10022; AI</button>
+      <button id="np-ai-btn" onclick="toggleNpAI()" title="Catch up on the story — recap + ask about what you've read" aria-label="Catch up on the story" style="display:none;">&#10022; AI</button>
       <button id="np-max-btn" onclick="toggleNpOverlayMax()" title="Maximize / restore" aria-label="Maximize or restore reader">&#9974;</button>
       <button onclick="readerCloseBtn()" title="Hide reader" aria-label="Hide reader">&#10005;</button>
     </div>
@@ -3640,8 +3640,8 @@
           </div>
           ${work.has_text ? `
           <div class="qa-panel qa-launch">
-            <div class="qa-header">&#10022; AI tools</div>
-            <button class="ai-launch-btn" onclick="openAITools(${work.id})">${llmConfigured ? '&#10022; Recap &amp; ask about this book' : '&#10022; Open AI tools'}</button>
+            <div class="qa-header">&#10022; Catch up on the story</div>
+            <button class="ai-launch-btn" onclick="openAITools(${work.id})">&#10022; Catch up on the story</button>
             <div class="qa-hint">${llmConfigured
               ? 'Spoiler-aware recap and Q&amp;A, in the reader.'
               : 'Add an AI provider in <a href="/settings.html" onclick="openSettings(); return false;">Settings</a> for recaps + Q&amp;A.'}</div>
@@ -3694,7 +3694,7 @@
       }
       if (!llmConfigured) {
         return `<div class="qa-panel">
-          <div class="qa-header">&#10022; AI tools</div>
+          <div class="qa-header">&#10022; Catch up on the story</div>
           <div style="padding:0.9rem 1rem; font-size:0.82rem; color:var(--text-muted); text-align:center;">
             ✨ Recap + natural-language Q&amp;A need an AI provider.
             <a href="/settings.html" onclick="openSettings(); return false;" style="color:var(--generate); text-decoration:none; font-weight:600;">Configure in Settings →</a>
@@ -3702,7 +3702,7 @@
       }
       const textFiles = work.text_files || [];
       return `<div class="qa-panel">
-          <div class="qa-header">&#10022; AI tools</div>
+          <div class="qa-header">&#10022; Catch up on the story</div>
           ${voiceLaunchHtml(work.id)}
           <div class="chat-tabs" id="chat-tabs-${work.id}">
             <span style="color:var(--text-muted); font-size:0.78rem;">Loading chats…</span>
@@ -3720,8 +3720,8 @@
           </div>
           <div class="qa-chips" id="qa-chips-${work.id}"></div>
           <div class="qa-input-row">
-            <input type="text" id="qa-input-${work.id}" placeholder="Ask a question about this book…"
-              aria-label="Ask a question about this book"
+            <input type="text" id="qa-input-${work.id}" placeholder="Wondering about the story?"
+              aria-label="Wondering about the story?"
               data-book-id="${(textFiles[0]||{}).id || ''}" data-work-id="${work.id}"
               onkeydown="if(event.key==='Enter')chatSend(${work.id})">
             <button onclick="chatSend(${work.id})">Ask</button>
@@ -3782,9 +3782,36 @@
     // Detected-chapter cache: { bookId: [ {index, title, start_sec, end_sec, confidence}, ... ] }
     const audioChapterCache = {};
 
+    // canon.active.chapters_anchor_book_id names the ONE book in the playing edition
+    // that actually holds the whole-timeline chapter rows — which is NOT always
+    // files[0] (import order can give a later file the lowest id; 8195's discovery
+    // defect). Probing files[0] blindly saw [] and fell back to the raw file list.
+    // Cached per work; absent → probe the passed file (single-edition/simple works).
+    const canonAnchorCache = {};
+    async function canonChapterAnchor(workId) {
+      if (workId in canonAnchorCache) return canonAnchorCache[workId];
+      let anchor = null;
+      try {
+        const c = await fetch(`/api/works/${workId}/canon`).then(r => r.ok ? r.json() : null);
+        anchor = (c && c.active && c.active.chapters_anchor_book_id) || null;
+      } catch { anchor = null; }
+      canonAnchorCache[workId] = anchor;
+      return anchor;
+    }
+
     async function loadAudioChapterList(file, work) {
       const mount = document.getElementById('audio-chapters-' + work.id);
       if (!mount) return;
+      // Probe the edition's chapter-anchor book (canon), not just the passed file —
+      // the whole-book chapter rows may live on a non-first file.
+      const anchorId = await canonChapterAnchor(work.id);
+      if (anchorId) {
+        const editionIds = new Set(displayEditionBooks(work, 'audio').map(b => b.id));
+        if (editionIds.has(anchorId)) {
+          const anchorBook = (work.audio_files || []).find(b => b.id === anchorId);
+          if (anchorBook) file = anchorBook;
+        }
+      }
       let chapters = audioChapterCache[file.id];
       if (!chapters) {
         try {
