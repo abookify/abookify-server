@@ -405,6 +405,50 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     report('narration_binding', false, 'error: ' + e.message.slice(0, 120));
   }
 
+  // ---- timing_basis (TIMING LAW, META d-sw-gatearmed pt.4): every sync map
+  // SELF-DESCRIBES the narration it times (basis.audio_book_ids); a map fetched for a
+  // given ?edition MUST be timed to THAT edition; and with no ?edition on a
+  // multi-edition work the server resolves to canon.active and SAYS SO
+  // (basis.resolved). This turns the exact failure PJ photographed — the reader
+  // following one narration's timings while another plays — into a PERMANENT red, not
+  // a fix for one book. n/a for single-edition works (nothing to disambiguate).
+  try {
+    const tb = await page.evaluate(async (wid) => {
+      const w = (allWorks || []).find(x => x.id === Number(wid));
+      const canon = await fetch(`/api/works/${wid}/canon`).then(r => r.json()).catch(() => ({}));
+      const eds = canon.editions || [];
+      if (eds.length < 2) return { na: true, why: `single edition (${eds.length})` };
+      const epub = (w.text_files || []).find(b => b.format === 'epub');
+      if (!epub) return { na: true, why: 'no epub' };
+      const chs = await fetch(`/api/books/${epub.id}/chapters`).then(r => r.json()).catch(() => []);
+      const ch = (Array.isArray(chs) ? chs : []).filter(c => (c.word_count || 0) > 200)[0];
+      if (!ch) return { na: true, why: 'no substantial chapter' };
+      const basisFor = async (bookId) => {
+        const q = bookId ? `?edition=${bookId}` : '';
+        const ts = await fetch(`/api/works/${wid}/text-sync/${epub.id}/${ch.index}${q}`).then(r => r.json()).catch(() => ({}));
+        return ts.basis || null;
+      };
+      return {
+        na: false, ed0: eds[0].book_ids[0], ed1: eds[1].book_ids[0], activeDir: canon.active.edition_dir,
+        b0: await basisFor(eds[0].book_ids[0]), b1: await basisFor(eds[1].book_ids[0]), bDefault: await basisFor(0),
+      };
+    }, WORK);
+    if (tb.na) {
+      report('timing_basis', true, `n/a: ${tb.why} — nothing to disambiguate`);
+    } else {
+      const names = (basis, id) => !!(basis && (basis.audio_book_ids || []).includes(id));
+      const ok0 = names(tb.b0, tb.ed0);        // map fetched FOR edition0 names edition0
+      const ok1 = names(tb.b1, tb.ed1);        // ...and edition1 names edition1
+      const distinct = tb.b0 && tb.b1 && tb.b0.edition_dir !== tb.b1.edition_dir; // different narrations
+      const announced = !!(tb.bDefault && tb.bDefault.resolved === true && tb.bDefault.edition_dir === tb.activeDir);
+      report('timing_basis', ok0 && ok1 && distinct && announced,
+        `basis self-describes: ed0-names-ed0=${ok0}, ed1-names-ed1=${ok1}, distinct=${distinct}; ` +
+        `no-param default = canon.active + announced(resolved)=${announced}`);
+    }
+  } catch (e) {
+    report('timing_basis', false, 'error: ' + e.message.slice(0, 120));
+  }
+
   // ---- weak_chain_degrade (authorized 2026-08-09): when the printed edition's
   // chain to the human narration is too weak to trust a word highlight, the reader
   // must DEGRADE HONESTLY — actively show the TRANSCRIPT (synced to the narrator)
