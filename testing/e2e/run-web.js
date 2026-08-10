@@ -347,12 +347,15 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
           textBookId: dt[0] ? dt[0].id : null,
         };
       }, WORK);
+      // PROJECTION LAW: the span renders CHAPTERS, so it asserts against
+      // canon.active.audio_chapters — comparing it to audio_files went red on
+      // agreeing surfaces (5-file human edition, 6 detected chapters).
       const okAudio = web.audioFiles === canon.active.audio_files
-        && (web.audioSpan == null || web.audioSpan === canon.active.audio_files);
+        && (web.audioSpan == null || web.audioSpan === canon.active.audio_chapters);
       const okText = web.textChapters == null || web.textChapters === canon.active.text_chapters;
       report('surface_consistency', okAudio && okText,
-        `web renders ${web.audioFiles} audio files (span=${web.audioSpan}) / ${web.textChapters} text-ch ` +
-        `vs canon.active ${canon.active.audio_files} audio / ${canon.active.text_chapters} text-ch ` +
+        `web renders ${web.audioFiles} audio files (span=${web.audioSpan}ch) / ${web.textChapters} text-ch ` +
+        `vs canon.active ${canon.active.audio_files} files/${canon.active.audio_chapters}ch / ${canon.active.text_chapters} text-ch ` +
         `(totals ${canon.total_audio_files}A/${canon.total_texts}T)`);
     }
   } catch (e) {
