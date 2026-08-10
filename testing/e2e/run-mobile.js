@@ -611,10 +611,27 @@ async function connect() {
     && Math.abs(p2.mapS - p2.pos) <= 2.5;
   const A5 = clockAdv != null && clockAdv >= 3 && Math.abs(clockAdv - playWall) <= 3;
   const karaokeOk = A1 && A2 && A3 && A4 && A5;
+  // Attribute a red correctly. The KNOWN server-web bug (dispatched): after a
+  // resume, the reader stays pinned to front-matter chapter 0 on the ebook-word-
+  // karaoke follow path — it never advances to the chapter the audio is playing.
+  // Signature: widx frozen (A3 false) AND the reader's map time sits far BEHIND
+  // the audio position (pos − mapS large), because the highlight is stuck at the
+  // end of an earlier chapter while audio plays on. That is NOT a steady-state
+  // karaoke failure (steady-state is green once the reader is on the audio's
+  // chapter — verified on 8199 ch1 + work 85). Label it so this red is never
+  // mistaken for broken karaoke — but DO let it red (it is a real user-facing bug,
+  // not to be calibrated away).
+  const frozen = typeof p1.widx === 'number' && p1.widx === p2.widx;
+  const stuckBehind = !karaokeOk && frozen && typeof p2.mapS === 'number' && typeof p2.pos === 'number'
+    && (p2.pos - p2.mapS) > 10;
+  const note = stuckBehind
+    ? ' — KNOWN resume→ebook-karaoke bug: reader stuck on an earlier chapter (map far behind audio) '
+      + 'while audio plays on; server-web owned. Steady-state karaoke is unaffected (green on the audio\'s chapter).'
+    : '';
   report('karaoke_advances', karaokeOk,
     `[${probes.length}/${probesRaw.length} valid probes] A1 words=${p2.words} A2 widx=${p2.widx} A3 ${p1.widx}->${p2.widx} ` +
     `A4 |map ${p2.mapS == null ? 'null' : (+p2.mapS).toFixed(1)} - pos ${p2.pos == null ? 'null' : (+p2.pos).toFixed(1)}| ` +
-    `A5 clock +${clockAdv == null ? '?' : clockAdv.toFixed(1)}s over ${playWall.toFixed(1)}s play`);
+    `A5 clock +${clockAdv == null ? '?' : clockAdv.toFixed(1)}s over ${playWall.toFixed(1)}s play${note}`);
   if (!karaokeOk) shot('karaoke_advances');
 
   // ---- change_chapter / switch_source / export_import_populated — later.
