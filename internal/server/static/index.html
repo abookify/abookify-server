@@ -3818,7 +3818,7 @@
       }
 
       // Unified chapter list — when a work's text book has time-synced
-      // chapters (start_sec > 0), those are the same content as the audio
+      // chapters (end_sec > start_sec), those are the same content as the audio
       // chapters. Showing both is redundant. Collapse the audio pane's
       // list to a compact summary and let the ebook pane be the single
       // authoritative TOC. Clicks in the ebook pane already seek audio.
@@ -3828,8 +3828,9 @@
         await loadChapterList(textFile.id, work.id);
       }
       const textChapters = textFile ? (chapterCache[textFile.id]?.chapters || []) : [];
-      const textTimeSynced = textChapters.length > 0 &&
-        textChapters.some(c => (c.start_sec || 0) > 0);
+      // Discriminator rule (replaces the some(start_sec>0) workaround that died with
+      // the start_sec omitempty bug): a chapter is timed iff end_sec > start_sec.
+      const textTimeSynced = textChapters.length > 0 && textChapters.some(chapterIsTimed);
       if (textTimeSynced) {
         const counter = document.getElementById('audio-count-' + work.id);
         if (counter) counter.textContent = chapters.length;
@@ -5406,17 +5407,47 @@
     // word karaoke (#210b) — used to keep the transcript-follow machinery from
     // resetting the reader back to the transcript text.
     let currentReaderIsEbookKaraoke = false;
-    // The reader's precedence law, made INTENT-AWARE (the core of the "one guard"
-    // consolidation): an EXPLICIT navigation (a user choosing a chapter/source) beats
-    // any IMPLICIT one (a follow, degrade, resume, or the reader-nav a seek kicks off).
-    // readerNavSeq counts ALL navs; explicitNavSeq only advances on an EXPLICIT nav.
-    // An async setup aborts only when a NEWER EXPLICIT nav superseded it — so a
-    // degrade redirect yields to the user's explicit nav (face 2), while a resume's
-    // implicit follow-nav is NOT killed just because other implicit navs bumped the
-    // monotonic counter (face 4 — the regression the intent-blind guard caused).
-    // (Still owed: fold face-3's skipReaderNav into a single settling-aware guard.)
-    let readerNavSeq = 0;
+    // The reader's ONE precedence law, expressed by two orthogonal pieces of state
+    // (no per-call skip flags, no intent-blind counters):
+    //   explicitNavSeq — advances ONLY on an EXPLICIT (user) nav. An async reader
+    //     setup aborts iff a NEWER EXPLICIT nav superseded it, so a degrade redirect
+    //     yields to the user's explicit nav (face 2) while a resume's implicit
+    //     follow-nav is NOT killed merely because another implicit nav ran (face 4).
+    //   settlingDepth — >0 while some nav's OWN audio seek is still draining. The
+    //     audio→reader follow (followReaderToAudio) yields whenever it's >0, so a
+    //     loadChapter's own seek can never re-navigate the reader off the chapter it
+    //     just set, nor onto a different source (face 3 — was the skipReaderNav flag).
+    // Together: an EXPLICIT nav beats an IMPLICIT one, and an automatic audio-follow
+    // never clobbers the nav that is still settling.
     let explicitNavSeq = 0;
+    let settlingDepth = 0;
+
+    // A chapter is TIMED iff end_sec > start_sec (the discriminator agreed with the
+    // sidecar contract: untimed text chapters serialize 0/0, or omit the fields). An
+    // UNTIMED chapter (epub front matter, or a not-yet-aligned book) must never satisfy
+    // a covering-time lookup — the old `(start_sec||0)<=t && (end_sec||1e12)>t` matched
+    // EVERY untimed row (0<=t and 0||1e12 === 1e12 > t), so a deep seek/resume stranded
+    // on the FIRST chapter (the ch0 bug). Keying on the discriminator skips untimed rows;
+    // Number() coerces absent fields to NaN, which fails every comparison (also untimed).
+    function chapterIsTimed(c) { return Number(c.end_sec) > Number(c.start_sec); }
+    function chapterCoversTime(c, t) { return chapterIsTimed(c) && c.start_sec <= t && c.end_sec > t; }
+    function coveringChapter(chapters, t) { return (chapters || []).find(c => chapterCoversTime(c, t)); }
+
+    // Navigate the reader to the text chapter covering an audio position — the ONE
+    // place the audio drives the reader (seek + playAudio both route here). YIELDS
+    // while a nav is still settling (its own audio seek draining) so an automatic
+    // follow never clobbers the explicit/degrade/resume nav that triggered the seek.
+    // Direct audio actions (chapter click, scrub, auto-advance) run with nothing
+    // settling, so they follow normally.
+    async function followReaderToAudio(work, absSecs) {
+      if (settlingDepth > 0) return; // a nav owns the reader while its seek settles
+      if (!work) return;
+      const textFile = displayEditionBooks(work, 'text')[0];
+      if (!textFile) return;
+      if (!chapterCache[textFile.id]?.chapters) await loadChapterList(textFile.id, work.id);
+      const match = coveringChapter(chapterCache[textFile.id]?.chapters, absSecs);
+      if (match) await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true, implicit: true });
+    }
 
     // Resolve the follow mode for the displayed source, paint the indicator,
     // and set up the matching render: word-by-word karaoke for the transcript /
@@ -5754,11 +5785,10 @@
 
     async function loadChapter(bookId, index, workId, opts) {
       opts = opts || {};
-      ++readerNavSeq;
       // opts.implicit = a follow/degrade/resume/seek-driven nav. Only an EXPLICIT
       // (user) nav advances explicitNavSeq, so implicit setups abort only when the
       // USER navigated in the meantime — not merely because another implicit nav ran.
-      if (!opts.implicit) explicitNavSeq = readerNavSeq;
+      if (!opts.implicit) ++explicitNavSeq;
       const explicitBaseline = explicitNavSeq;
       // Reader now lives in the floating overlay — promote the host to this
       // work, then auto-open the overlay unless the user explicitly closed it.
@@ -5807,13 +5837,17 @@
       // detection (via pauses) produces more chapters than there are files.
       if (!opts.skipAudioSeek) {
         const meta = chapterCache[bookId]?.chapters?.find(c => c.index === index);
-        if (meta && meta.start_sec > 0) {
+        if (meta && chapterIsTimed(meta)) {
           const work = allWorks.find(w => w.id === workId);
           if (work) {
             const title = meta.title || `Chapter ${index + 1}`;
-            // Only seek the AUDIO — the reader is already on this chapter (we just
-            // navigated it); letting the seek re-navigate would override that pick.
-            seekToAbsoluteBookTime(work, meta.start_sec, title, { skipReaderNav: true });
+            // This nav OWNS the reader while its own audio seek settles: bump
+            // settlingDepth so the seek's reader-follow (followReaderToAudio) yields —
+            // it can't re-navigate the reader off the chapter we just set, nor onto a
+            // different source. Cleared when the seek drains. One central law, no flag.
+            settlingDepth++;
+            seekToAbsoluteBookTime(work, meta.start_sec, title)
+              .finally(() => { settlingDepth = Math.max(0, settlingDepth - 1); });
           }
         }
       }
@@ -5875,38 +5909,16 @@
         cumulative += dur;
       }
 
-      // Sync the reader pane: find the text chapter whose time range covers
-      // absSecs and load it. Skip the recursive audio seek since we're
-      // about to call playAudio ourselves. opts.skipReaderNav: the caller has
-      // ALREADY navigated the reader explicitly (loadChapter's own audio seek) —
-      // re-navigating here to displayEditionBooks(text)[0]'s covering chapter would
-      // OVERRIDE the user's explicit choice (and to the wrong book: the epub, not
-      // the transcript they picked). The override law: an automatic reader-nav must
-      // never clobber the explicit one that triggered it.
-      const textFile = opts.skipReaderNav ? null : displayEditionBooks(work, 'text')[0];
-      if (textFile) {
-        const cached = chapterCache[textFile.id]?.chapters;
-        if (cached && cached.length) {
-          const match = cached.find(c =>
-            (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
-          if (match) {
-            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true, implicit: true });
-          }
-        } else {
-          // Chapter list hasn't been fetched yet — load it then retry.
-          await loadChapterList(textFile.id, work.id);
-          const chs = chapterCache[textFile.id]?.chapters;
-          const match = chs?.find(c =>
-            (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
-          if (match) {
-            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true, implicit: true });
-          }
-        }
-      }
+      // Sync the reader pane to the text chapter covering absSecs. followReaderToAudio
+      // is the single audio→reader path and enforces the precedence law: it yields while
+      // a nav is still settling, so a loadChapter's own seek can't override the chapter
+      // that nav just set (nor jump to a different source). A direct audio action (click,
+      // scrub, auto-advance) has nothing settling, so the reader follows normally.
+      await followReaderToAudio(work, absSecs);
 
       playAudio(files[fileIdx].id, fileIdx, work.id,
         title || files[fileIdx].title || files[fileIdx].filename,
-        work.title, localSec, { skipReaderNav: opts.skipReaderNav });
+        work.title, localSec);
     }
 
     let currentWorkId = null;
@@ -6010,25 +6022,15 @@
       // absolute time range contains the current playback position. This
       // supersedes the old chapter_links lookup which was broken for
       // multi-file audiobooks (linker assumed 1:1 text_chapter↔mp3_file).
-      // opts.skipReaderNav: the caller (a loadChapter-initiated seek) has ALREADY
-      // put the reader on the chapter the user explicitly chose — re-navigating here
-      // to displayEditionBooks(text)[0]'s covering chapter would OVERRIDE that pick
-      // (and to the wrong book). The override law: automatic reader-nav never clobbers
-      // the explicit nav that triggered it.
-      if (syncEnabled[workId] !== false && work && !opts.skipReaderNav) {
-        const textFile = displayEditionBooks(work, 'text')[0];
-        if (textFile) {
-          await loadChapterList(textFile.id, workId);
-          const chs = chapterCache[textFile.id]?.chapters || [];
-          const absTimeForLookup = (typeof startSec === 'number' && startSec > 0)
-            ? startSec + currentAudioOffset
-            : currentAudioOffset;
-          const match = chs.find(c =>
-            (c.start_sec || 0) <= absTimeForLookup && (c.end_sec || 1e12) > absTimeForLookup);
-          if (match) {
-            await loadChapter(textFile.id, match.index, workId, { skipAudioSeek: true, implicit: true });
-          }
-        }
+      // Follow the reader to the playback position via the single audio→reader path.
+      // followReaderToAudio yields while a nav is settling (a loadChapter-initiated
+      // seek already put the reader on the chosen chapter), so it never clobbers that
+      // pick; a direct play/resume/auto-advance follows normally.
+      if (syncEnabled[workId] !== false && work) {
+        const absTimeForLookup = (typeof startSec === 'number' && startSec > 0)
+          ? startSec + currentAudioOffset
+          : currentAudioOffset;
+        await followReaderToAudio(work, absTimeForLookup);
       }
 
       // Scope the sync data to the detected chapter whose range covers the
@@ -6380,9 +6382,7 @@
         const textFile = work ? displayEditionBooks(work, 'text')[0] : null;
         if (textFile) {
           await loadChapterList(textFile.id, currentWorkId);
-          const chs = chapterCache[textFile.id]?.chapters || [];
-          const tmatch = chs.find(c =>
-            (c.start_sec || 0) <= bookSec && (c.end_sec || 1e12) > bookSec);
+          const tmatch = coveringChapter(chapterCache[textFile.id]?.chapters, bookSec);
           if (tmatch) await loadChapter(textFile.id, tmatch.index, currentWorkId, { skipAudioSeek: true, implicit: true });
         }
         const chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
@@ -6878,7 +6878,7 @@
       content.innerHTML =
         '<div class="np-toc-section">' + escapeHtml(work.title || 'Chapters') + '</div>' +
         chapters.map(c => {
-          const isActive = absTime >= (c.start_sec || 0) && absTime < (c.end_sec || 1e12);
+          const isActive = chapterCoversTime(c, absTime);
           return `<div class="chapter-row${isActive ? ' active' : ''}"
             role="button" tabindex="0" aria-label="Read ${escapeHtml(c.title || ('Chapter ' + (c.index+1)))}"
             data-ch-idx="${c.index}"
@@ -6903,7 +6903,7 @@
       const absTime = (player?.currentTime || 0) + currentAudioOffset;
       let activeIdx = -1;
       for (const c of chapters) {
-        if (absTime >= (c.start_sec || 0) && absTime < (c.end_sec || 1e12)) {
+        if (chapterCoversTime(c, absTime)) {
           activeIdx = c.index;
           break;
         }
