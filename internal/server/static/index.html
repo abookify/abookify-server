@@ -5431,9 +5431,10 @@
       // instead of silently rendering unsynced text that never highlights.
       let ts;
       try {
-        // ?audio binds the mode/degrade decision to the narration playing.
-        const audioQ = currentPlayingId ? `?audio=${currentPlayingId}` : '';
-        const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}${audioQ}`);
+        // ?edition names the narration playing (TIMING LAW): gates the degrade and
+        // stamps the map's basis. Server resolves to canon.active + says so if absent.
+        const editionQ = currentPlayingId ? `?edition=${currentPlayingId}` : '';
+        const res = await fetch(`/api/works/${workId}/text-sync/${bookId}/${chapterIdx}${editionQ}`);
         if (!res.ok) throw new Error('text-sync ' + res.status);
         ts = await res.json();
       } catch (e) {
@@ -5470,8 +5471,8 @@
           // a work can carry both a TTS edition (word-perfect by construction) and
           // a human recording (anchor-aligned); the server returns the map timed to
           // the playing narration, or empty if none fits (→ honest degradation).
-          const audioQ = currentPlayingId ? `?audio=${currentPlayingId}` : '';
-          const wres = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}${audioQ}`);
+          const editionQ = currentPlayingId ? `?edition=${currentPlayingId}` : '';
+          const wres = await fetch(`/api/works/${workId}/word-sync/${bookId}/${chapterIdx}${editionQ}`);
           if (!wres.ok) throw new Error('word-sync ' + wres.status);
           const words = await wres.json();
           const reader = document.getElementById('reader-' + workId);
