@@ -58,6 +58,18 @@ const HOST = process.env.E2E_HOST || '10.0.2.2';
 const HOST_URL = `http://${HOST}:${PORT}`;         // emulator → host server
 const PKG = 'com.abookify.app';
 const WORK_SUB = process.env.E2E_WORK || 'Carol';  // work-title substring to open
+// Live/auth server support: a Bearer token the app pairs with and the runner's
+// own API calls carry. On PJ's live server (auth on), use the dev token. Empty
+// for the no-auth fixtures.
+const AUTH_TOKEN = process.env.E2E_AUTH_TOKEN || '';
+// Targeting a SPECIFIC work in a big library with duplicate titles (e.g. 3
+// "A Christmas Carol"s on the live server): E2E_WORK_ID pins the API side to one
+// work; E2E_SEARCH filters the library first; E2E_CARD_KEY is the node text
+// tapped to OPEN the right card (a distinguishing badge like "11 audio"),
+// defaulting to WORK_SUB.
+const WORK_ID = process.env.E2E_WORK_ID || '';
+const SEARCH = process.env.E2E_SEARCH || '';
+const CARD_KEY = process.env.E2E_CARD_KEY || WORK_SUB;
 const SERIAL = process.env.E2E_SERIAL || '';       // optional `adb -s` target
 const ADB = `adb${SERIAL ? ` -s ${SERIAL}` : ''}`;
 const TMP_XML = path.join(os.tmpdir(), 'e2e-ui.xml');
@@ -72,8 +84,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The runner is on the HOST, so it reaches the fixture server directly at
 // localhost:PORT (the emulator uses 10.0.2.2:PORT — same server). Used by the
 // cross-surface counts assert to read the API canonical.
+const AUTH_HDR = AUTH_TOKEN ? `-H "Authorization: Bearer ${AUTH_TOKEN}"` : '';
 function apiJson(pathAndQuery) {
-  try { return JSON.parse(sh(`curl -s -m8 "http://localhost:${PORT}${pathAndQuery}"`)); }
+  try { return JSON.parse(sh(`curl -s -m8 ${AUTH_HDR} "http://localhost:${PORT}${pathAndQuery}"`)); }
   catch { return null; }
 }
 
@@ -388,8 +401,9 @@ async function connect() {
   adb(`shell am force-stop ${PKG}`);
   await sleep(500);
 
-  // Attempt 1 — deep link (one command).
-  const deep = `abookify://pair?url=${encodeURIComponent(HOST_URL)}&auth_token=e2e`;
+  // Attempt 1 — deep link (one command). auth_token is the dev/bypass token on an
+  // auth server (E2E_AUTH_TOKEN), else a throwaway a no-auth server ignores.
+  const deep = `abookify://pair?url=${encodeURIComponent(HOST_URL)}&auth_token=${AUTH_TOKEN || 'e2e'}`;
   // Double-quote the whole device command so the `&` in the URL survives BOTH
   // the local shell AND the device shell (an unquoted & backgrounds the command
   // and drops the package arg → "com.abookify.app not found").
@@ -424,13 +438,25 @@ async function connect() {
   // ---- open_library
   const connected = await connect();
   let xml = dump();
-  const cardFound = !!findNode(xml, WORK_SUB);
+  // Big library / duplicate titles: filter with the search box first so the
+  // target card is on screen (e.g. 3 "A Christmas Carol"s on the live server).
+  if (connected && SEARCH) {
+    const field = findNode(xml, 'Search title');
+    if (field) {
+      tap(field.cx, field.cy); await sleep(500);
+      typeText(SEARCH); await sleep(1500);
+      xml = dump();
+    }
+  }
+  const cardFound = !!findNode(xml, CARD_KEY);
   report('open_library', connected && cardFound,
-    `connected=${connected} card(${WORK_SUB})=${cardFound}`);
+    `connected=${connected} card(${CARD_KEY})=${cardFound}`);
   if (!(connected && cardFound)) { shot('open_library'); process.exit(finish()); }
 
-  // ---- open_book: tap the target work card, assert the work page rendered.
-  tapText(xml, WORK_SUB);
+  // ---- open_book: tap the target work card (by CARD_KEY — a distinguishing
+  // badge like "11 audio" when the title alone is ambiguous), assert the work
+  // page rendered.
+  tapText(xml, CARD_KEY);
   xml = await waitFor((x) => /Play book|Playing|Paused/i.test(x), 12000);
   const onWork = /Play book|Playing|Paused/i.test(xml) && !!findNode(xml, WORK_SUB);
   report('open_book', onWork, onWork ? '' : 'work page (title + "Play book") did not render');
@@ -448,10 +474,11 @@ async function connect() {
   {
     const list = apiJson('/api/works') || [];
     const works = Array.isArray(list) ? list : (list.works || []);
-    const w = works.find((x) => (x.title || '').includes(WORK_SUB));
+    const w = WORK_ID ? works.find((x) => String(x.id) === String(WORK_ID))
+      : works.find((x) => (x.title || '').includes(WORK_SUB));
     const full = w ? apiJson(`/api/works/${w.id}`) : null;
     if (!full) {
-      report('cross_surface_counts', false, `could not read API canonical for "${WORK_SUB}"`);
+      report('cross_surface_counts', false, `could not read API canonical for ${WORK_ID ? `work ${WORK_ID}` : `"${WORK_SUB}"`}`);
     } else {
       const af = full.audio_files || [];
       const tf = full.text_files || [];
@@ -496,14 +523,15 @@ async function connect() {
   {
     const list = apiJson('/api/works') || [];
     const works = Array.isArray(list) ? list : (list.works || []);
-    const w = works.find((x) => (x.title || '').includes(WORK_SUB));
+    const w = WORK_ID ? works.find((x) => String(x.id) === String(WORK_ID))
+      : works.find((x) => (x.title || '').includes(WORK_SUB));
     const af = (w && w.audio_files) || [];
     const idx = process.env.E2E_START_FILE != null ? +process.env.E2E_START_FILE : (af.length > 1 ? 1 : 0);
     const secs = process.env.E2E_START_SEC != null ? +process.env.E2E_START_SEC : (af.length > 1 ? 90 : 20);
     const bookId = (af[idx] || af[0] || {}).id;
     if (w && bookId != null) {
       try {
-        sh(`curl -s -m8 -X POST "http://localhost:${PORT}/api/works/${w.id}/position" ` +
+        sh(`curl -s -m8 -X POST ${AUTH_HDR} "http://localhost:${PORT}/api/works/${w.id}/position" ` +
            `-H 'Content-Type: application/json' ` +
            `-d '{"work_id":${w.id},"book_id":${bookId},"file_index":${idx},"position_secs":${secs}}'`);
         console.log(`seeded position: work ${w.id} file_index=${idx} (book ${bookId}) @ ${secs}s`);
