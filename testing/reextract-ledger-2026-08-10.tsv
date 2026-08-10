@@ -1,0 +1,58 @@
+book=106	work=3	CLEAN	ch=28 words=126880 paras 11736 -> 2331
+book=112471	work=4	CLEAN	ch=28 words=60074 paras 5302 -> 977
+book=103	work=5	CLEAN	ch=13 words=26512 paras 946 -> 946
+book=243688	work=5	CLEAN	ch=13 words=26512 paras 946 -> 946
+book=105	work=6	CLEAN	ch=11 words=25629 paras 2379 -> 362
+book=2347	work=7	CLEAN	ch=91 words=261934 paras 16136 -> 16045
+book=25960	work=22	NEEDS_REVIEW	ch 0 words 85 -> 82 (stream differs)
+book=14381	work=24	NEEDS_REVIEW	chapter count 98 -> 96
+book=25942	work=27	CLEAN	ch=28 words=96707 paras 971 -> 907
+book=25957	work=28	CLEAN	ch=30 words=75042 paras 6191 -> 844
+book=25986	work=30	NEEDS_REVIEW	ch 0 words 8 -> 7 (stream differs)
+book=26051	work=32	NEEDS_REVIEW	chapter count 106 -> 103
+book=111485	work=34	CLEAN	ch=30 words=75042 paras 6191 -> 844
+book=112470	work=34	CLEAN	ch=30 words=75042 paras 6190 -> 844
+book=31011	work=35	NEEDS_REVIEW	ch 0 words 12491 -> 12487 (stream differs)
+book=31009	work=36	NEEDS_REVIEW	chapter count 33 -> 32
+book=31037	work=37	NEEDS_REVIEW	ch 0 words 9177 -> 9140 (stream differs)
+book=33716	work=39	NEEDS_REVIEW	ch 0 words 45 -> 43 (stream differs)
+book=33760	work=40	NEEDS_REVIEW	ch 0 words 18 -> 16 (stream differs)
+book=33774	work=41	CLEAN	ch=11 words=77479 paras 1585 -> 1576
+book=33737	work=43	NEEDS_REVIEW	ch 0 words 186 -> 184 (stream differs)
+book=33999	work=47	CLEAN	ch=2 words=11444 paras 1564 -> 231
+book=34001	work=48	NEEDS_REVIEW	chapter count 39 -> 36
+book=34000	work=49	NEEDS_REVIEW	chapter count 36 -> 30
+book=33864	work=50	CLEAN	ch=46 words=78555 paras 1646 -> 1646
+book=39937	work=51	NEEDS_REVIEW	chapter count 19 -> 16
+book=39938	work=52	NEEDS_REVIEW	ch 0 words 1762 -> 1756 (stream differs)
+book=39933	work=53	NEEDS_REVIEW	ch 0 words 17 -> 16 (stream differs)
+book=39934	work=54	CLEAN	ch=66 words=227224 paras 5461 -> 4934
+book=39939	work=55	NEEDS_REVIEW	ch 0 words 54 -> 51 (stream differs)
+book=39936	work=56	NEEDS_REVIEW	ch 0 words 14 -> 10 (stream differs)
+book=39912	work=58	NEEDS_REVIEW	ch 0 words 20 -> 16 (stream differs)
+book=45007	work=71	NEEDS_REVIEW	ch 0 words 242 -> 233 (stream differs)
+book=45006	work=72	CLEAN	ch=61 words=112954 paras 4848 -> 4770
+book=45009	work=73	CLEAN	ch=83 words=555204 paras 30155 -> 12435
+book=45005	work=74	NEEDS_REVIEW	ch 0 words 110 -> 109 (stream differs)
+book=45008	work=75	NEEDS_REVIEW	chapter count 38 -> 37
+book=45010	work=76	CLEAN	ch=36 words=47401 paras 2133 -> 2133
+book=111504	work=85	CLEAN	ch=6 words=28641 paras 3086 -> 770
+book=111509	work=86	CLEAN	ch=8 words=31823 paras 358 -> 358
+book=112411	work=86	CLEAN	ch=8 words=31823 paras 358 -> 358
+book=111510	work=87	CLEAN	ch=18 words=32455 paras 3081 -> 377
+book=112388	work=88	CLEAN	ch=2 words=12214 paras 1269 -> 89
+book=112393	work=89	CLEAN	ch=1 words=6085 paras 858 -> 269
+book=112398	work=92	NEEDS_REVIEW	ch 0 words 2184 -> 2183 (stream differs)
+book=112425	work=96	CLEAN	ch=26 words=39648 paras 3738 -> 1195
+book=112445	work=97	CLEAN	ch=18 words=47268 paras 1736 -> 1736
+book=112472	work=98	CLEAN	ch=13 words=58424 paras 5317 -> 1027
+book=112475	work=100	CLEAN	ch=31 words=160712 paras 13294 -> 2073
+book=112499	work=102	CLEAN	ch=13 words=104511 paras 9309 -> 2558
+book=112517	work=103	NEEDS_REVIEW	ch 0 words 125 -> 119 (stream differs)
+book=112538	work=104	CLEAN	ch=37 words=68357 paras 5867 -> 1644
+book=115424	work=108	CLEAN	ch=13 words=62797 paras 8401 -> 1650
+book=120483	work=108	CLEAN	ch=13 words=62797 paras 8401 -> 1650
+book=39935	work=116	NEEDS_REVIEW	ch 0 words 14 -> 9 (stream differs)
+book=131486	work=119	CLEAN	ch=13 words=62797 paras 8401 -> 1650
+book=239621	work=121	CLEAN	ch=6 words=28641 paras 2765 -> 770
+SUMMARY	migrated=33 flagged=24 skipped=0 dry=false
