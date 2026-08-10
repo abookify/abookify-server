@@ -12,6 +12,7 @@ func PreprocessForTTS(title string, content string) string {
 
 	// Strip Gutenberg boilerplate
 	content = stripGutenbergBoilerplate(content)
+	content = restoreParagraphBreaks(content)
 
 	// Format the chapter title with a pause
 	title = strings.TrimSpace(title)
@@ -225,4 +226,104 @@ func normalizedWords(s string) []string {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+// restoreParagraphBreaks recovers paragraph boundaries in flat hard-wrapped
+// text. The Carol epub's extraction stored chapter content with 631 single
+// newlines and ZERO blank lines — so the paragraph-pause logic (both the
+// old "\n\n" prose pause and the new inserted silence) never fired on it,
+// which is a large part of why PJ heard one unvarying rhythm. True structure
+// is unrecoverable from our stored data (content_html partial, paragraphs
+// table holds wrapped LINES), so: in ~70-char-wrapped text, a SHORT line
+// ending in terminal punctuation is a paragraph's last line. Conservative
+// threshold — a missed break costs nothing (status quo), a false break
+// inserts one 500ms pause at a sentence end, which reads as emphasis, not
+// error. Whitespace-only transform: the word stream is untouched.
+func restoreParagraphBreaks(content string) string {
+	if strings.Contains(content, "\n\n") {
+		return content // real structure present — trust it
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) < 8 {
+		return content
+	}
+	var b strings.Builder
+	for i, ln := range lines {
+		b.WriteString(ln)
+		if i == len(lines)-1 {
+			break
+		}
+		t := strings.TrimSpace(ln)
+		short := len(t) > 0 && len(t) < 45
+		terminal := strings.HasSuffix(t, ".") || strings.HasSuffix(t, "!") ||
+			strings.HasSuffix(t, "?") || strings.HasSuffix(t, ".”") ||
+			strings.HasSuffix(t, "!”") || strings.HasSuffix(t, "?”")
+		if short && terminal {
+			b.WriteString("\n\n")
+		} else {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// TTSSegment is one independently-synthesized stretch of speech with the
+// silence that should FOLLOW it in the assembled chapter. PJ's cadence
+// finding (2026-08-10): Kokoro reads at one unvarying rhythm — "this than
+// this and then this than this" — and punctuation-based pauses ("Title.\n\n")
+// barely register. The pauses that make it sound like someone reading a book
+// are INSERTED as real silence at concat time, not coaxed out of the model.
+// We never need to IDENTIFY titles or paragraphs at synthesis time — we
+// already hold them structurally (chMeta.Title; \n\n paragraph breaks that
+// PreprocessForTTS itself maintains).
+type TTSSegment struct {
+	Text         string
+	PauseAfterMs int
+}
+
+// Pause lengths, chosen against PJ's Stave One sample; judged by ear, not by
+// whether the silence got inserted. Title gets a settled beat like a human
+// narrator taking a breath after announcing the chapter; paragraphs a
+// shorter one.
+const (
+	ttsTitlePauseMs     = 1100
+	ttsParagraphPauseMs = 500
+)
+
+// PreprocessForTTSSegments is PreprocessForTTS split at the pause points:
+// the (optional) spoken title as its own segment, then one segment per
+// paragraph. Joining the segment texts with "\n\n" reproduces
+// PreprocessForTTS's output exactly — the words are identical, only the
+// silence between them is new (word-sync alignment is unaffected: silence
+// adds no words, and Whisper timestamps simply carry the offsets).
+func PreprocessForTTSSegments(title string, content string) []TTSSegment {
+	full := PreprocessForTTS(title, content)
+	if full == "" {
+		return nil
+	}
+	paras := strings.Split(full, "\n\n")
+	var segs []TTSSegment
+	spokenTitle := ""
+	t := strings.TrimSpace(title)
+	if t != "" && !isBoilerplateTitle(t) && !contentOpensWithTitle(content, t) {
+		if isAllCaps(t) {
+			t = toTitleCase(t)
+		}
+		spokenTitle = t + "."
+	}
+	for _, p := range paras {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		pause := ttsParagraphPauseMs
+		if len(segs) == 0 && spokenTitle != "" && p == spokenTitle {
+			pause = ttsTitlePauseMs
+		}
+		segs = append(segs, TTSSegment{Text: p, PauseAfterMs: pause})
+	}
+	if len(segs) > 0 {
+		segs[len(segs)-1].PauseAfterMs = 0 // chapter end: the file boundary is the pause
+	}
+	return segs
 }

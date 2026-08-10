@@ -20,3 +20,48 @@ func TestPreprocessSkipsDuplicateTitleAnnouncement(t *testing.T) {
 		t.Errorf("announcement lost for non-duplicated title: %q", got)
 	}
 }
+
+// The segments must reproduce PreprocessForTTS's words exactly (word-sync
+// depends on it) while carrying the pause structure: long after a spoken
+// title, medium between paragraphs, none at chapter end.
+func TestPreprocessSegmentsMatchJoinedOutput(t *testing.T) {
+	title := "STAVE ONE. MARLEY'S GHOST."
+	content := "Marley was dead: to begin with.\n\nThere is no doubt whatever about that.\n\nOld Marley was as dead as a door-nail."
+	segs := PreprocessForTTSSegments(title, content)
+	if len(segs) < 3 {
+		t.Fatalf("want title + paragraphs, got %d segments", len(segs))
+	}
+	var joined []string
+	for _, s := range segs {
+		joined = append(joined, s.Text)
+	}
+	// Compare WORD STREAMS, not bytes — word-sync counts words; whitespace
+	// warts in the joined path (a stray continuation space) don't matter.
+	got := strings.Fields(strings.Join(joined, " "))
+	want := strings.Fields(PreprocessForTTS(title, content))
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("segment words diverge from PreprocessForTTS:\n got %v\nwant %v", got, want)
+	}
+	if segs[0].PauseAfterMs != ttsTitlePauseMs {
+		t.Errorf("title pause = %d, want %d", segs[0].PauseAfterMs, ttsTitlePauseMs)
+	}
+	if segs[1].PauseAfterMs != ttsParagraphPauseMs {
+		t.Errorf("paragraph pause = %d, want %d", segs[1].PauseAfterMs, ttsParagraphPauseMs)
+	}
+	if segs[len(segs)-1].PauseAfterMs != 0 {
+		t.Errorf("last segment pause = %d, want 0", segs[len(segs)-1].PauseAfterMs)
+	}
+}
+
+// When the content opens with its own title, no title segment is spoken and
+// the first paragraph gets the ordinary paragraph pause.
+func TestPreprocessSegmentsNoTitleDuplication(t *testing.T) {
+	title := "Chapter 1"
+	content := "Chapter 1\n\nCall me Ishmael.\n\nSome years ago."
+	segs := PreprocessForTTSSegments(title, content)
+	for _, s := range segs {
+		if s.PauseAfterMs == ttsTitlePauseMs {
+			t.Errorf("no segment should carry the title pause when the title is not spoken separately: %+v", segs)
+		}
+	}
+}
