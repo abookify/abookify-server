@@ -47,6 +47,54 @@ type TextSync struct {
 	// trustworthy or the narration is a TTS edition (word-perfect by construction).
 	DegradeTo   int64  `json:"degrade_to,omitempty"`
 	DegradeNote string `json:"degrade_note,omitempty"`
+	// Basis (TIMING LAW): the map SELF-DESCRIBES the narration it times, so no
+	// consumer ever infers. audio_book_ids = the edition this timing belongs to;
+	// resolved=true means the caller passed no ?edition on a multi-edition work and
+	// the server resolved to canon.active — a default that announces itself, not a guess.
+	Basis *SyncBasis `json:"basis,omitempty"`
+}
+
+// SyncBasis names the narration a timing map belongs to (TIMING LAW).
+type SyncBasis struct {
+	AudioBookIDs []int64 `json:"audio_book_ids"`
+	EditionDir   string  `json:"edition_dir,omitempty"`
+	EditionLabel string  `json:"edition_label,omitempty"`
+	Timeline     string  `json:"timeline"`           // "edition-continuous"
+	Resolved     bool    `json:"resolved,omitempty"` // true = defaulted to canon.active (announced)
+}
+
+// BuildSyncBasis names the edition a timing request belongs to: the edition
+// containing playingAudioBookID, or — when 0 on a multi-edition work — canon.active
+// (Resolved=true, an announced default rather than a guess). Nil for a single-edition
+// or audio-less work (nothing to disambiguate).
+func BuildSyncBasis(store *db.Store, workID, playingAudioBookID int64) *SyncBasis {
+	canon, err := BuildWorkCanon(store, workID)
+	if err != nil || canon == nil || len(canon.Editions) == 0 {
+		return nil
+	}
+	pick := func(e *CanonEdition, resolved bool) *SyncBasis {
+		return &SyncBasis{AudioBookIDs: e.BookIDs, EditionDir: e.Dir, EditionLabel: e.Label,
+			Timeline: "edition-continuous", Resolved: resolved}
+	}
+	if playingAudioBookID != 0 {
+		for i := range canon.Editions {
+			for _, id := range canon.Editions[i].BookIDs {
+				if id == playingAudioBookID {
+					return pick(&canon.Editions[i], false)
+				}
+			}
+		}
+	}
+	if len(canon.Editions) < 2 {
+		return nil // single edition — no ambiguity to name
+	}
+	// No param on a multi-edition work: resolve to canon.active and SAY SO.
+	for i := range canon.Editions {
+		if canon.Editions[i].Dir == canon.Active.EditionDir {
+			return pick(&canon.Editions[i], true)
+		}
+	}
+	return nil
 }
 
 // minChainConfidence — below this measured audio_to_ebook (the QUALITY signal: how

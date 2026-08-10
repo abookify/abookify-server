@@ -1059,13 +1059,17 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
 		return
 	}
-	// ?audio={audioBookId} = the narration playing; lets the mode gate the ebook
-	// on chain confidence for the human narration (and never for a TTS one).
-	playingAudioBookID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("audio")), 10, 64)
+	// ?edition={audioBookId} (TIMING LAW) = the narration playing; gates the ebook
+	// on chain confidence for the human narration (never a TTS one) AND names the
+	// timing basis. Accept legacy ?audio during transition.
+	playingAudioBookID := parseEditionParam(r)
 	ts, err := library.BuildTextSync(s.store, id, bookID, playingAudioBookID, chapterIdx)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
+	}
+	if ts != nil {
+		ts.Basis = library.BuildSyncBasis(s.store, id, playingAudioBookID) // self-describing map
 	}
 	writeJSON(w, http.StatusOK, ts)
 }
@@ -1078,6 +1082,18 @@ func (s *Server) handleTextSync(w http.ResponseWriter, r *http.Request) {
 // so the client cleanly falls back to paragraph-follow. (A transcript book used
 // to return `[]` here because the ebook builder bailed on transcripts — the
 // promise/deliver mismatch mobile hit; BuildDisplayWordSync now serves both.)
+// parseEditionParam reads the TIMING-LAW edition selector (the audio book id of the
+// narration playing) from ?edition=, falling back to the legacy ?audio= during the
+// client transition. 0 when absent.
+func parseEditionParam(r *http.Request) int64 {
+	v := strings.TrimSpace(r.URL.Query().Get("edition"))
+	if v == "" {
+		v = strings.TrimSpace(r.URL.Query().Get("audio"))
+	}
+	id, _ := strconv.ParseInt(v, 10, 64)
+	return id
+}
+
 func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
 	if err != nil {
@@ -1094,9 +1110,9 @@ func (s *Server) handleEbookWordSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chapterIdx"})
 		return
 	}
-	// ?audio={audioBookId} binds the returned map to the narration actually
-	// playing (multi-edition fix). Absent → 0 → legacy narration-agnostic map.
-	playingAudioBookID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("audio")), 10, 64)
+	// ?edition={audioBookId} (TIMING LAW) binds the map to the narration playing;
+	// absent → 0 → legacy narration-agnostic map. Accept legacy ?audio too.
+	playingAudioBookID := parseEditionParam(r)
 	words, err := library.BuildDisplayWordSync(s.store, id, bookID, playingAudioBookID, chapterIdx)
 	if err != nil {
 		writeServerError(w, r, err)
