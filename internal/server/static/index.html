@@ -2489,8 +2489,12 @@
         // reaches the actual read-along in one tap (not a tour of a one-book grid).
         // The reader is one Play press from word-by-word karaoke — the whole point.
         if (typeof loadWorks === 'function') await loadWorks();
-        if (data.work_id && typeof openWorkDetail === 'function') {
-          try { openWorkDetail(Number(data.work_id)); } catch {}
+        // Open whether it was freshly imported (work_id) or already present
+        // (existing_work_id, the on_conflict=skip response) — either way the
+        // visitor lands in the book they just tapped.
+        const openId = data.work_id || data.existing_work_id;
+        if (openId && typeof openWorkDetail === 'function') {
+          try { openWorkDetail(Number(openId)); } catch {}
         }
       } catch {
         btn.disabled = false;
