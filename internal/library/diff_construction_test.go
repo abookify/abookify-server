@@ -63,3 +63,33 @@ func TestBuildCoverageNoConstructionPairWithoutTTS(t *testing.T) {
 		t.Fatalf("want 0 pairs, got %d", len(cov.Pairs))
 	}
 }
+
+// An embedding-only aligned work (cross-translation: no word-unit rows) must
+// emit its pair labeled unit=paragraph — pairs:[] here is the same
+// empty-vs-none-of-that-kind misread as the TTS case, one method over.
+func TestBuildCoverageEmitsEmbeddingOnlyPair(t *testing.T) {
+	store := testStoreForLib(t)
+	wid, _ := store.CreateWork("Translation", "")
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/lib/tr.epub", Filename: "tr.epub",
+		Format: "epub", MediaType: "text", Origin: "publisher_epub"})
+	store.UpsertBook(db.Book{WorkID: wid, Path: "/lib/tr.transcript", Filename: "tr",
+		Format: "transcript", MediaType: "text", Origin: "whisper_transcript"})
+	w, _ := store.GetWork(wid)
+	eb, tr := w.TextFiles[0].ID, w.TextFiles[1].ID
+	payload := `{"match_quality":0.82,"aligned_trans_words":80,"trans_words":100,"aligned_ebook_words":70,"ebook_words":100}`
+	if err := store.SaveAlignment(db.Alignment{WorkID: wid, FromBookID: eb, ToBookID: tr,
+		Unit: "paragraph", Confidence: 0.8, Method: "embedding", Pairs: payload}); err != nil {
+		t.Fatal(err)
+	}
+	cov, err := BuildCoverage(store, wid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cov.Pairs) != 1 {
+		t.Fatalf("want 1 embedding pair, got %d", len(cov.Pairs))
+	}
+	p := cov.Pairs[0]
+	if p.Method != "embedding" || p.Unit != "paragraph" || p.Verdict == nil {
+		t.Errorf("pair mislabeled: %+v", p)
+	}
+}

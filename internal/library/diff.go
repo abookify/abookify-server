@@ -414,10 +414,16 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 	}
 
 	out := &WorkCoverage{WorkID: workID, Pairs: []PairCoverage{}}
+	wordPair := map[[2]int64]bool{}
+	for i := range aligns {
+		if aligns[i].Unit == "word" {
+			wordPair[[2]int64{aligns[i].FromBookID, aligns[i].ToBookID}] = true
+		}
+	}
 	for i := range aligns {
 		a := &aligns[i]
 		if a.Unit != "word" {
-			continue // embedding/paragraph offsets aren't word counts we can split
+			continue // embedding rows are emitted below, labeled by unit
 		}
 		var p AnchorAlignmentPayload
 		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
@@ -434,6 +440,38 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 			Unit:                a.Unit,
 			DirectionalCoverage: dir,
 			Verdict:             computeEditionVerdict(dir.AudioToEbook, hasEmb, emb.quality, emb.share),
+		})
+	}
+
+	// EMBEDDING-ONLY pairs (latent self-misdescription, ledger entry in
+	// testing/selfdesc-audit.md, landed 2026-08-10): a cross-translation
+	// work aligned only by embedding/DTW has no word-unit row, and this
+	// endpoint used to return pairs:[] for it — the exact empty-vs-none-of-
+	// that-kind misread that cost mobile a day on the TTS case, one method
+	// over. Emit the pair labeled unit=paragraph: the ratios are PARAGRAPH
+	// shares, not word counts, and the verdict speaks from the embedding
+	// signal alone (typically different_edition — which is the honest answer
+	// for a translation).
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Method != "embedding" || wordPair[[2]int64{a.FromBookID, a.ToBookID}] {
+			continue
+		}
+		var p AnchorAlignmentPayload
+		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+			continue
+		}
+		ebook, _ := store.GetBook(a.FromBookID)
+		trans, _ := store.GetBook(a.ToBookID)
+		dir := directionalFrom(p, 0, 0)
+		emb, hasEmb := embFor[[2]int64{a.FromBookID, a.ToBookID}]
+		out.Pairs = append(out.Pairs, PairCoverage{
+			Ebook:               DiffSource{BookID: a.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
+			Transcript:          DiffSource{BookID: a.ToBookID, Origin: originOf(trans), Label: bookLabel(trans)},
+			Method:              a.Method,
+			Unit:                "paragraph",
+			DirectionalCoverage: dir,
+			Verdict:             computeEditionVerdict(0, hasEmb, emb.quality, emb.share),
 		})
 	}
 
