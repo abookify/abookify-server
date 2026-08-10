@@ -26,4 +26,4 @@ per phase otherwise.
 | deliberate | Chapter.start_sec omitempty — "starts at 0" ≡ "untimed" | PENDING web+mobile acks |
 | deliberate | Book.start_sec omitempty — file 1 of every multi-file book has NO offset (docs call it ground truth) | PENDING same ack |
 | deliberate | PlaybackPosition.position_secs / Bookmark.start_word omitempty zeros | same patch, low stakes |
-| deliberate | embedding-only works → coverage.pairs [] | LATENT, no live victim; plan on file |
+| deliberate | embedding-only works → coverage.pairs [] | FIXED 2026-08-10 (unit=paragraph pairs) |
