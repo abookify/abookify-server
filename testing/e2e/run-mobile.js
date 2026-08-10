@@ -609,30 +609,67 @@ async function connect() {
   const A3 = A2 && typeof p1.widx === 'number' && p1.widx >= 0 && p2.widx > p1.widx;
   const A4 = typeof p2.mapS === 'number' && p2.mapS >= 0 && typeof p2.pos === 'number'
     && Math.abs(p2.mapS - p2.pos) <= 2.5;
-  const A5 = clockAdv != null && clockAdv >= 3 && Math.abs(clockAdv - playWall) <= 3;
-  const karaokeOk = A1 && A2 && A3 && A4 && A5;
-  // Attribute a red correctly. The KNOWN server-web bug (dispatched): after a
-  // resume, the reader stays pinned to front-matter chapter 0 on the ebook-word-
-  // karaoke follow path — it never advances to the chapter the audio is playing.
-  // Signature: widx frozen (A3 false) AND the reader's map time sits far BEHIND
-  // the audio position (pos − mapS large), because the highlight is stuck at the
-  // end of an earlier chapter while audio plays on. That is NOT a steady-state
-  // karaoke failure (steady-state is green once the reader is on the audio's
-  // chapter — verified on 8199 ch1 + work 85). Label it so this red is never
-  // mistaken for broken karaoke — but DO let it red (it is a real user-facing bug,
-  // not to be calibrated away).
-  const frozen = typeof p1.widx === 'number' && p1.widx === p2.widx;
-  const stuckBehind = !karaokeOk && frozen && typeof p2.mapS === 'number' && typeof p2.pos === 'number'
-    && (p2.pos - p2.mapS) > 10;
-  const note = stuckBehind
-    ? ' — KNOWN resume→ebook-karaoke bug: reader stuck on an earlier chapter (map far behind audio) '
-      + 'while audio plays on; server-web owned. Steady-state karaoke is unaffected (green on the audio\'s chapter).'
-    : '';
-  report('karaoke_advances', karaokeOk,
-    `[${probes.length}/${probesRaw.length} valid probes] A1 words=${p2.words} A2 widx=${p2.widx} A3 ${p1.widx}->${p2.widx} ` +
-    `A4 |map ${p2.mapS == null ? 'null' : (+p2.mapS).toFixed(1)} - pos ${p2.pos == null ? 'null' : (+p2.pos).toFixed(1)}| ` +
-    `A5 clock +${clockAdv == null ? '?' : clockAdv.toFixed(1)}s over ${playWall.toFixed(1)}s play${note}`);
-  if (!karaokeOk) shot('karaoke_advances');
+  // Assert helper so we can re-sample after a catch-up nav (below) without dup.
+  const assess = (raw, wall) => {
+    const ps = raw.filter((p) => typeof p.widx === 'number' && p.widx >= 0 && (p.words || 0) > 0);
+    const a = ps[0] || {}; const b = ps[ps.length - 1] || {};
+    const adv = (typeof a.pos === 'number' && typeof b.pos === 'number') ? b.pos - a.pos : null;
+    const A1 = (b.words || 0) >= 50;
+    const A2 = typeof b.widx === 'number' && b.widx >= 0;
+    const A3 = A2 && typeof a.widx === 'number' && a.widx >= 0 && b.widx > a.widx;
+    const A4 = typeof b.mapS === 'number' && b.mapS >= 0 && typeof b.pos === 'number' && Math.abs(b.mapS - b.pos) <= 2.5;
+    const A5 = adv != null && adv >= 3 && Math.abs(adv - wall) <= 3;
+    return { ps, a, b, adv, A1, A2, A3, A4, A5, ok: A1 && A2 && A3 && A4 && A5, wall,
+      line: `[${ps.length}/${raw.length} valid] A1 words=${b.words} A2 widx=${b.widx} A3 ${a.widx}->${b.widx} `
+        + `A4 |map ${b.mapS == null ? 'null' : (+b.mapS).toFixed(1)} - pos ${b.pos == null ? 'null' : (+b.pos).toFixed(1)}| `
+        + `A5 +${adv == null ? '?' : adv.toFixed(1)}s/${wall.toFixed(1)}s` };
+  };
+  let R = assess(probesRaw, playWall);
+  // THE RESUME→EBOOK-KARAOKE BUG (server-web owned, dispatched): after a resume
+  // the reader can stay pinned to front-matter chapter 0 on the ebook-word-
+  // karaoke follow path — never advancing to the chapter the audio plays. This
+  // path is the SHIPPING config (the bundled TTS-only sample + every Kokoro/
+  // GPU-less book), so we test it as its OWN journey (`resume_reader_follows`),
+  // AND still certify steady-state karaoke by navigating onto the audio's chapter.
+  // Signature: widx frozen AND the reader map sits far BEHIND the audio position.
+  const readerStuckOnResume = !R.ok
+    && typeof R.a.widx === 'number' && R.a.widx === R.b.widx
+    && typeof R.b.mapS === 'number' && typeof R.b.pos === 'number' && (R.b.pos - R.b.mapS) > 10;
+
+  // ---- karaoke_advances: STEADY-STATE word-karaoke on the ebook path. If the
+  // reader opened stuck (resume bug), navigate it onto the audio's chapter (the
+  // reader "Next" control seeks reader+audio together) and re-sample — so this
+  // journey certifies "word karaoke actually advances on the ebook path" on the
+  // TTS-only shipping config, independent of the resume-follow bug.
+  if (readerStuckOnResume) {
+    await mediaPause(); await sleep(500);
+    const x = dump();
+    if (tapText(x, 'Next:') || tapText(x, 'Next chapter')) {
+      await sleep(2500);
+      logcatClear();
+      const t2 = Date.now();
+      await mediaPlay();
+      await sleep(11000);
+      const raw2 = logcatProbes();
+      const w2 = (Date.now() - t2) / 1000;
+      await mediaPause();
+      if (raw2.length) R = assess(raw2, w2);
+    }
+  }
+  report('karaoke_advances', R.ok,
+    `${R.line}${readerStuckOnResume ? ' [steady-state after catch-up nav — reader had opened stuck on ch0]' : ''}`);
+  if (!R.ok) shot('karaoke_advances');
+
+  // ---- resume_reader_follows: on a RESUME into the ebook-word-karaoke path, the
+  // reader must follow to the chapter the audio is in — NOT stay pinned on
+  // front-matter ch0. EXPECTED-RED today (known server-web bug); flips to green
+  // when they land the fix. Surfaced as its own journey so the bug is never
+  // calibrated away by the steady-state certification above.
+  report('resume_reader_follows', !readerStuckOnResume,
+    readerStuckOnResume
+      ? 'reader stuck on front-matter ch0 while audio played on (map far behind pos) — KNOWN server-web resume→ebook-karaoke bug (dispatched); EXPECTED-RED until fixed'
+      : 'reader followed the audio onto its chapter after resume');
+  if (readerStuckOnResume) shot('resume_reader_follows');
 
   // ---- change_chapter / switch_source / export_import_populated — later.
   skip('change_chapter', 'next increment');
