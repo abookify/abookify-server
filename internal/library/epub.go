@@ -662,8 +662,13 @@ func htmlToText(raw string) string {
 	// doesn't glue onto the preceding word ("four1", "mizzen mast bc").
 	raw = noterefRe.ReplaceAllString(raw, "")
 	raw = supSubRe.ReplaceAllString(raw, "")
-	// Replace block-level tags with newlines
-	raw = blockCloseRe.ReplaceAllString(raw, "\n")
+	// A closing block tag ends a PARAGRAPH — it must not collapse into the
+	// same "\n" as a <br> or a source hard-wrap. This single character
+	// destroyed paragraph identity on all 53 epubs in the library (surveyed
+	// 2026-08-10): TTS cadence read flat, the paragraphs table filled with
+	// ~12-word wrapped lines, and the embedding/paragraph-follow paths
+	// consumed those fragments. PJ heard it and blamed the AI voice.
+	raw = blockCloseRe.ReplaceAllString(raw, "\n\n")
 	raw = brRe.ReplaceAllString(raw, "\n")
 	// Strip remaining tags
 	text := htmlTagRe.ReplaceAllString(raw, "")
@@ -671,16 +676,24 @@ func htmlToText(raw string) string {
 	// literal word tokens ("nbsp"), then fold unicode/zero-width spaces.
 	text = gohtml.UnescapeString(text)
 	text = uniSpaceRe.ReplaceAllString(text, " ")
-	// Normalize whitespace within lines
-	lines := strings.Split(text, "\n")
-	var result []string
-	for _, line := range lines {
-		line = whitespaceRe.ReplaceAllString(strings.TrimSpace(line), " ")
-		if line != "" {
-			result = append(result, line)
+	// Normalize per PARAGRAPH (blank-line separated), joining each
+	// paragraph's wrapped lines with spaces — the old per-line pass dropped
+	// empty lines, re-collapsing the paragraph breaks introduced above.
+	// Word stream is unchanged; only whitespace moves.
+	var paras []string
+	for _, para := range strings.Split(text, "\n\n") {
+		var kept []string
+		for _, line := range strings.Split(para, "\n") {
+			line = whitespaceRe.ReplaceAllString(strings.TrimSpace(line), " ")
+			if line != "" {
+				kept = append(kept, line)
+			}
+		}
+		if len(kept) > 0 {
+			paras = append(paras, strings.Join(kept, " "))
 		}
 	}
-	return strings.Join(result, "\n")
+	return strings.Join(paras, "\n\n")
 }
 
 // minBodyAfterHeading is how much text must remain once a chapter's own heading

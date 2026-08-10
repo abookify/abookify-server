@@ -45,7 +45,7 @@ func TestHtmlToText_EntitiesAndFootnoteArtifacts(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			out := htmlToText(c.in)
-			toks := Tokenize(out)            // the alignment tokenizer
+			toks := Tokenize(out) // the alignment tokenizer
 			tokset := map[string]bool{}
 			for _, tk := range toks {
 				tokset[tk] = true
@@ -136,5 +136,24 @@ func TestTrimGutenbergBoilerplate_PreFenceSignOff(t *testing.T) {
 	}
 	if !strings.Contains(got, "WORKING MEN OF ALL COUNTRIES, UNITE!") {
 		t.Errorf("book text was trimmed away:\n%s", got)
+	}
+}
+
+// A closing </p> must yield a paragraph break (blank line), distinct from
+// <br>/hard-wraps — the one-character defect that flattened all 53 library
+// epubs (2026-08-10).
+func TestExtractPreservesParagraphBreaks(t *testing.T) {
+	html := `<html><body><p>Marley was dead:
+to begin with.</p><p>There is no doubt<br/>whatever about that.</p></body></html>`
+	text := htmlToText(html)
+	if !strings.Contains(text, "\n\n") {
+		t.Fatalf("no paragraph break survived extraction: %q", text)
+	}
+	paras := strings.Split(text, "\n\n")
+	if len(paras) != 2 {
+		t.Fatalf("want 2 paragraphs, got %d: %q", len(paras), text)
+	}
+	if strings.Contains(paras[0], "\n") {
+		t.Errorf("intra-paragraph wrap should be healed to a space: %q", paras[0])
 	}
 }
