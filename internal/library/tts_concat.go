@@ -82,6 +82,21 @@ func concatAudioPieces(pieces []ttsPiece, outPath string) error {
 	if len(pieces) == 0 {
 		return fmt.Errorf("no audio pieces")
 	}
+	if err := concatAudioPiecesWithSilence(pieces, outPath); err != nil {
+		// The pauses are an enhancement, not correctness — a missing ffmpeg
+		// or a failed silence render must not fail the chapter. Fall back to
+		// the flat concat (which has its own guarded fallbacks), loudly.
+		log.Printf("tts: pause insertion failed (%v) — assembling without pauses", err)
+		chunks := make([][]byte, len(pieces))
+		for i := range pieces {
+			chunks[i] = pieces[i].audio
+		}
+		return concatAudioChunks(chunks, outPath)
+	}
+	return nil
+}
+
+func concatAudioPiecesWithSilence(pieces []ttsPiece, outPath string) error {
 	needSilence := false
 	for _, p := range pieces[:len(pieces)-1] {
 		if p.pauseAfterMs > 0 {
