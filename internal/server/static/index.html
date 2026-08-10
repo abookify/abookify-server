@@ -5244,7 +5244,7 @@
       if (chapters && chapters.length > 0) {
         const pos = Math.round(frac * (chapters.length - 1));
         const target = chapters[Math.min(Math.max(pos, 0), chapters.length - 1)] || chapters[0];
-        loadChapter(bookId, target.index, workId);
+        loadChapter(bookId, target.index, workId, { implicit: opts.auto });
       }
       // Mirror the local in-memory state so a re-render picks the same
       // book without waiting for the server round-trip.
@@ -5406,20 +5406,28 @@
     // word karaoke (#210b) — used to keep the transcript-follow machinery from
     // resetting the reader back to the transcript text.
     let currentReaderIsEbookKaraoke = false;
-    // Monotonic nav generation. Every loadChapter bumps it; the async auto-degrade
-    // redirect captures it at setup and aborts if a NEWER nav has superseded it —
-    // so an explicit chapter choice always beats an in-flight automatic redirect
-    // (the override law, applied to navigation). Without this, a degrading epub
-    // chapter's late switch-to-transcript pinned a degraded user back to chapter 1,
-    // swallowing their explicit nav.
+    // The reader's precedence law, made INTENT-AWARE (the core of the "one guard"
+    // consolidation): an EXPLICIT navigation (a user choosing a chapter/source) beats
+    // any IMPLICIT one (a follow, degrade, resume, or the reader-nav a seek kicks off).
+    // readerNavSeq counts ALL navs; explicitNavSeq only advances on an EXPLICIT nav.
+    // An async setup aborts only when a NEWER EXPLICIT nav superseded it — so a
+    // degrade redirect yields to the user's explicit nav (face 2), while a resume's
+    // implicit follow-nav is NOT killed just because other implicit navs bumped the
+    // monotonic counter (face 4 — the regression the intent-blind guard caused).
+    // (Still owed: fold face-3's skipReaderNav into a single settling-aware guard.)
     let readerNavSeq = 0;
+    let explicitNavSeq = 0;
 
     // Resolve the follow mode for the displayed source, paint the indicator,
     // and set up the matching render: word-by-word karaoke for the transcript /
     // word-anchor ebooks, paragraph-follow for embedding/paragraph ebooks.
-    async function setupReaderFollow(workId, bookId, chapterIdx, navSeq) {
+    async function setupReaderFollow(workId, bookId, chapterIdx, explicitBaseline) {
       currentReaderIsEbookKaraoke = false;
-      const navSeqAtStart = (navSeq !== undefined) ? navSeq : readerNavSeq; // abort a stale setup if a newer nav wins
+      // Abort only if a NEWER EXPLICIT nav superseded this setup while it was async.
+      // An implicit nav (follow/degrade/resume) passes the current explicit baseline;
+      // it aborts only when the USER navigated in the meantime — never merely because
+      // another implicit nav ran.
+      const baseline = (explicitBaseline !== undefined) ? explicitBaseline : explicitNavSeq;
       const work = allWorks.find(w => w.id === workId);
       if (!work) { clearParagraphFollow(); paraSync = null; paintSyncPill('none'); return; }
       // Seed the user's persisted source choice once. The PERSISTED pin is
@@ -5451,14 +5459,14 @@
       // A newer navigation superseded us while the fetch was in flight — this whole
       // setup (its degrade redirect AND its follow wiring) is stale; abort so it can't
       // pin the reader back to an older chapter or wire an epub follow over transcript.
-      if (navSeqAtStart !== readerNavSeq) return;
+      if (baseline !== explicitNavSeq) return;
       // Weak-chain degradation: the printed edition doesn't line up closely enough
       // with THIS narration to trust a word highlight. Actively show the TRANSCRIPT
       // (a real reading experience, synced natively to the narrator) and say why —
       // never a quiet "no sync" that reads as broken. Respect an explicit user pick
       // of this ebook (they can still read it un-highlighted).
       if (ts.degrade_to && Number(ts.degrade_to) !== bookId && userPickedSource[workId] !== bookId
-          && navSeqAtStart === readerNavSeq) { // a newer explicit nav supersedes this redirect
+          && baseline === explicitNavSeq) { // a newer explicit nav supersedes this redirect
         readerDegradeNote[workId] = ts.degrade_note || '';
         await switchTextEdition(workId, Number(ts.degrade_to), { auto: true });
         return;
@@ -5746,7 +5754,12 @@
 
     async function loadChapter(bookId, index, workId, opts) {
       opts = opts || {};
-      const myNavSeq = ++readerNavSeq; // this nav supersedes any in-flight auto-degrade redirect
+      ++readerNavSeq;
+      // opts.implicit = a follow/degrade/resume/seek-driven nav. Only an EXPLICIT
+      // (user) nav advances explicitNavSeq, so implicit setups abort only when the
+      // USER navigated in the meantime — not merely because another implicit nav ran.
+      if (!opts.implicit) explicitNavSeq = readerNavSeq;
+      const explicitBaseline = explicitNavSeq;
       // Reader now lives in the floating overlay — promote the host to this
       // work, then auto-open the overlay unless the user explicitly closed it.
       ensureActiveReader(workId);
@@ -5812,7 +5825,7 @@
         reader.scrollTop = 0;
         // Set up audio-follow AFTER the content is in the DOM — word-anchor
         // ebooks re-render the pane as paragraphed word-karaoke text (#210).
-        setupReaderFollow(workId, bookId, index, myNavSeq);
+        setupReaderFollow(workId, bookId, index, explicitBaseline);
         return;
       }
 
@@ -5828,7 +5841,7 @@
         reader.scrollTop = 0;
         // Apply divergence dimming (if alignment data is available).
         applyDivergence(workId, index);
-        setupReaderFollow(workId, bookId, index, myNavSeq);
+        setupReaderFollow(workId, bookId, index, explicitBaseline);
       } catch (e) {
         reader.innerHTML = '<div class="placeholder">Failed to load chapter</div>';
       }
@@ -5877,7 +5890,7 @@
           const match = cached.find(c =>
             (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
           if (match) {
-            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true });
+            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true, implicit: true });
           }
         } else {
           // Chapter list hasn't been fetched yet — load it then retry.
@@ -5886,7 +5899,7 @@
           const match = chs?.find(c =>
             (c.start_sec || 0) <= absSecs && (c.end_sec || 1e12) > absSecs);
           if (match) {
-            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true });
+            await loadChapter(textFile.id, match.index, work.id, { skipAudioSeek: true, implicit: true });
           }
         }
       }
@@ -6013,7 +6026,7 @@
           const match = chs.find(c =>
             (c.start_sec || 0) <= absTimeForLookup && (c.end_sec || 1e12) > absTimeForLookup);
           if (match) {
-            await loadChapter(textFile.id, match.index, workId, { skipAudioSeek: true });
+            await loadChapter(textFile.id, match.index, workId, { skipAudioSeek: true, implicit: true });
           }
         }
       }
@@ -6370,7 +6383,7 @@
           const chs = chapterCache[textFile.id]?.chapters || [];
           const tmatch = chs.find(c =>
             (c.start_sec || 0) <= bookSec && (c.end_sec || 1e12) > bookSec);
-          if (tmatch) await loadChapter(textFile.id, tmatch.index, currentWorkId, { skipAudioSeek: true });
+          if (tmatch) await loadChapter(textFile.id, tmatch.index, currentWorkId, { skipAudioSeek: true, implicit: true });
         }
         const chapterRange = { start: Math.max(0, ch.start_sec - 0.5), end: ch.end_sec + 0.5 };
         await loadSyncData(currentWorkId, currentSyncBookId, 0, chapterRange);
@@ -7129,7 +7142,7 @@
         if (reader && reader.querySelector('.placeholder')) {
           const chapters = chapterCache[textBook.id]?.chapters;
           if (chapters && chapters.length) {
-            loadChapter(textBook.id, chapters[0].index, workId, { skipAudioSeek: true });
+            loadChapter(textBook.id, chapters[0].index, workId, { skipAudioSeek: true, implicit: true });
           }
         }
       }
