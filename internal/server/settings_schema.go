@@ -146,6 +146,36 @@ func SettingsSchema() SettingsSchemaDoc {
 					}},
 			},
 			{
+				Key:   "narration_pacing",
+				Title: "Narration pacing",
+				Description: "How much room the generated narration gives itself — the small silences that keep it from running every line together. " +
+					"The defaults are a natural reading; a brisk non-fiction title and a slow Victorian novel don't want the same silence. Applies to narration generated from here on.",
+				Fields: []SettingsField{
+					{
+						// Consumed by the TTS assembly (transcription) as an integer of
+						// milliseconds. Default MUST stay 1100 — the paused cadence PJ approved.
+						Key: "tts_chapter_title_pause_ms", Label: "Pause after a chapter title", Type: "select", Default: "1100",
+						Options: []SettingsOption{
+							{"400", "Barely — move straight into the chapter"},
+							{"1100", "A clear beat — let the title land (default)"},
+							{"2000", "A long breath — a full stop before the chapter begins"},
+						},
+						Help: "The silence between the narrator saying a chapter's title and starting the chapter itself.",
+					},
+					{
+						// Consumed by the TTS assembly (transcription) as an integer of
+						// milliseconds. Default MUST stay 500 — the paused cadence PJ approved.
+						Key: "tts_paragraph_pause_ms", Label: "Space between paragraphs", Type: "select", Default: "500",
+						Options: []SettingsOption{
+							{"200", "Tight — a brisk, continuous read"},
+							{"500", "A small breath between paragraphs (default)"},
+							{"900", "Roomy — let each paragraph settle before the next"},
+						},
+						Help: "The pause the narrator takes at each paragraph break. If a book was imported without paragraph breaks this has nothing to act on — re-import to restore its structure.",
+					},
+				},
+			},
+			{
 				Key:         "stt",
 				Title:       "Speech-to-Text Model",
 				Description: "Engine + model for transcribing audiobooks to text. Use the local Whisper engine (default), or add a cloud key to transcribe without a local engine. Changes apply to new jobs.",

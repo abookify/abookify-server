@@ -467,7 +467,7 @@
     // already targets, so only the markup is schema-driven; the behavior is
     // unchanged. Security stays a hand-built section (its auth flow has its own
     // save/disable/sign-out semantics); the schema still describes it for mobile.
-    const SCHEMA_RENDER_GROUPS = ['tts', 'stt', 'llm', 'voice', 'cast'];
+    const SCHEMA_RENDER_GROUPS = ['tts', 'narration_pacing', 'stt', 'llm', 'voice', 'cast'];
     async function renderSchemaForm() {
       const host = document.getElementById('schema-form');
       if (!host) return;
