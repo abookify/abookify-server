@@ -132,6 +132,31 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   }
   const uiClock = async () => clockSecs(await page.locator('.player-time').first().textContent().catch(() => null));
 
+  // DEGRADE-AWARE SETTLE (calibrated 2026-08-10, after defect A landed —
+  // held for three rounds so we would calibrate against corrected behaviour,
+  // not against the bug): on a weak-chain work the ebook honestly renders
+  // PLAIN text (mode=none) until a degrading chapter loads, so zero
+  // .sync-word here is not a karaoke failure — it is the reader not yet
+  // walked to a chapter a person would read. Walk it: open the displayed
+  // text's chapter 2 through the product's own loadChapter (this is what
+  // triggers the degrade switch to the transcript), then wait for word
+  // spans to settle. Strong-chain fixtures are unaffected (words are
+  // already on screen and the walk is skipped). A1-A5 still assert REAL
+  // advancing karaoke on whatever book the product honestly displays.
+  {
+    const s0 = await karaokeState();
+    if (s0.wordCount === 0) {
+      await page.evaluate(async (wid) => {
+        const w = (allWorks || []).find(x => x.id === Number(wid));
+        const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : (w.text_files || [])[0];
+        if (tf && typeof loadChapter === 'function') await loadChapter(tf.id, 2, w.id);
+      }, WORK).catch(() => {});
+      for (let i = 0; i < 16; i++) {
+        await page.waitForTimeout(500);
+        if ((await karaokeState()).wordCount > 0) break;
+      }
+    }
+  }
   const s1 = await karaokeState(); const c1 = await uiClock(); const w1 = Date.now();
   await page.waitForTimeout(10000);
   const s2 = await karaokeState(); const c2 = await uiClock(); const w2 = Date.now();
