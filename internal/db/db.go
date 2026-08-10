@@ -2998,3 +2998,54 @@ func (s *Store) DeleteEmptyWorks() (int, error) {
 	}
 	return n, nil
 }
+
+// UpdateChapterContent rewrites one chapter's text in place, preserving the
+// row identity (id, title, start_sec/end_sec, confidence) — used by the
+// paragraph re-extraction migration, which is whitespace-only by policy: the
+// caller must have verified the word stream is unchanged before calling.
+func (s *Store) UpdateChapterContent(bookID int64, index int, content, contentHTML string, wordCount int) error {
+	_, err := s.db.Exec(`UPDATE chapters SET content=?, content_html=?, word_count=? WHERE book_id=? AND index_num=?`,
+		content, contentHTML, wordCount, bookID, index)
+	return err
+}
+
+// ListChaptersWithContent is ListChapters plus the (large) content column —
+// for the re-extraction migration's word-stream comparison.
+func (s *Store) ListChaptersWithContent(bookID int64) ([]Chapter, error) {
+	rows, err := s.db.Query(`
+		SELECT id, book_id, index_num, title, src, word_count, start_sec, end_sec, confidence, content
+		FROM chapters WHERE book_id = ? ORDER BY index_num
+	`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Chapter
+	for rows.Next() {
+		var ch Chapter
+		if err := rows.Scan(&ch.ID, &ch.BookID, &ch.Index, &ch.Title, &ch.Src,
+			&ch.WordCount, &ch.StartSec, &ch.EndSec, &ch.Confidence, &ch.Content); err != nil {
+			return nil, err
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// ListBooksByFormat returns all books of one format across the library.
+func (s *Store) ListBooksByFormat(format string) ([]Book, error) {
+	rows, err := s.db.Query(`SELECT id, work_id, path, filename, format, media_type, origin FROM books WHERE format = ? ORDER BY work_id, id`, format)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Book
+	for rows.Next() {
+		var b Book
+		if err := rows.Scan(&b.ID, &b.WorkID, &b.Path, &b.Filename, &b.Format, &b.MediaType, &b.Origin); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
