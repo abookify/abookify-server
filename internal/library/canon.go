@@ -22,6 +22,14 @@ import (
 
 // CanonEdition is one narration edition of a work.
 type CanonEdition struct {
+	// Key is the edition's STABLE IDENTITY (v2): what the edition IS, not
+	// where it happens to live or what label a half-resumed job stamped on
+	// it. TTS editions are identified by voice ("tts:bm_fable" — the same
+	// voice regenerated into a different dir is the SAME edition); human
+	// recordings by their directory ("narr:a-christmas-carol"). The label
+	// backfill migration (2026-08-09, 44 rows + work 85's 3) made labels
+	// consistent, but consumers should bind to Key, never to the label.
+	Key        string  `json:"key"`
 	Label      string  `json:"label"` // display label ("" = unlabeled)
 	Origin     string  `json:"origin"`
 	Voice      string  `json:"voice,omitempty"` // TTS voice when known
@@ -52,6 +60,14 @@ type WorkCanon struct {
 		EditionDir   string `json:"edition_dir"`
 		EditionLabel string `json:"edition_label"`
 		AudioFiles   int    `json:"audio_files"`
+		// AudioChapters is the CHAPTERS projection of the same edition — the
+		// number a "N chapters" span must equal. Detected chapter rows when
+		// they exist, else one per file (TTS editions: each file is a
+		// chapter). PROJECTION LAW: a rendered count is only assertable
+		// against the canonical number in the SAME projection; the first gate
+		// run on repaired data went red precisely because the assert compared
+		// a chapters span against this struct's files count.
+		AudioChapters int `json:"audio_chapters"`
 		TextBookID   int64  `json:"text_book_id"`
 		TextChapters int    `json:"text_chapters"`
 	} `json:"active"`
@@ -120,6 +136,11 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 			c.Coherent = false
 			c.Problems = append(c.Problems, fmt.Sprintf(
 				"mixed voices in %s: one edition directory contains %d voices", path.Base(d), len(voices)))
+		}
+		if ed.Origin == "tts_kokoro" && ed.Voice != "" {
+			ed.Key = "tts:" + ed.Voice
+		} else {
+			ed.Key = "narr:" + path.Base(d)
 		}
 		c.Editions = append(c.Editions, ed)
 		c.TotalAudioFiles += ed.Files
@@ -211,6 +232,10 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 		c.Active.EditionDir = best.Dir
 		c.Active.EditionLabel = best.Label
 		c.Active.AudioFiles = best.Files
+		c.Active.AudioChapters = best.AudioChaps
+		if c.Active.AudioChapters == 0 {
+			c.Active.AudioChapters = best.Files
+		}
 	}
 	return c, nil
 }
