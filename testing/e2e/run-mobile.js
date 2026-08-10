@@ -81,7 +81,20 @@ function preflight() {
   let devs;
   try { devs = adb('devices').split('\n').slice(1).filter((l) => /\tdevice$/.test(l)); }
   catch (e) { console.error('INFRA(3) adb not available:', e.message); process.exit(3); }
-  if (!devs.length) { console.error('INFRA(3) no adb device — start the emulator (a run with no device is not a red journey)'); process.exit(3); }
+  if (!devs.length) {
+    // A known cause must not read as an unknown failure: a stale zero-byte
+    // multiinstance.lock (left when the emulator dies during a resource freeze)
+    // silently blocks EVERY boot even though no process holds it. Name it.
+    let hint = 'start the emulator (a run with no device is not a red journey)';
+    try {
+      const avdRoot = `${process.env.HOME}/.android/avd`;
+      const locks = sh(`ls -1 ${avdRoot}/*/*.lock 2>/dev/null || true`).split('\n').filter(Boolean);
+      const noProc = !sh('pgrep -f "emulator.*-avd" || true').trim();
+      if (locks.length && noProc) hint = `STALE EMULATOR LOCK is blocking boot (no emulator process holds it): ${locks.join(', ')} — delete it and relaunch. (cause: emulator died during a resource freeze)`;
+    } catch {}
+    console.error(`INFRA(3) no adb device — ${hint}`);
+    process.exit(3);
+  }
   if (devs.length > 1 && !process.env.E2E_SERIAL) { console.error(`INFRA(3) ${devs.length} devices attached — set E2E_SERIAL`); process.exit(3); }
   let booted = '';
   try { booted = adb('shell getprop sys.boot_completed').trim(); } catch {}
