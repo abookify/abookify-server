@@ -60,10 +60,17 @@ func TestGenerateCadenceSample(t *testing.T) {
 			flat = append(flat, audio)
 		}
 	}
-	if err := concatAudioPieces(pieces, outDir+"/stave-one-cadence-PAUSED.mp3"); err != nil {
+	// CADENCE_SAMPLE_NAME distinguishes the candidate from the approved
+	// artifact BY CONSTRUCTION (an experiment must never share a path with
+	// an approved file — learned by overwriting one, 2026-08-14).
+	name := os.Getenv("CADENCE_SAMPLE_NAME")
+	if name == "" {
+		name = "stave-one-cadence"
+	}
+	if err := concatAudioPieces(pieces, outDir+"/"+name+"-PAUSED.mp3"); err != nil {
 		t.Fatal(err)
 	}
-	if err := concatAudioChunks(flat, outDir+"/stave-one-cadence-FLAT.mp3"); err != nil {
+	if err := concatAudioChunks(flat, outDir+"/"+name+"-FLAT.mp3"); err != nil {
 		t.Fatal(err)
 	}
 }
