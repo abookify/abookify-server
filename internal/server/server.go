@@ -928,8 +928,8 @@ var conditionLegend = map[string]map[string]string{
 		"level":  "warn",
 	},
 	"unknown": {
-		"label":  "Condition not recorded",
-		"detail": "This book was added before Abookify tracked production condition, so its state isn't recorded — not a problem, just unverified.",
+		"label":  "Not verified",
+		"detail": "Nothing is flagged wrong with this book — it was added before Abookify started recording how books were produced, so we can't confirm every part came through.",
 		"level":  "neutral",
 	},
 }
