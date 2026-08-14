@@ -125,3 +125,35 @@ func TestWorkCanonNamesChaptersAnchor(t *testing.T) {
 			c.Active.ChaptersAnchorBookID, anchor)
 	}
 }
+
+// Task 12 rollup: an edition is complete only when EVERY file's producer
+// testified complete; any degraded file degrades it; any file with no
+// testimony reads unknown — never dressed as complete.
+func TestWorkCanonConditionRollup(t *testing.T) {
+	store := testStoreForLib(t)
+	wid, _ := store.CreateWork("Cond", "")
+	for i := 0; i < 2; i++ {
+		store.UpsertBook(db.Book{WorkID: wid, Path: "/gen/tts-book-9/chapter-00" + string(rune('0'+i)) + ".mp3",
+			Filename: "chapter-00" + string(rune('0'+i)) + ".mp3", Format: "mp3", MediaType: "audio",
+			Origin: "tts_kokoro", Album: "v", Duration: 10})
+	}
+	w, _ := store.GetWork(wid)
+	c, _ := BuildWorkCanon(store, wid)
+	if c.Editions[0].Condition != "unknown" {
+		t.Errorf("no testimony must read unknown, got %q", c.Editions[0].Condition)
+	}
+	for _, b := range w.AudioFiles {
+		store.SetBookCondition(db.BookCondition{BookID: b.ID, State: "complete", Source: "test"})
+	}
+	c, _ = BuildWorkCanon(store, wid)
+	if c.Editions[0].Condition != "complete" {
+		t.Errorf("all-complete must read complete, got %q", c.Editions[0].Condition)
+	}
+	store.SetBookCondition(db.BookCondition{BookID: w.AudioFiles[0].ID, State: "degraded",
+		Reason: "generation interrupted", Source: "test"})
+	c, _ = BuildWorkCanon(store, wid)
+	if c.Editions[0].Condition != "degraded" || c.Editions[0].ConditionReason == "" {
+		t.Errorf("degraded file must degrade the edition with reason, got %q/%q",
+			c.Editions[0].Condition, c.Editions[0].ConditionReason)
+	}
+}

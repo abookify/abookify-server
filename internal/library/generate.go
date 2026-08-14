@@ -627,6 +627,21 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 	job.CurrentStep = fmt.Sprintf("Generated %d chapters", len(chapters))
 	g.updateJob(job)
 
+	// TASK 12 — production testimony, written HERE because this loop just
+	// produced the edition: every registered file of this run is complete.
+	// Books that predate this feature simply have no row — that absence IS
+	// the honest "unknown", never backfilled.
+	if wk, err := g.store.GetWork(job.WorkID); err == nil && wk != nil {
+		for _, b := range wk.AudioFiles {
+			if strings.HasPrefix(b.Path, outDir+string(filepath.Separator)) {
+				if err := g.store.SetBookCondition(db.BookCondition{
+					BookID: b.ID, State: "complete", Source: "tts_generate"}); err != nil {
+					log.Printf("tts: condition write failed for book %d: %v", b.ID, err)
+				}
+			}
+		}
+	}
+
 	// GC ships WITH the store (task 14): drop this job's working dir plus any
 	// CAS entry nothing links to (7-day grace), keeping dirs of jobs still
 	// active. Wasting disk beats serving the wrong narration; unbounded

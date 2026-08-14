@@ -31,6 +31,15 @@ type CanonEdition struct {
 	// consistent, but consumers should bind to Key, never to the label.
 	Key        string  `json:"key"`
 	Label      string  `json:"label"` // display label ("" = unlabeled)
+	// Condition is the edition's rolled-up production testimony (task 12):
+	// "complete" (every file's producer testified complete), "degraded"
+	// (any file degraded — Reason says why), or "unknown" (some file has no
+	// testimony; every book from before the feature reads unknown, BY
+	// DESIGN — most of the library on day one, and the UIs must say so
+	// rather than dress it as complete). Canon READS testimony; it never
+	// authors it.
+	Condition       string `json:"condition"`
+	ConditionReason string `json:"condition_reason,omitempty"`
 	Origin     string  `json:"origin"`
 	Voice      string  `json:"voice,omitempty"` // TTS voice when known
 	Dir        string  `json:"dir"`             // grouping key (audio file directory)
@@ -157,6 +166,20 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 			ed.Key = "tts:" + ed.Voice
 		} else {
 			ed.Key = "narr:" + path.Base(d)
+		}
+		conds, _ := store.GetBookConditions(ed.BookIDs)
+		ed.Condition = "complete"
+		for _, id := range ed.BookIDs {
+			c, ok := conds[id]
+			if !ok {
+				ed.Condition = "unknown"
+				break
+			}
+			if c.State == "degraded" {
+				ed.Condition = "degraded"
+				ed.ConditionReason = c.Reason
+				break
+			}
 		}
 		c.Editions = append(c.Editions, ed)
 		c.TotalAudioFiles += ed.Files

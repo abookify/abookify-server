@@ -374,6 +374,23 @@ func migrate(db *sql.DB) error {
 		--                    story so far through it; nothing past it).
 		-- Unique key lets a regenerate REPLACE in place; model records which
 		-- LLM produced it.
+		-- Task 12: durable per-book production state. THE RULE: a row is
+		-- written ONLY by the code path that produced (or degraded) the
+		-- book's content — never by a later sweep inferring from how a book
+		-- looks. ABSENCE of a row IS the third state, "unknown": no producer
+		-- ever testified. Books imported before this feature stay unknown —
+		-- backfilling them to complete would be a label that lies, the exact
+		-- failure this table exists to prevent. Sweeps (coherence etc.) may
+		-- READ and report disagreement; they must not author.
+		CREATE TABLE IF NOT EXISTS book_conditions (
+			book_id     INTEGER PRIMARY KEY,
+			state       TEXT NOT NULL CHECK(state IN ('complete','degraded')),
+			reason      TEXT NOT NULL DEFAULT '',
+			source      TEXT NOT NULL,
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
 		CREATE TABLE IF NOT EXISTS summaries (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			book_id     INTEGER NOT NULL,
@@ -3048,4 +3065,44 @@ func (s *Store) ListBooksByFormat(format string) ([]Book, error) {
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// --- Book conditions (task 12) ---
+
+// BookCondition is one book's production testimony. state is 'complete' or
+// 'degraded'; a book with NO row is 'unknown' — that absence is a real
+// state, not a gap to backfill.
+type BookCondition struct {
+	BookID int64  `json:"book_id"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+	Source string `json:"source"` // the producing code path that testified
+}
+
+// SetBookCondition records production testimony. CALLERS MUST BE THE
+// PRODUCING CODE PATH — the generator finishing an edition, the sidecar
+// import hitting an extent guard. Never call this from a sweep that infers
+// state from how a book looks.
+func (s *Store) SetBookCondition(c BookCondition) error {
+	_, err := s.db.Exec(`INSERT INTO book_conditions (book_id, state, reason, source, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(book_id) DO UPDATE SET state=excluded.state, reason=excluded.reason,
+			source=excluded.source, updated_at=CURRENT_TIMESTAMP`,
+		c.BookID, c.State, c.Reason, c.Source)
+	return err
+}
+
+// GetBookConditions returns testimony for the given books; ids absent from
+// the result are UNKNOWN.
+func (s *Store) GetBookConditions(bookIDs []int64) (map[int64]BookCondition, error) {
+	out := map[int64]BookCondition{}
+	for _, id := range bookIDs {
+		var c BookCondition
+		err := s.db.QueryRow(`SELECT book_id, state, reason, source FROM book_conditions WHERE book_id=?`, id).
+			Scan(&c.BookID, &c.State, &c.Reason, &c.Source)
+		if err == nil {
+			out[c.BookID] = c
+		}
+	}
+	return out, nil
 }

@@ -318,10 +318,11 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 	// Logged, not refused: the transcript is still mostly usable and rejecting it
 	// outright would lose the book. The point is that it announces itself instead
 	// of being believed.
-	if problems := checkSidecarIntegrity(&sc); len(problems) > 0 {
+	scProblems := checkSidecarIntegrity(&sc)
+	if len(scProblems) > 0 {
 		log.Printf("sidecar-import: WARNING — %s has %d structural problem(s); its word count is NOT trustworthy:",
-			filepath.Base(path), len(problems))
-		for _, p := range problems {
+			filepath.Base(path), len(scProblems))
+		for _, p := range scProblems {
 			log.Printf("sidecar-import:   [%s] %s", p.Kind, p.Detail)
 		}
 	}
@@ -426,6 +427,24 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 	// something to render — without this the sync_data is orphaned and the
 	// work shows up as audio-only with no karaoke surface. Mirrors the shape
 	// 438 Days has after the normal STT → transcript-split pipeline.
+	// TASK 12 — production testimony, written HERE because this code path is
+	// the producer: the transcript book is complete when the sidecar passed
+	// its integrity check, degraded-with-why when it did not. A later sweep
+	// may disagree with this testimony but must never author it.
+	if tb := findTranscriptBookID(store, workID, textBookID); tb != 0 {
+		cond := db.BookCondition{BookID: tb, State: "complete", Source: "sidecar_import"}
+		if len(scProblems) > 0 {
+			var kinds []string
+			for _, p := range scProblems {
+				kinds = append(kinds, p.Kind)
+			}
+			cond.State = "degraded"
+			cond.Reason = fmt.Sprintf("sidecar integrity: %s", strings.Join(kinds, ", "))
+		}
+		if err := store.SetBookCondition(cond); err != nil {
+			log.Printf("sidecar-import: condition write failed: %v", err)
+		}
+	}
 	if err := ensureTranscriptBook(store, workID, audioBookID, &sc, textBookID); err != nil {
 		log.Printf("sidecar-import: transcript book creation failed: %v", err)
 	}
@@ -2018,4 +2037,22 @@ func mergeDegenerateTextChapters(ranges []sttChapter, totalWords int) []sttChapt
 		return ranges // never return nothing
 	}
 	return out
+}
+
+// findTranscriptBookID resolves the transcript text book this import writes
+// to (explicit target, else the work's whisper transcript).
+func findTranscriptBookID(store *db.Store, workID, textBookID int64) int64 {
+	if textBookID != 0 {
+		return textBookID
+	}
+	w, err := store.GetWork(workID)
+	if err != nil || w == nil {
+		return 0
+	}
+	for _, b := range w.TextFiles {
+		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
+			return b.ID
+		}
+	}
+	return 0
 }
