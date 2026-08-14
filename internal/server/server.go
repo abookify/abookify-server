@@ -440,6 +440,7 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/works/{id}/diff", s.handleWorkDiff)
 	mux.HandleFunc("GET /api/works/{id}/coverage", s.handleWorkCoverage)
+	mux.HandleFunc("GET /api/conditions/legend", s.handleConditionsLegend)
 	mux.HandleFunc("GET /api/works/{id}/canon", s.handleWorkCanon)
 	mux.HandleFunc("GET /api/works/{id}/text-sync/{bookId}/{chapterIdx}", s.handleTextSync)
 	mux.HandleFunc("GET /api/books/{bookId}/chapters/{idx}/summary", s.handleChapterSummary)
@@ -833,6 +834,7 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 	best, _ := s.store.BestAlignmentByWork()
 	synced, _ := s.store.WorkIDsWithSyncData()
 	unreadable, _ := s.store.WorkIDsWithUnreadableText()
+	conditions, _ := s.store.WorkConditionsRollup()
 	type workWithAlign struct {
 		db.Work
 		Coverage        *float64 `json:"coverage,omitempty"`
@@ -862,6 +864,14 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		// NeedsTextConversion: a text file (e.g. a PDF) is present but extracted no
 		// chapters, so the card can say "convert to EPUB" instead of rendering blank.
 		NeedsTextConversion bool `json:"needs_text_conversion,omitempty"`
+		// Condition (task 12): the work's rolled-up production standing —
+		// "complete" | "degraded" | "unknown". A DEGRADED book must never look
+		// like a good one; UNKNOWN (no producer testimony — most of the library on
+		// day one) is a real state and is rendered QUIET, never dressed as
+		// complete. Empty string only for a work with no books. The display words
+		// live in GET /api/conditions/legend so web + mobile render them verbatim.
+		Condition       string `json:"condition,omitempty"`
+		ConditionReason string `json:"condition_reason,omitempty"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -891,8 +901,43 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		}
 		out[i].HasWordSync = synced[wk.ID]
 		out[i].NeedsTextConversion = unreadable[wk.ID]
+		if c, ok := conditions[wk.ID]; ok {
+			out[i].Condition = c.Condition
+			out[i].ConditionReason = c.Reason
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// conditionLegend is the server-owned display vocabulary for task-12 production
+// condition. server-web picks the words ONCE, here; web + mobile render them
+// VERBATIM (like the text-trust headline/detail and the gap legend) so the two
+// UIs can't drift into different quality words for the same state. `level`
+// drives the visual hierarchy the badge must honour: DEGRADED draws the eye,
+// UNKNOWN is quiet/neutral (never a warning — most of the library reads unknown
+// on day one), COMPLETE is a quiet positive.
+var conditionLegend = map[string]map[string]string{
+	"complete": {
+		"label":  "Complete",
+		"detail": "Every part of this book was produced cleanly, and the software that made it said so.",
+		"level":  "ok",
+	},
+	"degraded": {
+		"label":  "Needs review",
+		"detail": "Something went wrong while this book was produced — part of it may be missing or wrong. Open it to see what.",
+		"level":  "warn",
+	},
+	"unknown": {
+		"label":  "Condition not recorded",
+		"detail": "This book was added before Abookify tracked production condition, so its state isn't recorded — not a problem, just unverified.",
+		"level":  "neutral",
+	},
+}
+
+// handleConditionsLegend: GET /api/conditions/legend — the server-owned words +
+// visual level for each production-condition state (task 12). Static.
+func (s *Server) handleConditionsLegend(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"conditions": conditionLegend})
 }
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {

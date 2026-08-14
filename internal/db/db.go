@@ -3106,3 +3106,75 @@ func (s *Store) GetBookConditions(bookIDs []int64) (map[int64]BookCondition, err
 	}
 	return out, nil
 }
+
+// WorkConditionRollup is a work's production standing, rolled up from its books'
+// testimony (task 12). Condition ∈ "complete"|"degraded"|"unknown". The rollup
+// is CONSERVATIVE and honest: a work is "degraded" if ANY of its books is
+// degraded (Reason names the worst one); else "unknown" if ANY book has no
+// testimony (absence is a real state — most of the library on day one); else
+// "complete". Never infers — it only reads producer-authored rows, so a book
+// nobody testified about stays unknown rather than being dressed as complete.
+type WorkConditionRollup struct {
+	Condition string
+	Reason    string
+}
+
+// WorkConditionsRollup returns the rolled-up condition for every work in ONE
+// query (no N+1), for the work-list badge. A book with no book_conditions row
+// contributes "unknown".
+func (s *Store) WorkConditionsRollup() (map[int64]WorkConditionRollup, error) {
+	rows, err := s.db.Query(`
+		SELECT b.work_id, bc.state, bc.reason
+		FROM books b
+		LEFT JOIN book_conditions bc ON bc.book_id = b.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type acc struct {
+		anyDegraded bool
+		degReason   string
+		anyUnknown  bool
+		seen        bool
+	}
+	m := map[int64]*acc{}
+	for rows.Next() {
+		var workID int64
+		var state, reason sql.NullString
+		if err := rows.Scan(&workID, &state, &reason); err != nil {
+			return nil, err
+		}
+		a := m[workID]
+		if a == nil {
+			a = &acc{}
+			m[workID] = a
+		}
+		a.seen = true
+		switch {
+		case !state.Valid: // no testimony for this book → unknown contributor
+			a.anyUnknown = true
+		case state.String == "degraded":
+			if !a.anyDegraded {
+				a.anyDegraded = true
+				a.degReason = reason.String
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make(map[int64]WorkConditionRollup, len(m))
+	for workID, a := range m {
+		switch {
+		case a.anyDegraded:
+			out[workID] = WorkConditionRollup{Condition: "degraded", Reason: a.degReason}
+		case a.anyUnknown || !a.seen:
+			out[workID] = WorkConditionRollup{Condition: "unknown"}
+		default:
+			out[workID] = WorkConditionRollup{Condition: "complete"}
+		}
+	}
+	return out, nil
+}

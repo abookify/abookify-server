@@ -434,6 +434,27 @@
     .tt-minor .tt-state-dot { background: #e0a000; }
     .tt-significant .tt-state-dot { background: #c82d2d; }
     .tt-unchecked .tt-state-dot { background: var(--text-muted); }
+    /* Production condition (task 12) — SAME trust grammar as text-trust, one
+       vocabulary, not a competing one. DEGRADED draws the eye (amber warn, the
+       gap-unclassified tone — a production problem, distinct from tt-significant
+       red which means invented text). UNKNOWN + COMPLETE never appear as loud
+       pills; they show only as the quiet .cond-detail line in the work detail. */
+    .media-pill.cond-degraded {
+      background: rgba(240, 165, 0, 0.16);
+      color: #b67400;
+      border: 1px solid rgba(240, 165, 0, 0.45);
+      cursor: pointer;
+    }
+    .media-pill.cond-degraded:hover { background: rgba(240, 165, 0, 0.26); }
+    @media (prefers-color-scheme: dark) { .media-pill.cond-degraded { color: #fbbf24; } }
+    /* The quiet detail line: unknown is NEUTRAL (muted, dashed dot — never a
+       warning; most of the library reads this on day one), complete is a quiet
+       positive. Small, low-contrast: present and honest, but it doesn't shout. */
+    .cond-detail { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; margin-top: 6px; color: var(--text-muted); }
+    .cond-detail .cond-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--text-muted); }
+    .cond-detail.cond-unknown .cond-dot { background: transparent; border: 1px dashed var(--text-muted); }
+    .cond-detail.cond-complete { color: var(--success); }
+    .cond-detail.cond-complete .cond-dot { background: var(--success); }
     .tt-detail { color: var(--text); line-height: 1.6; margin: 12px 0; }
     .tt-counts { font-weight: 600; margin: 6px 0; }
     .tt-jump, .tt-check { margin-top: 10px; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.85rem; }
@@ -2363,6 +2384,26 @@
       }
     }
 
+    // Production-condition (task 12) display words are SERVER-OWNED so web +
+    // mobile can't drift into different quality vocabulary — we render the
+    // legend verbatim, same as the gap legend and the text-trust headline.
+    // condition itself rides on each /api/works object (work.condition), so no
+    // per-work fetch here — just the words.
+    let conditionLegend = null;
+    async function loadConditionLegend() {
+      if (conditionLegend) return; // static — load once
+      try {
+        const d = await fetch('/api/conditions/legend').then(r => r.ok ? r.json() : null);
+        if (d && d.conditions) {
+          conditionLegend = d.conditions;
+          // Condition rides inline in the card/detail HTML (not a lazy slot), so
+          // if the grid already painted before the legend landed, re-render so the
+          // degraded pills appear. No-op before the first render.
+          if (typeof render === 'function' && Array.isArray(allWorks) && allWorks.length) render();
+        }
+      } catch { /* no legend → renderConditionBadge stays silent, never a wrong word */ }
+    }
+
     // First-run welcome — shown when the library is genuinely empty. Action-first
     // so a newcomer can add a book with ONE click (the picker routes through the
     // same upload path as drag-drop); no folder path is shown because under Docker
@@ -2662,6 +2703,7 @@
       // Secondary loads — fire alongside, but never let them gate the grid.
       loadLLMConfig();
       loadTranscriptionGapSummary();
+      loadConditionLegend(); // task-12 condition words (static; re-renders if late)
       const totalFiles = allWorks.reduce((s, w) =>
         s + (w.audio_files || []).length + (w.text_files || []).length, 0);
       document.getElementById('status-text').textContent =
@@ -3626,6 +3668,7 @@
                 : work.has_text
                 ? `<span class="media-pill text">${displayEditionBooks(work, 'text').length} text</span>`
                 : `<span class="media-pill missing">no text</span>`}
+              ${renderConditionBadge(work)}
               ${renderGapBadge(work.id)}
               ${renderAlignBadge(work)}
               ${renderTextTrustBadge(work)}
@@ -4202,6 +4245,40 @@
     // Render the work-card badge entirely from the served legend
     // (GET /api/transcription-gaps/legend), so it matches mobile by construction.
     // Absence of a badge is NOT rendered as a positive "complete" claim.
+    // Task 12: a book produced by a run that failed must never look like a good
+    // one. On the DENSE card grid we surface only DEGRADED (the eye-drawer) — a
+    // pill on every card would drown the grid, and most books read "unknown" on
+    // day one. UNKNOWN + COMPLETE render nothing here; the full three-state
+    // hierarchy (unknown quiet-neutral, complete quiet-positive) lives in the
+    // work-detail view (renderConditionDetail), where someone is inspecting ONE
+    // book. Words come from the server legend, rendered verbatim.
+    function renderConditionBadge(work) {
+      if (!conditionLegend || work.condition !== 'degraded') return '';
+      const c = conditionLegend.degraded || {};
+      const label = c.label || 'Needs review';
+      const reason = work.condition_reason ? ` — ${work.condition_reason}` : '';
+      const title = (c.detail || 'Something went wrong while this book was produced.') + reason;
+      return `<span class="media-pill cond-degraded"
+        role="button" tabindex="0" aria-label="${escapeHtml(label)}: ${escapeHtml(title)}"
+        onclick="event.stopPropagation(); openWorkDetail(${work.id})"
+        title="${escapeHtml(title)}">&#9888; ${escapeHtml(label)}</span>`;
+    }
+
+    // The QUIET states for the work-detail view: unknown (neutral — never a
+    // warning; most of the library on day one) and complete (quiet positive).
+    // DEGRADED is skipped here because it's already shown loud as the pill in the
+    // badge row — we don't want it twice. Returns '' when the legend hasn't
+    // loaded or the work is degraded / has no condition.
+    function renderConditionDetail(work) {
+      if (!conditionLegend || !work.condition || work.condition === 'degraded') return '';
+      const c = conditionLegend[work.condition];
+      if (!c) return '';
+      const cls = work.condition === 'complete' ? 'cond-complete' : 'cond-unknown';
+      const icon = work.condition === 'complete' ? '&#10003; ' : '';
+      return `<div class="cond-detail ${cls}" title="${escapeHtml(c.detail || '')}">
+        <span class="cond-dot"></span>${icon}${escapeHtml(c.label || work.condition)}</div>`;
+    }
+
     function renderGapBadge(workId) {
       const entry = transcriptionGapsByWork[workId];
       if (!entry) return '';
@@ -5075,10 +5152,12 @@
             <div class="detail-row work-badges">
               ${work.has_audio ? `<span class="media-pill audio">${audioFiles.length} audio</span>` : `<span class="media-pill missing">no audio</span>`}
               ${work.has_text ? `<span class="media-pill text">${textFiles.length} text</span>` : `<span class="media-pill missing">no text</span>`}
+              ${renderConditionBadge(work)}
               ${renderGapBadge(work.id)}
               ${renderAlignBadge(work)}
               ${renderTextTrustBadge(work)}
             </div>
+            ${renderConditionDetail(work)}
             <div class="detail-progline work-progress" id="work-progress-${work.id}" style="display:none;"></div>
             <div class="detail-cta">
               ${work.has_audio ? `<button class="detail-btn primary" onclick="resumeOrPlay(${work.id})">&#9654; Resume listening</button>` : ''}
