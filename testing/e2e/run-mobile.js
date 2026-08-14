@@ -295,12 +295,36 @@ async function startPlayback(tries = 4) {
 // PAUSED. So: pause → dump → tap "Open reader". Returns true if it navigated
 // (the paused Reader carries the E2E probe). Leaves playback PAUSED.
 async function openReaderPaused() {
-  await mediaPause();
-  const xml = dump(); // paused → window idle → dump succeeds
-  if (parseProbe(xml) != null) return true; // already on a probe screen
-  if (!tapText(xml, 'Open reader')) return false;
-  const r = await waitFor((x) => parseProbe(x) != null, 6000);
-  return parseProbe(r) != null;
+  // Retry the whole pause→dump→tap up to 3× BEFORE conceding INFRA. This drive
+  // step was a ~50% coin-flip on the marginal headless emulator (2026-08-14):
+  // one dump landed on the launcher HOME screen (the app had transiently lost
+  // foreground — NOT a crash: empty crash buffer, no LMK kill) so "Open reader"
+  // was absent and the run mis-conceded INFRA, which only passed because the
+  // runner improvised its own re-run. Keeping the retry HERE means the harness
+  // absorbs the flake itself and a genuine failure (app truly gone) still fails
+  // honestly after 3 real attempts — a cold relaunch below has no mini-player,
+  // so it can't manufacture a false green.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await mediaPause();
+    let xml = dump(); // paused → window idle → dump succeeds
+    if (parseProbe(xml) != null) return true; // already on a probe screen
+    // Lost the app foreground (neither the probe nor ANY abookify node in the
+    // tree — e.g. the launcher HOME screen)? Bring the app's EXISTING task back
+    // to front (LAUNCHER intent resumes the task; it does not restart it or drop
+    // nav state) and re-dump before deciding this attempt failed.
+    if (!/com\.abookify/.test(xml)) {
+      adb(`shell monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
+      await sleep(1500);
+      xml = dump();
+      if (parseProbe(xml) != null) return true;
+    }
+    if (tapText(xml, 'Open reader')) {
+      const r = await waitFor((x) => parseProbe(x) != null, 6000);
+      if (parseProbe(r) != null) return true;
+    }
+    await sleep(1200); // settle, then retry the pause/dump
+  }
+  return false;
 }
 
 // ── The mobile "DOM contract": the E2E{...} probe + the mini-player clock ─────
