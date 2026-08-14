@@ -494,17 +494,23 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 
 		mp3Path := filepath.Join(outDir, fmt.Sprintf("chapter-%03d.mp3", chMeta.Index))
 
-		// Synthesize only if the file isn't already there (resume / interrupted
-		// run). We STILL register + link + align it below even when reusing it —
-		// the book row may have been removed (edition deleted) while the mp3
-		// remained, so a regenerate-after-remove must re-attach the edition.
-		if _, err := os.Stat(mp3Path); err != nil {
-			// Preprocess into pause-aware segments (title, then paragraphs) —
-			// the cadence work: real silence is inserted at the joins, since
-			// punctuation alone barely moves Kokoro's rhythm. Word content is
-			// identical to the old single-string path (tested), so word-sync
-			// alignment is unaffected.
-			segments := PreprocessForTTSSegments(chMeta.Title, ch.Content)
+		// CONTENT-ADDRESSED reuse (task 14): a chapter is done iff the file's
+		// recorded content key matches what we would synthesize NOW — the
+		// words + voice + cadence. A bare exists-check served stale audio
+		// after any text change; the key makes that impossible. We STILL
+		// register + link + align below even when reusing — the book row may
+		// have been removed (edition deleted) while the audio remained.
+		segments := PreprocessForTTSSegments(chMeta.Title, ch.Content)
+		var segTexts []string
+		for _, seg := range segments {
+			segTexts = append(segTexts, seg.Text)
+		}
+		contentKey := TTSContentKey(strings.Join(segTexts, "\n\n"), voice, ttsTitlePauseMs, ttsParagraphPauseMs)
+		if !CasHasChapter(mp3Path, contentKey) && !CasLinkChapter(g.generatedDir, contentKey, mp3Path) {
+			// Not in the store: synthesize into the job's WORKING DIR (under
+			// the generator dir — never scanned, never served) and promote
+			// atomically on completion, so a crash costs only this chapter.
+			{
 			var pieces []ttsPiece
 			total := 0
 			for _, seg := range segments {
@@ -539,11 +545,26 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 			}
 
 			// Never byte-concatenate the chunks — see concatAudioChunks.
-			if err := concatAudioPieces(pieces, mp3Path); err != nil {
+			workDir, werr := CasWorkDir(g.generatedDir, job.ID)
+			if werr != nil {
+				job.Status = "failed"
+				job.Error = werr.Error()
+				g.updateJob(job)
+				return
+			}
+			workFile := filepath.Join(workDir, fmt.Sprintf("chapter-%03d.mp3", chMeta.Index))
+			if err := concatAudioPieces(pieces, workFile); err != nil {
 				job.Status = "failed"
 				job.Error = err.Error()
 				g.updateJob(job)
 				return
+			}
+			if err := CasPromote(g.generatedDir, contentKey, workFile, mp3Path); err != nil {
+				job.Status = "failed"
+				job.Error = err.Error()
+				g.updateJob(job)
+				return
+			}
 			}
 		}
 
@@ -605,6 +626,20 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 	job.Status = "completed"
 	job.CurrentStep = fmt.Sprintf("Generated %d chapters", len(chapters))
 	g.updateJob(job)
+
+	// GC ships WITH the store (task 14): drop this job's working dir plus any
+	// CAS entry nothing links to (7-day grace), keeping dirs of jobs still
+	// active. Wasting disk beats serving the wrong narration; unbounded
+	// waste on a user's machine is still our bug.
+	keep := map[string]bool{}
+	for _, other := range g.activeJobIDs() {
+		if other != job.ID {
+			keep[other] = true
+		}
+	}
+	if n, w := CleanTTSCas(g.generatedDir, 7*24*time.Hour, keep); n > 0 || w > 0 {
+		log.Printf("tts-cas: gc removed %d unreferenced entries, %d finished work dirs", n, w)
+	}
 
 	log.Printf("tts: completed generation for book %d (%d chapters)", bookID, len(chapters))
 }
@@ -1147,4 +1182,19 @@ func parseTTSJobID(id string) (workID, bookID int64, voice string, ok bool) {
 		return 0, 0, "", false
 	}
 	return w, b, strings.Replace(parts[3], "-", "_", 1), true
+}
+
+// activeJobIDs returns the ids of jobs currently marked running — the set
+// whose working dirs the CAS GC must not touch. Queued-but-unstarted jobs
+// have no working dir yet.
+func (g *Generator) activeJobIDs() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []string
+	for id, on := range g.running {
+		if on {
+			out = append(out, id)
+		}
+	}
+	return out
 }
