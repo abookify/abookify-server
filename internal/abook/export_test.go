@@ -2,8 +2,10 @@ package abook
 
 import (
 	"archive/zip"
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,6 +400,56 @@ func TestExportV2_RoundTripImport(t *testing.T) {
 	bms, _ := destStore.ListBookmarks(w.ID, 1)
 	if len(bms) != 1 || bms[0].Type != "highlight" {
 		t.Errorf("bookmarks = %+v", bms)
+	}
+}
+
+// A bundled cover must land where GET /api/works/{id}/cover serves from
+// ({libraryDir}/covers/work-{id}.jpg) after import — otherwise an imported work,
+// including the first-run sample every newcomer sees, renders as a coverless
+// tile even though the .abook carries the image. Regression for that gap: the
+// zip extracts cover.jpg into the abook dir, and Import must copy it into the
+// dest library's covers/ dir under the NEW work id.
+func TestExportV2_CoverWiredOnImport(t *testing.T) {
+	dir := t.TempDir()
+	srcStore, work := seedWork(t, dir)
+
+	// Seed a cover where the exporter looks for it.
+	coverBytes := []byte("\xFF\xD8\xFF\xE0JFIF-ish cover bytes")
+	coversDir := filepath.Join(dir, "covers")
+	if err := os.MkdirAll(coversDir, 0755); err != nil {
+		t.Fatalf("mkdir covers: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", work.ID)), coverBytes, 0644); err != nil {
+		t.Fatalf("write cover: %v", err)
+	}
+
+	out := filepath.Join(dir, "test.abook")
+	if err := ExportV2(srcStore, work, out, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	srcStore.Close()
+
+	destDir := t.TempDir()
+	destStore, err := db.Open(filepath.Join(destDir, "monolith.db"))
+	if err != nil {
+		t.Fatalf("open dest: %v", err)
+	}
+	defer destStore.Close()
+	if err := Import(destStore, out, destDir); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	works, err := destStore.ListWorks()
+	if err != nil || len(works) != 1 {
+		t.Fatalf("list works: %v (n=%d)", err, len(works))
+	}
+	dst := filepath.Join(destDir, "covers", fmt.Sprintf("work-%d.jpg", works[0].ID))
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("cover not wired to %s: %v", dst, err)
+	}
+	if !bytes.Equal(got, coverBytes) {
+		t.Errorf("wired cover bytes differ: got %d bytes, want %d", len(got), len(coverBytes))
 	}
 }
 

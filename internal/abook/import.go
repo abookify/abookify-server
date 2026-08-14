@@ -90,7 +90,7 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 		}
 	}
 
-	if err := ingestBookDB(store, dbPath, outDir, &manifest); err != nil {
+	if err := ingestBookDB(store, dbPath, outDir, libraryDir, &manifest); err != nil {
 		// The ingest already rolled back its half-built work row; also drop the
 		// extracted files so no orphaned folder sits on disk looking like a book.
 		os.RemoveAll(outDir)
@@ -103,7 +103,7 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 // under a fresh work id, remapping book ids as it goes. On ANY failure after the
 // work row is created it rolls that row back (named-return + defer), so a
 // half-finished import never leaves a partial "broken book" in the library.
-func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) (err error) {
+func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *Manifest) (err error) {
 	bdb, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&mode=ro")
 	if err != nil {
 		return fmt.Errorf("open book.db: %w", err)
@@ -229,6 +229,23 @@ func ingestBookDB(store *db.Store, dbPath, outDir string, manifest *Manifest) (e
 	// so a sideloaded work reports when it was produced — dedupe-by-generation.
 	if manifest.ContentVersion != "" {
 		store.SetContentVersion(newWorkID, manifest.ContentVersion)
+	}
+	// Wire the bundled cover to where GET /api/works/{id}/cover serves from
+	// ({libraryDir}/covers/work-{id}.jpg). The zip extracts it into outDir, but
+	// without this copy an imported work — including the first-run sample, the
+	// one book a newcomer sees — renders as a coverless tile. Best-effort: a
+	// missing/broken cover must never fail an otherwise-good import.
+	if manifest.Assets.Cover != "" {
+		src := filepath.Join(outDir, manifest.Assets.Cover)
+		if data, rerr := os.ReadFile(src); rerr == nil && len(data) > 0 {
+			coversDir := filepath.Join(libraryDir, "covers")
+			if mkerr := os.MkdirAll(coversDir, 0755); mkerr == nil {
+				dst := filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", newWorkID))
+				if werr := os.WriteFile(dst, data, 0644); werr != nil {
+					log.Printf("abook import: cover wire failed for work %d: %v", newWorkID, werr)
+				}
+			}
+		}
 	}
 	log.Printf("abook import: completed %q → work %d (%d books)", manifest.Title, newWorkID, len(bookRemap))
 	return nil
