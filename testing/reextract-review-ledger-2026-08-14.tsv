@@ -1,0 +1,58 @@
+book=106	work=3	CLEAN	ch=28 words=126880 paras 2331 -> 2331
+book=112471	work=4	CLEAN	ch=28 words=60074 paras 977 -> 977
+book=103	work=5	CLEAN	ch=13 words=26512 paras 946 -> 946
+book=243688	work=5	CLEAN	ch=13 words=26512 paras 946 -> 946
+book=105	work=6	CLEAN	ch=11 words=25629 paras 362 -> 362
+book=2347	work=7	CLEAN	ch=91 words=261934 paras 16045 -> 16045
+book=25960	work=22	REVIEWED	ch 0 words 85 -> 82 (stream differs); ch 32->32 words 126915->126819 paras 2678->2646 anchor=0.5190
+book=14381	work=24	REVIEWED	chapter count 98 -> 96; ch 98->96 words 189022->188918 paras 3288->3186 anchor=0.3370
+book=25942	work=27	CLEAN	ch=28 words=96707 paras 907 -> 907
+book=25957	work=28	CLEAN	ch=30 words=75042 paras 844 -> 844
+book=25986	work=30	REVIEWED	ch 0 words 8 -> 7 (stream differs); ch 35->35 words 1205520->1210086 paras 33990->22959 anchor=0.0015
+book=26051	work=32	REVIEWED	chapter count 106 -> 103; ch 106->103 words 103880->103866 paras 2570->2414 anchor=0.6918
+book=111485	work=34	CLEAN	ch=30 words=75042 paras 844 -> 844
+book=112470	work=34	CLEAN	ch=30 words=75042 paras 844 -> 844
+book=31011	work=35	REVIEWED	ch 0 words 12491 -> 12487 (stream differs); ch 6->6 words 95841->95820 paras 2288->2267 anchor=0.9735
+book=31009	work=36	REVIEWED	chapter count 33 -> 32; ch 33->32 words 78660->78624 paras 1963->1852 anchor=0.7953
+book=31037	work=37	REVIEWED	ch 0 words 9177 -> 9140 (stream differs); ch 8->8 words 108378->107944 paras 1947->1939 anchor=0.8768
+book=33716	work=39	REVIEWED	ch 0 words 45 -> 43 (stream differs); ch 16->16 words 73690->73658 paras 1535->1519 anchor=0.8257
+book=33760	work=40	REVIEWED	ch 0 words 18 -> 16 (stream differs); ch 20->20 words 12745->12736 paras 1474->495 anchor=0.7621
+book=33774	work=41	CLEAN	ch=11 words=77479 paras 1576 -> 1576
+book=33737	work=43	REVIEWED	ch 0 words 186 -> 184 (stream differs); ch 21->21 words 16520->16478 paras 468->431 anchor=0.9113
+book=33999	work=47	CLEAN	ch=2 words=11444 paras 231 -> 231
+book=34001	work=48	REVIEWED	chapter count 39 -> 36; ch 39->36 words 569018->568734 paras 14229->13959 anchor=0.9122
+book=34000	work=49	REVIEWED	chapter count 36 -> 30; ch 36->30 words 106931->106670 paras 1614->1516 anchor=0.3405
+book=33864	work=50	CLEAN	ch=46 words=78555 paras 1646 -> 1646
+book=39937	work=51	REVIEWED	chapter count 19 -> 16; ch 19->16 words 39250->39171 paras 574->551 anchor=0.9703
+book=39938	work=52	REVIEWED	ch 0 words 1762 -> 1756 (stream differs); ch 40->40 words 159990->159767 paras 8734->4227 anchor=0.2454
+book=39933	work=53	REVIEWED	ch 0 words 17 -> 16 (stream differs); ch 42->42 words 88366->88324 paras 2252->2141 anchor=0.9537
+book=39934	work=54	CLEAN	ch=66 words=227224 paras 4934 -> 4934
+book=39939	work=55	REVIEWED	ch 0 words 54 -> 51 (stream differs); ch 17->17 words 91953->91902 paras 1799->1767 anchor=0.9590
+book=39936	work=56	REVIEWED	ch 0 words 14 -> 10 (stream differs); ch 32->32 words 111513->111383 paras 1529->1441 anchor=0.9057
+book=39912	work=58	REVIEWED	ch 0 words 20 -> 16 (stream differs); ch 21->21 words 105593->105509 paras 2879->2858 anchor=0.9692
+book=45007	work=71	REVIEWED	ch 0 words 242 -> 233 (stream differs); ch 45->45 words 175331->174926 paras 5997->5952 anchor=0.9650
+book=45006	work=72	CLEAN	ch=61 words=112954 paras 4770 -> 4770
+book=45009	work=73	CLEAN	ch=83 words=555204 paras 12435 -> 12435
+book=45005	work=74	REVIEWED	ch 0 words 110 -> 109 (stream differs); ch 45->45 words 209240->209195 paras 4067->4022 anchor=0.9547
+book=45008	work=75	REVIEWED	chapter count 38 -> 37; ch 38->37 words 205073->204845 paras 19801->19730 anchor=0.0115
+book=45010	work=76	CLEAN	ch=36 words=47401 paras 2133 -> 2133
+book=111504	work=85	CLEAN	ch=6 words=28641 paras 770 -> 770
+book=111509	work=86	CLEAN	ch=8 words=31823 paras 358 -> 358
+book=112411	work=86	CLEAN	ch=8 words=31823 paras 358 -> 358
+book=111510	work=87	CLEAN	ch=18 words=32455 paras 377 -> 377
+book=112388	work=88	CLEAN	ch=2 words=12214 paras 89 -> 89
+book=112393	work=89	CLEAN	ch=1 words=6085 paras 269 -> 269
+book=112398	work=92	REVIEWED	ch 0 words 2184 -> 2183 (stream differs); ch 3->3 words 4914->4911 paras 83->80 anchor=0.0386
+book=112425	work=96	CLEAN	ch=26 words=39648 paras 1195 -> 1195
+book=112445	work=97	CLEAN	ch=18 words=47268 paras 1736 -> 1736
+book=112472	work=98	CLEAN	ch=13 words=58424 paras 1027 -> 1027
+book=112475	work=100	CLEAN	ch=31 words=160712 paras 2073 -> 2073
+book=112499	work=102	CLEAN	ch=13 words=104511 paras 2558 -> 2558
+book=112517	work=103	REVIEWED	ch 0 words 125 -> 119 (stream differs); ch 1->1 words 125->119 paras 3->2 anchor=0.0000
+book=112538	work=104	CLEAN	ch=37 words=68357 paras 1644 -> 1644
+book=115424	work=108	CLEAN	ch=13 words=62797 paras 1650 -> 1650
+book=120483	work=108	CLEAN	ch=13 words=62797 paras 1650 -> 1650
+book=39935	work=116	REVIEWED	ch 0 words 14 -> 9 (stream differs); ch 19->19 words 37224->37127 paras 456->399 anchor=0.7895
+book=131486	work=119	CLEAN	ch=13 words=62797 paras 1650 -> 1650
+book=239621	work=121	CLEAN	ch=6 words=28641 paras 770 -> 770
+SUMMARY	migrated=57 flagged=0 skipped=0 dry=false

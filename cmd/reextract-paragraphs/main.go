@@ -39,6 +39,7 @@ func main() {
 	ledger := flag.String("ledger", "reextract-ledger.tsv", "per-book ledger (appended as the run goes)")
 	only := flag.Int64("book", 0, "migrate a single text book id (0 = all epubs)")
 	dry := flag.Bool("dry-run", false, "measure and write the ledger; change nothing")
+	review := flag.Bool("review", false, "REVIEW PASS: fully replace chapters for books whose re-extraction drifts (chapter count or word stream) — today's extraction is better than the import-era one. Replaces chapters (epub text chapters carry no timing — verified), repopulates paragraphs, rechunks (new chunks await the embedding refresh endpoint), invalidates the summaries cache, and re-runs the work's anchor alignment.")
 	flag.Parse()
 
 	store, err := db.Open(*dbPath)
@@ -87,26 +88,85 @@ func main() {
 			flagged++
 			continue
 		}
-		if len(fresh) != len(old) {
-			logLedger("book=%d\twork=%d\tNEEDS_REVIEW\tchapter count %d -> %d", b.ID, b.WorkID, len(old), len(fresh))
+		same := len(fresh) == len(old)
+		words := 0
+		driftNote := ""
+		if !same {
+			driftNote = fmt.Sprintf("chapter count %d -> %d", len(old), len(fresh))
+		}
+		if same {
+			for i := range old {
+				ow := strings.Fields(old[i].Content)
+				nw := strings.Fields(fresh[i].Content)
+				words += len(nw)
+				if strings.Join(ow, " ") != strings.Join(nw, " ") {
+					driftNote = fmt.Sprintf("ch %d words %d -> %d (stream differs)", old[i].Index, len(ow), len(nw))
+					same = false
+					break
+				}
+			}
+		}
+		if !same && !*review {
+			logLedger("book=%d\twork=%d\tNEEDS_REVIEW\t%s", b.ID, b.WorkID, driftNote)
 			flagged++
 			continue
 		}
-		same := true
-		words := 0
-		for i := range old {
-			ow := strings.Fields(old[i].Content)
-			nw := strings.Fields(fresh[i].Content)
-			words += len(nw)
-			if strings.Join(ow, " ") != strings.Join(nw, " ") {
-				logLedger("book=%d\twork=%d\tNEEDS_REVIEW\tch %d words %d -> %d (stream differs)",
-					b.ID, b.WorkID, old[i].Index, len(ow), len(nw))
-				same = false
-				break
+		if !same && *review {
+			// FULL REPLACE, per-book atomic in effect: each step is
+			// re-runnable and the book ends fully re-derived or the ledger
+			// says exactly where it stopped.
+			if *dry {
+				logLedger("book=%d\twork=%d\tDRY_REVIEW\t%s", b.ID, b.WorkID, driftNote)
+				migrated++
+				continue
 			}
-		}
-		if !same {
-			flagged++
+			before, _ := store.ParagraphCount(b.ID)
+			oldWords, newWords := 0, 0
+			for i := range old {
+				oldWords += len(strings.Fields(old[i].Content))
+			}
+			for i := range fresh {
+				newWords += len(strings.Fields(fresh[i].Content))
+			}
+			if err := store.DeleteChaptersByBook(b.ID); err != nil {
+				logLedger("book=%d\twork=%d\tERR_DELETE\t%v", b.ID, b.WorkID, err)
+				flagged++
+				continue
+			}
+			okIns := true
+			for i := range fresh {
+				if err := store.InsertChapter(fresh[i]); err != nil {
+					logLedger("book=%d\twork=%d\tERR_INSERT\tch %d: %v", b.ID, b.WorkID, fresh[i].Index, err)
+					okIns = false
+					break
+				}
+			}
+			if !okIns {
+				flagged++
+				continue
+			}
+			after, err := library.PopulateParagraphsForBook(store, b.ID)
+			if err != nil {
+				logLedger("book=%d\twork=%d\tERR_PARAS\t%v", b.ID, b.WorkID, err)
+				flagged++
+				continue
+			}
+			if err := library.ChunkBook(store, b.ID); err != nil {
+				logLedger("book=%d\twork=%d\tERR_CHUNK\t%v", b.ID, b.WorkID, err)
+				flagged++
+				continue
+			}
+			store.DeleteSummariesForBook(b.ID)
+			cov, err := library.ComputeAnchorAlignment(store, b.WorkID)
+			if err != nil {
+				logLedger("book=%d\twork=%d\tREVIEWED_NOALIGN\t%s; ch %d->%d words %d->%d paras %d->%d (align: %v)",
+					b.ID, b.WorkID, driftNote, len(old), len(fresh), oldWords, newWords, before, after, err)
+				migrated++
+				continue
+			}
+			logLedger("book=%d\twork=%d\tREVIEWED\t%s; ch %d->%d words %d->%d paras %d->%d anchor=%.4f",
+				b.ID, b.WorkID, driftNote, len(old), len(fresh), oldWords, newWords, before, after, cov)
+			migrated++
 			continue
 		}
 		before, _ := store.ParagraphCount(b.ID)
