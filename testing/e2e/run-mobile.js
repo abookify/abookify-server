@@ -725,13 +725,33 @@ async function connect() {
     skip('download_offline_play', 'E2E_SKIP_DOWNLOAD=1 (karaoke-only calibration)');
   } else try {
     // Back out of the reader to the work page where the download control lives.
-    keyBack();
-    xml = await waitFor((x) => /Add to device|On device|Resume \(|Update available/i.test(x), 10000);
+    // keyBack is fire-and-forget; on a saturated host a press can be dropped, so
+    // retry until a work-page download control appears (driver-hardening pattern —
+    // see testing/e2e/driver-flakiness-diagnosis.md).
+    const dlControl = (x) => /Add to device|On device|Resume \(|Update available/i.test(x);
+    for (let b = 0; b < 3 && !dlControl(xml); b++) {
+      keyBack();
+      xml = await waitFor(dlControl, 8000);
+    }
+    if (!dlControl(xml)) throw new Error('could not reach the work-page download control (back-nav did not land after 3 tries)');
     if (/On device/i.test(xml)) {
-      // Already downloaded from a prior run — remove so we exercise a fresh DL.
-      // (Leave it; a present on-device copy still satisfies offline playback.)
-    } else if (!tapText(xml, 'Add to device')) {
-      throw new Error('no "Add to device" control on the work page');
+      // Already downloaded from a prior run — a present on-device copy still
+      // satisfies the offline-playback assertion, so proceed without re-fetching.
+    } else if (/Resume \(/i.test(xml)) {
+      // Entered on a killed/resumable download — that IS PJ's download bug; fail loudly.
+      throw new Error('download control is in the RESUMABLE (stalled) state on entry — PJ\'s download stall');
+    } else {
+      // Tap "Add to device" and VERIFY the download STARTED (the badge flips off
+      // "Add to device" to a "N% · …" / "Unpacking…" state), retrying the tap — a
+      // dropped tap on a saturated host would silently never start, then time out
+      // at 180s and read as a stall it isn't.
+      let started = false;
+      for (let t = 0; t < 3 && !started; t++) {
+        if (!tapText(xml, 'Add to device')) throw new Error('no "Add to device" control on the work page');
+        xml = await waitFor((x) => !findNode(x, 'Add to device'), 8000);
+        started = !findNode(xml, 'Add to device');
+      }
+      if (!started) throw new Error('tapped "Add to device" but the download never started (badge unchanged after 3 taps)');
     }
     // Poll to completion, failing loudly on the stall states.
     let done = false; let stalled = null;
