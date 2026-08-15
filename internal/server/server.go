@@ -1429,6 +1429,30 @@ func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// defaultNarrationTextBookID picks which text a "Generate audio (TTS)" with no
+// explicit source narrates. It must never default to a whisper transcript — a
+// TTS reading of the STT of someone else's recording is garbage (task 13, hit by
+// the plain UI button, which sends no text_book_id). Order: the work's canonical
+// displayed text if it's a real (non-transcript) source; else the first
+// non-transcript visible text; else fall back to TextFiles[0] (a transcript-only
+// work legitimately has nothing else to narrate). Callers guarantee len>0.
+func defaultNarrationTextBookID(work *db.Work) int64 {
+	visibleReal := func(b db.Book) bool { return b.Visibility != "internal" && b.Origin != "whisper_transcript" }
+	if work.DisplayTextBookID != 0 {
+		for _, tf := range work.TextFiles {
+			if tf.ID == work.DisplayTextBookID && visibleReal(tf) {
+				return tf.ID
+			}
+		}
+	}
+	for _, tf := range work.TextFiles {
+		if visibleReal(tf) {
+			return tf.ID
+		}
+	}
+	return work.TextFiles[0].ID
+}
+
 func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 	if s.Generator == nil || s.Generator.TTSClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "TTS service not configured"})
@@ -1462,7 +1486,12 @@ func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	textBookID := work.TextFiles[0].ID
+	// Default text source to narrate: the work's REAL text (publisher ebook),
+	// NEVER a whisper transcript. TextFiles[0] is query-order and is frequently
+	// the transcript on a paired work, so blindly narrating it produced an
+	// audiobook read from the STT of someone else's recording (task 13). Prefer
+	// the canonical displayed text, then the first non-transcript source.
+	textBookID := defaultNarrationTextBookID(work)
 	if req.TextBookID != 0 {
 		ok := false
 		for _, tf := range work.TextFiles {
