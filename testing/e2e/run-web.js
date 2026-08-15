@@ -42,10 +42,25 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   page.on('pageerror', e => consoleErrors.push(String(e)));
 
   // ---- open_library
-  await page.goto(BASE, { waitUntil: 'networkidle' });
+  // RULE 4 (testing/RUNNER-CONTRACT.md): 'networkidle' is a blind readiness wait
+  // that NEVER fires against a busy live server (the WS + job-poll + cover loads
+  // keep the network alive), so it FATAL'd the whole run under the showcase
+  // queue. Absorb the real transient instead — wait for the library to actually
+  // load its works — as a bounded, recorded loop.
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  let libAttempts = 0;
+  const libT0 = Date.now();
+  while (Date.now() - libT0 < 30000) {
+    libAttempts++;
+    const ready = await page.evaluate(() =>
+      typeof allWorks !== 'undefined' && Array.isArray(allWorks) && allWorks.length > 0
+    ).catch(() => false);
+    if (ready) break;
+    await page.waitForTimeout(300);
+  }
   const cards = await page.locator('.work-card, [class*=card]').count();
   report('open_library', cards >= 1 && consoleErrors.length === 0,
-    `cards=${cards} pageErrors=${consoleErrors.length}`);
+    `cards=${cards} pageErrors=${consoleErrors.length} (library ready after ${libAttempts} wait-attempts)`);
 
   // ---- open_book (DETERMINISTIC: open the work under test by id, via the app's
   // own openWorkDetail, so the journey exercises a KNOWN work — not whichever
