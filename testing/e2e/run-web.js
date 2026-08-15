@@ -84,6 +84,23 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
     const w = (allWorks || []).find(x => x.id === Number(wid));
     return { audio: (w.audio_files || []).length, text: (w.text_files || []).length };
   }, WORK);
+  // Degraded-testimony board (task 12 / blind-spot register): a work whose
+  // canon carries degraded production testimony certifies the DATA contract
+  // here (reason must be present); the UI pill assert joins when server-web's
+  // selector exists. Detected via canon so the assert reads the same contract
+  // every surface does.
+  const canonPeek = await page.evaluate(async (wid) => {
+    const r = await fetch(`/api/works/${wid}/canon`);
+    return r.ok ? r.json() : null;
+  }, WORK);
+  const degraded = canonPeek && [...(canonPeek.texts || []), ...(canonPeek.editions || [])]
+    .find(x => x.condition === 'degraded');
+  if (degraded) {
+    report('degraded_testimony', !!(degraded.condition_reason || '').length,
+      `condition=degraded reason="${(degraded.condition_reason || 'MISSING').slice(0, 60)}" — testimony present and reasoned`);
+    console.log('\n--- SHAPE: DEGRADED-TESTIMONY board — data-contract assert only (UI pill assert joins with server-web selector) ---');
+    process.exit(finish());
+  }
   if (shape.audio === 0 || shape.text === 0) {
     const kind = shape.audio === 0 ? 'TEXT-ONLY' : 'AUDIO-ONLY';
     if (shape.audio === 0) {

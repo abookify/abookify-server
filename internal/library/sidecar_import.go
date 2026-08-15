@@ -427,10 +427,17 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 	// something to render — without this the sync_data is orphaned and the
 	// work shows up as audio-only with no karaoke surface. Mirrors the shape
 	// 438 Days has after the normal STT → transcript-split pipeline.
+	if err := ensureTranscriptBook(store, workID, audioBookID, &sc, textBookID); err != nil {
+		return err
+	}
 	// TASK 12 — production testimony, written HERE because this code path is
 	// the producer: the transcript book is complete when the sidecar passed
-	// its integrity check, degraded-with-why when it did not. A later sweep
-	// may disagree with this testimony but must never author it.
+	// its integrity check, degraded-with-why when it did not. MUST run AFTER
+	// ensureTranscriptBook — on a first import the transcript book does not
+	// exist before it (the original placement silently skipped every first
+	// import; caught building the degraded fixture, which is the fixture
+	// doing its job before it even exists). A later sweep may disagree with
+	// this testimony but must never author it.
 	if tb := findTranscriptBookID(store, workID, textBookID); tb != 0 {
 		cond := db.BookCondition{BookID: tb, State: "complete", Source: "sidecar_import"}
 		if len(scProblems) > 0 {
@@ -445,10 +452,6 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 			log.Printf("sidecar-import: condition write failed: %v", err)
 		}
 	}
-	if err := ensureTranscriptBook(store, workID, audioBookID, &sc, textBookID); err != nil {
-		log.Printf("sidecar-import: transcript book creation failed: %v", err)
-	}
-
 	// Detect spans where Whisper produced nothing despite audio being
 	// present — chunked-STT failures leave silent holes that otherwise
 	// only surface as bare chapter titles + empty content. Persist on

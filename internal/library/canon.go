@@ -63,6 +63,10 @@ type CanonText struct {
 	Kind     string `json:"kind"` // publisher | transcript | other
 	Chapters int    `json:"chapters"`
 	Words    int    `json:"words"`
+	// Condition: the text book's production testimony (task 12) —
+	// complete | degraded (Reason says why) | unknown (no testimony).
+	Condition       string `json:"condition"`
+	ConditionReason string `json:"condition_reason,omitempty"`
 }
 
 // WorkCanon is GET /api/works/{id}/canon — the numbers every surface must
@@ -201,7 +205,13 @@ func BuildWorkCanon(store *db.Store, workID int64) (*WorkCanon, error) {
 				words += ch.WordCount
 			}
 		}
-		c.Texts = append(c.Texts, CanonText{BookID: b.ID, Kind: kind, Chapters: n, Words: words})
+		tc := CanonText{BookID: b.ID, Kind: kind, Chapters: n, Words: words, Condition: "unknown"}
+		if conds, _ := store.GetBookConditions([]int64{b.ID}); len(conds) > 0 {
+			cond := conds[b.ID]
+			tc.Condition = cond.State
+			tc.ConditionReason = cond.Reason
+		}
+		c.Texts = append(c.Texts, tc)
 		c.TotalTexts++
 	}
 
