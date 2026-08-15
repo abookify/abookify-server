@@ -471,10 +471,19 @@ async function connect() {
   // Big library / duplicate titles: filter with the search box first so the
   // target card is on screen (e.g. 3 "A Christmas Carol"s on the live server).
   if (connected && SEARCH) {
-    const field = findNode(xml, 'Search title');
-    if (field) {
-      tap(field.cx, field.cy); await sleep(500);
-      typeText(SEARCH); await sleep(1500);
+    // Type the filter, then VERIFY it surfaced the target card, retrying if not.
+    // Fire-and-forget `tap`+`typeText` has no wait-for-focus, so on a slow
+    // software-GPU emulator the type can outrun the field focusing (keyboard/
+    // focus animation) and be silently dropped — the list never filters and the
+    // card reads as "not found" (an observed flake, 2026-08-15). Clear any prior
+    // partial before each retry so a re-type can't append onto a half-typed query.
+    for (let attempt = 0; attempt < 3 && !findNode(xml, CARD_KEY); attempt++) {
+      const clear = findNode(xml, 'Clear search');
+      if (clear) { tap(clear.cx, clear.cy); await sleep(300); xml = dump(); }
+      const field = findNode(xml, 'Search title');
+      if (!field) break;
+      tap(field.cx, field.cy); await sleep(700);
+      typeText(SEARCH); await sleep(1300);
       xml = dump();
     }
   }
