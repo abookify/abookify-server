@@ -33,8 +33,13 @@ Shape map moved: human+TTS grew to 3 works (P&P + WotW gained fresh Kokoro
 editions; grows toward ~13 as the showcase queue drains) — two-narration
 class covered by live-85 gate. Empty-library row: server-web is actively
 building the first-run funnel (task 8) — owner engaged, row stays open
-until a journey exists. Text-only (5), audio-only (5), m4b (4),
-¶-paragraph-follow: STILL BLIND, unchanged owners/artifacts.
+until a journey exists. m4b (4) and ¶-paragraph-follow: STILL BLIND (asset-gated /
+artifact-gated, see RUNNER-PROCEDURE.md's coverage decision).
+TEXT-ONLY and AUDIO-ONLY: **CLOSED 2026-08-15** — fixtures 8194
+(Sleepy Hollow epub, reader_only journey: chapters render + nav, no
+player) and 8193 (single mp3, pretranscribe_play journey: audio plays +
+Transcribe CTA), both green first run; run-web.js shape gate reports
+standard journeys n/a-by-shape instead of failing them.
 
 NEW BLIND ROW, minted THIS WEEK by task 12:
 | Shape | Reached by | Status | Owner / artifact |

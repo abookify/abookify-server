@@ -75,6 +75,56 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   report('open_book', opened, opened ? '' : 'openWorkDetail did not render the work');
   if (!opened) { await page.screenshot({ path: `${SHOTS}/open_book-FAIL.png` }); process.exit(finish()); }
 
+  // ---- SHAPE GATE (blind-spot register rows, closed 2026-08-15): text-only
+  // and audio-only are real shipping shapes every journey below assumes away
+  // (they all start with play). Detect the shape and run the dedicated
+  // asserts instead; the standard journeys report n/a-by-shape rather than
+  // failing on a work that legitimately has no audio or no text.
+  const shape = await page.evaluate((wid) => {
+    const w = (allWorks || []).find(x => x.id === Number(wid));
+    return { audio: (w.audio_files || []).length, text: (w.text_files || []).length };
+  }, WORK);
+  if (shape.audio === 0 || shape.text === 0) {
+    const kind = shape.audio === 0 ? 'TEXT-ONLY' : 'AUDIO-ONLY';
+    if (shape.audio === 0) {
+      // Reader-only experience: chapters render, navigation works, no
+      // player assumed anywhere.
+      const r = await page.evaluate(async (wid) => {
+        const w = (allWorks || []).find(x => x.id === Number(wid));
+        const tf = (typeof displayEditionBooks === 'function') ? displayEditionBooks(w, 'text')[0] : w.text_files[0];
+        await loadChapterList(tf.id, w.id);
+        const chs = (chapterCache[tf.id]?.chapters) || [];
+        if (!chs.length) return { ok: false, why: 'no chapters' };
+        await loadChapter(tf.id, chs[0].index, w.id);
+        await new Promise(res => setTimeout(res, 1200));
+        const len1 = document.body.innerText.length;
+        const target = chs.length > 1 ? chs[1].index : chs[0].index;
+        await loadChapter(tf.id, target, w.id);
+        await new Promise(res => setTimeout(res, 1200));
+        const cur = currentReaderChapter[w.id];
+        return { ok: len1 > 500 && cur && cur.index === target, chapters: chs.length, rendered: len1 };
+      }, WORK).catch(e => ({ ok: false, why: String(e).slice(0, 80) }));
+      report('reader_only', !!r.ok, r.ok ? `chapters=${r.chapters} rendered=${r.rendered} nav ok, no player` : (r.why || 'reader did not render/navigate'));
+    } else {
+      // Pre-transcription experience: audio plays, the Transcribe CTA is
+      // offered, nothing crashes for lack of a reader.
+      const r = await page.evaluate(async (wid) => {
+        const w = (allWorks || []).find(x => x.id === Number(wid));
+        const a = w.audio_files[0];
+        playAudio(a.id, 0, w.id, a.title || a.filename, w.title);
+        await new Promise(res => setTimeout(res, 4000));
+        const el = document.getElementById('audio-player');
+        const cta = !!document.querySelector(`#gen-text-${w.id}`) || /transcribe/i.test(document.body.innerText);
+        return { playing: el && !el.paused && el.currentTime > 1, cta };
+      }, WORK).catch(e => ({ playing: false, cta: false, why: String(e).slice(0, 80) }));
+      report('pretranscribe_play', !!(r.playing && r.cta),
+        `playing=${r.playing} transcribeCTA=${r.cta}${r.why ? ' err=' + r.why : ''}`);
+    }
+    console.log(`
+--- SHAPE: ${kind} — standard audio+text journeys are n/a by shape (asserted above instead) ---`);
+    process.exit(finish());
+  }
+
   // ---- play_and_hear: open the READER overlay on a mid-book (narrated) chapter,
   // then start playback there — the karaoke .sync-word spans live in the reader
   // overlay, and front-matter chapters have no audio sync. Pick the displayed

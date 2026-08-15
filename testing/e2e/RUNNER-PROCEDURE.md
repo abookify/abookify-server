@@ -53,15 +53,18 @@ going green is as much a finding as a green going red.
 | 8197 repaired-carol | 10/11 | surface_consistency (honest: colocated-dir two-narration .abook shape) |
 | 8198 messy | 9/11 | switch_source + surface_consistency (RED BY DESIGN — broken artifact; these reds are load-bearing: if either goes GREEN, the suite lost its ability to fail — report loudly) |
 | 8199 clean carol | 11/11 | none |
+| 8194 text-only | 3/3 (open_library, open_book, reader_only) | none — SHAPE board |
+| 8193 audio-only | 3/3 (open_library, open_book, pretranscribe_play) | none — SHAPE board |
 | live :7654 work 85 | 11/11 | none (a mid-run connection reset usually means another lane deployed — report it as an event, run the board ONCE more only if the process list shows the server restarted, and say you did) |
 
 ## Coverage decision (2026-08-15, deliberate — omissions are decisions)
 IN THE FLEET (to be added; build commands live in the register):
-- TEXT-ONLY fixture (8194) + reader-only journey — 5 live works, every
-  ebook-only user, cheapest possible fixture (one epub, no engines).
-- AUDIO-ONLY fixture (8193) + pre-transcription journey (player works,
-  Transcribe CTA renders, no reader crash) — the state EVERY new
-  audiobook passes through.
+- TEXT-ONLY fixture (8194) + reader-only journey — BUILT 2026-08-15,
+  green. Fixture: /tmp/abookify-e2e-textonly (Sleepy Hollow epub only).
+- AUDIO-ONLY fixture (8193) + pre-transcription journey — BUILT
+  2026-08-15, green. Fixture: /tmp/abookify-e2e-audioonly (one mp3).
+  Fleet restart loop covers both: add textonly:8194 audioonly:8193 to
+  the restart list in step 2.
 - DEGRADED-TESTIMONY row on 8198 — produced AUTHENTICALLY by
   reimporting its broken transcript through checkSidecarIntegrity
   (never hand-written; the table's rule applies to fixtures too).
