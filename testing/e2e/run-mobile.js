@@ -432,7 +432,13 @@ async function connect() {
   // the local shell AND the device shell (an unquoted & backgrounds the command
   // and drops the package arg → "com.abookify.app not found").
   adb(`shell "am start -a android.intent.action.VIEW -d '${deep}' ${PKG}"`);
-  let xml = await waitFor(libraryUp, 25000);
+  // 45s, not 25s: the deep-link pair itself is fast, but the LIBRARY RENDER that
+  // libraryUp waits for is slow on a loaded emulator (many works + active
+  // generation jobs + the software GPU) and was overrunning 25s — the connect had
+  // actually SUCCEEDED (the library appeared seconds later) but the check gave up
+  // first and mis-reported connected=false. waitFor polls, so this only spends the
+  // extra time on a genuinely slow render, never on a fast one.
+  let xml = await waitFor(libraryUp, 45000);
   if (libraryUp(xml)) return true;
 
   // Attempt 2 — manual Connect screen. The URL field placeholder is
