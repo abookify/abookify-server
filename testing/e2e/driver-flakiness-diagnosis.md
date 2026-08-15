@@ -38,6 +38,26 @@ Fixing either reduces it; fixing the driver makes the suite tolerate the host.
 Pattern: **wait for the expected state / retry the input — never fire-and-forget
 and never let a runner re-run to hide it** (RUNNER-CONTRACT.md rule 4).
 
+## Settled by observation (2026-08-15): tank BOOTS it but can't DRIVE it
+
+Meta asked us to stop reasoning from different numbers and just boot it on tank
+under the running showcase queue. Result, watched live:
+- **Memory ADMITS it** (transcription was right on this axis): with `-memory 6144`,
+  available RAM stayed **12–15 GB** the whole boot, **zero OOM events**,
+  `boot_completed=1`. Swap stayed at 0 free but was not actively churned.
+- **CPU makes it UNUSABLE** (the "can't reliably drive" concern was right, but the
+  cause is load, not memory): **load average climbed 24 → 40** as it booted (the
+  emulator added ~11 — load dropped 40→29 the instant it was killed), and a single
+  `uiautomator dump` — the core drive primitive, normally <1 s — **took 47 seconds.**
+  A cert does dozens of dumps + taps; at 47 s each it would run for hours and blow
+  every timeout.
+
+So the two lanes were both right on different axes. **Verdict: tank can boot the
+emulator but cannot drive it while the CPU is saturated by the multi-day showcase
+queue.** The blocker is CPU saturation, not a memory wall. Options: wait for the
+queue to drain, or move to atrium (load ~1.2 — would drive fine — pending an
+Android SDK install, meta's call).
+
 ## What is NOT the cause
 
 - **Not the app.** The reader advanced `[20/20]` (widx 344→372) on good sync
