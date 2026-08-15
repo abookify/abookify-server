@@ -2877,6 +2877,13 @@ func (s *Store) DeleteBook(bookID int64) error {
 		`DELETE FROM alignments WHERE from_book_id = ? OR to_book_id = ?`,
 		`DELETE FROM sync_data  WHERE audio_book_id = ?`,
 		`DELETE FROM chapter_links WHERE audio_book_id = ? OR text_book_id = ?`,
+		// Playback positions and bookmarks are book-keyed too — leaving them
+		// let a deleted edition's position rows survive AND keep receiving
+		// autosave writes from live clients (board task 16: mobile's saved
+		// position sat on a deleted Kokoro book and its reader froze).
+		`DELETE FROM playback_positions WHERE book_id = ?`,
+		`DELETE FROM bookmarks  WHERE book_id = ?`,
+		`DELETE FROM book_conditions WHERE book_id = ?`,
 		`DELETE FROM books      WHERE id = ?`,
 	}
 	for _, q := range stmts {
