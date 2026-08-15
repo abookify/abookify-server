@@ -90,9 +90,20 @@ but prefer `waitFor` wherever a real condition exists to test.
 
 - `run-web.js` currently uses blind `page.waitForTimeout(...)` for several
   READINESS waits (chapter render, reader mount, karaoke DOM). These flake under
-  load — observed 2026-08-14 when the live server was busy with the showcase
+  load — observed 2026-08-14/15 when the live server was busy with the showcase
   queue and the reader mounted late. They are to be converted to `waitFor` on a
   real condition (`#reader-<id>` present; `.sync-word` count > 0; audio `src`
   set) incrementally, WITHOUT destabilizing the currently-green fleet mid-gate.
   Until converted, treat a `run-web.js` red under heavy concurrent load as
   "re-run once on a quiet server before believing it" — and say so in the report.
+
+  CONVERSION DEBT LIST (do on a QUIET server, after the showcase queue drains —
+  converting mid-multi-day-queue destabilises a thing you cannot cleanly observe):
+  - `open_library` — DONE (2026-08-15, 5d46ef0): networkidle → recorded wait.
+  - `karaoke_advances` — PENDING. Its blind post-play settles let the active-word
+    read happen before the reader/sync finished mounting under load → active=null,
+    a FALSE red (verified not-a-regression 2026-08-15: `resume_flow`'s karaoke
+    check passed on the same work + the highlight was visually confirmed lit).
+    Convert its settles to `waitFor('.sync-word.read count > 0')` before sampling.
+  - remaining `waitForTimeout` readiness waits across the other journeys — audit
+    each: a post-action SETTLE may stay; a READINESS wait becomes `waitFor`.
