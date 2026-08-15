@@ -55,6 +55,7 @@ going green is as much a finding as a green going red.
 | 8199 clean carol | 11/11 | none |
 | 8194 text-only | 3/3 (open_library, open_book, reader_only) | none — SHAPE board |
 | 8193 audio-only | 3/3 (open_library, open_book, pretranscribe_play) | none — SHAPE board |
+| 8192 degraded-testimony | 3/3 (open_library, open_book, degraded_testimony) | none — DATA-CONTRACT board (fixture: /tmp/abookify-e2e-degraded; crafted inconsistent sidecar judged by the real integrity check) |
 | live :7654 work 85 | 11/11 | none (a mid-run connection reset usually means another lane deployed — report it as an event, run the board ONCE more only if the process list shows the server restarted, and say you did) |
 
 ## Coverage decision (2026-08-15, deliberate — omissions are decisions)
@@ -65,9 +66,11 @@ IN THE FLEET (to be added; build commands live in the register):
   2026-08-15, green. Fixture: /tmp/abookify-e2e-audioonly (one mp3).
   Fleet restart loop covers both: add textonly:8194 audioonly:8193 to
   the restart list in step 2.
-- DEGRADED-TESTIMONY row on 8198 — produced AUTHENTICALLY by
-  reimporting its broken transcript through checkSidecarIntegrity
-  (never hand-written; the table's rule applies to fixtures too).
+- DEGRADED-TESTIMONY board: BUILT 2026-08-15 as its OWN fixture (8192)
+  rather than on 8198 — mutating 8198 risked healing its load-bearing
+  by-design reds. Input crafted (internally inconsistent sidecar);
+  testimony authored ONLY by the real integrity check judging it.
+  Add degraded:8192 to the fleet restart list.
 LEFT OUT, with reasons:
 - M4B embedded markers: needs a real marker-bearing sample (asset
   acquisition); the parsing path is unit-tested and stable, and doesn't

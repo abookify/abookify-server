@@ -44,7 +44,7 @@ standard journeys n/a-by-shape instead of failing them.
 NEW BLIND ROW, minted THIS WEEK by task 12:
 | Shape | Reached by | Status | Owner / artifact |
 |---|---|---|---|
-| a book with DEGRADED production testimony | NOTHING — live library has 28 complete rows + 0 degraded; every fixture is all-unknown | BLIND, and both UI lanes are about to certify a degraded pill against NO data | transcription: natural artifact exists — reimporting 8198's deliberately broken transcript trips checkSidecarIntegrity, producing AUTHENTIC producer testimony (never hand-write the row — that would be the inference the feature forbids) |
+| a book with DEGRADED production testimony | fixture 8192 (degraded_testimony journey) | **CLOSED 2026-08-15** — authentic testimony from the real integrity check judging a crafted inconsistent sidecar; building it also caught the writer's first-import ordering bug | UI pill assert joins when server-web's selector exists |
 
 Also monitored, not blind: CAS sidecar-present vs -absent editions
 (transitional by design — key-miss regenerates; P&P pre-deploy files
