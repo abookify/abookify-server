@@ -28,6 +28,23 @@ walks it end-to-end?
 | embedding/DTW paragraph-follow (0 live, but the ¶ pill SHIPS) | NOTHING — no work anywhere exercises paragraph-follow | BLIND (latent) | mine: deliberately-different-edition pair fixture (abridged vs full from showcase materials); server-web: ¶ render assert |
 | >2 narrations | none live, not a shipping shape | not tracked | — |
 
+## Sweep 2 (2026-08-15, post-Oryx-removal, post-paragraph-migration, post-task-12)
+Shape map moved: human+TTS grew to 3 works (P&P + WotW gained fresh Kokoro
+editions; grows toward ~13 as the showcase queue drains) — two-narration
+class covered by live-85 gate. Empty-library row: server-web is actively
+building the first-run funnel (task 8) — owner engaged, row stays open
+until a journey exists. Text-only (5), audio-only (5), m4b (4),
+¶-paragraph-follow: STILL BLIND, unchanged owners/artifacts.
+
+NEW BLIND ROW, minted THIS WEEK by task 12:
+| Shape | Reached by | Status | Owner / artifact |
+|---|---|---|---|
+| a book with DEGRADED production testimony | NOTHING — live library has 28 complete rows + 0 degraded; every fixture is all-unknown | BLIND, and both UI lanes are about to certify a degraded pill against NO data | transcription: natural artifact exists — reimporting 8198's deliberately broken transcript trips checkSidecarIntegrity, producing AUTHENTIC producer testimony (never hand-write the row — that would be the inference the feature forbids) |
+
+Also monitored, not blind: CAS sidecar-present vs -absent editions
+(transitional by design — key-miss regenerates; P&P pre-deploy files
+gained sidecars on resume, WotW born with them).
+
 ## Notes
 - 8199 work 2 (Time Machine, human+transcript+epub) sits in the fixture
   UNEXERCISED — the gate runs work 1 only. Free coverage if a journey
