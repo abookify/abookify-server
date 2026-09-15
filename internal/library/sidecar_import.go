@@ -338,6 +338,27 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 		syncWords[i] = syncWord{S: w.Start, E: w.End, W: w.Word}
 	}
 	tsJSON, _ := json.Marshal(syncWords)
+	// A whole-work sidecar (sources spanning the files) REPLACES the work's
+	// narration stream for this edition — stale per-file rows from an
+	// earlier in-server STT carry FILE-LOCAL times and double the stream
+	// (The Selfish Gene: 149k-word transcript, 283k-word summed sync;
+	// coherence caught it, this removes the cause). Scope: the same
+	// edition's books only — a second narration's streams are its own.
+	if len(sc.Sources) > 1 {
+		if work, _ := store.GetWork(workID); work != nil {
+			names := map[string]bool{}
+			for _, src := range sc.Sources {
+				names[src.Filename] = true
+			}
+			for _, b := range work.AudioFiles {
+				if b.ID != audioBookID && names[filepath.Base(b.Path)] {
+					if err := store.DeleteSyncDataForBook(b.ID); err != nil {
+						log.Printf("sidecar-import: clear stale sync on book %d: %v", b.ID, err)
+					}
+				}
+			}
+		}
+	}
 	if err := store.SaveSyncData(workID, audioBookID, 0, string(tsJSON)); err != nil {
 		return fmt.Errorf("save sync_data: %w", err)
 	}

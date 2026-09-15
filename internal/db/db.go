@@ -3192,3 +3192,10 @@ func (s *Store) SetBookDuration(bookID int64, secs float64) error {
 	_, err := s.db.Exec(`UPDATE books SET duration = ? WHERE id = ?`, secs, bookID)
 	return err
 }
+
+// DeleteSyncDataForBook removes all sync rows for one audio book — used by
+// sidecar import when a whole-work stream supersedes stale per-file rows.
+func (s *Store) DeleteSyncDataForBook(bookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM sync_data WHERE audio_book_id = ?`, bookID)
+	return err
+}
