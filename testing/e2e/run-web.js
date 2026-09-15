@@ -96,10 +96,12 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
   const degraded = canonPeek && [...(canonPeek.texts || []), ...(canonPeek.editions || [])]
     .find(x => x.condition === 'degraded');
   if (degraded) {
+    // Report the testimony and CONTINUE — degraded is a caveat, not
+    // unusable (a live work with a flagged transcript still plays, reads
+    // and navigates; scoping it out would hide exactly the experience the
+    // caveat annotates). The 8192 fixture board runs the same way.
     report('degraded_testimony', !!(degraded.condition_reason || '').length,
       `condition=degraded reason="${(degraded.condition_reason || 'MISSING').slice(0, 60)}" — testimony present and reasoned`);
-    console.log('\n--- SHAPE: DEGRADED-TESTIMONY board — data-contract assert only (UI pill assert joins with server-web selector) ---');
-    process.exit(finish());
   }
   if (shape.audio === 0 || shape.text === 0) {
     const kind = shape.audio === 0 ? 'TEXT-ONLY' : 'AUDIO-ONLY';
