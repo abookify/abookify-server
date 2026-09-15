@@ -467,17 +467,29 @@ func importOneSidecarInto(store *db.Store, workID, audioBookID int64, path strin
 	if len(sc.Sources) > 0 {
 		work, _ := store.GetWork(workID)
 		if work != nil {
-			byBase := map[string]float64{}
+			type srcInfo struct{ start, dur float64 }
+			byBase := map[string]srcInfo{}
 			for _, src := range sc.Sources {
-				byBase[src.Filename] = src.StartSec
+				byBase[src.Filename] = srcInfo{src.StartSec, src.Duration}
 			}
 			for _, b := range work.AudioFiles {
-				start, ok := byBase[filepath.Base(b.Path)]
+				si, ok := byBase[filepath.Base(b.Path)]
 				if !ok {
 					continue
 				}
-				if err := store.SetBookStartSec(b.ID, start); err != nil {
+				if err := store.SetBookStartSec(b.ID, si.start); err != nil {
 					log.Printf("sidecar-import: set start_sec on book %d: %v", b.ID, err)
+				}
+				// Duration too, when metadata gave the scanner nothing —
+				// The Selfish Gene's MP3s carried no usable tags, every
+				// file sat at duration 0, and a 0-duration book breaks
+				// the player's seek math (clock pinned at 0). The sidecar
+				// measured the real durations; the same producer writes
+				// them. Only fills zeros — a probed metadata duration wins.
+				if b.Duration == 0 && si.dur > 0 {
+					if err := store.SetBookDuration(b.ID, si.dur); err != nil {
+						log.Printf("sidecar-import: set duration on book %d: %v", b.ID, err)
+					}
 				}
 			}
 		}

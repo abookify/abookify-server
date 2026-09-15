@@ -3185,3 +3185,10 @@ func (s *Store) WorkConditionsRollup() (map[int64]WorkConditionRollup, error) {
 	}
 	return out, nil
 }
+
+// SetBookDuration fills a book's duration (seconds). Sidecar import uses it
+// when the scanner's metadata pass produced nothing (tagless MP3s).
+func (s *Store) SetBookDuration(bookID int64, secs float64) error {
+	_, err := s.db.Exec(`UPDATE books SET duration = ? WHERE id = ?`, secs, bookID)
+	return err
+}
