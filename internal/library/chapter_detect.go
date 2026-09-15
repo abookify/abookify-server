@@ -34,25 +34,37 @@ type DetectedChapter struct {
 
 // detectionOpts tunes the algorithm. Exposed for tests; callers use defaults.
 type detectionOpts struct {
-	SilenceGapSecs   float64 // gap (word[i+1].start - word[i].end) that counts as "silence"
-	SilenceBoost     float64 // confidence added when a candidate has silence right before it
-	SequenceBoost    float64 // confidence added when a candidate is part of a monotonic run
-	BaseConfidence   float64 // starting confidence for any pattern match
-	SequenceTolerance int    // allowed gap in chapter numbering (1 = allow skipping one)
+	SilenceGapSecs    float64 // gap (word[i+1].start - word[i].end) that counts as "silence"
+	SilenceBoost      float64 // confidence added when a candidate has silence right before it
+	SequenceBoost     float64 // confidence added when a candidate is part of a monotonic run
+	BaseConfidence    float64 // starting confidence for any pattern match
+	SequenceTolerance int     // allowed gap in chapter numbering (1 = allow skipping one)
+	// MinAnnouncementGapSecs disqualifies candidates entirely: a chapter
+	// heading is never read MID-BREATH. validateSequence's gap-bridging
+	// guard already states the principle ("real chapter announcements
+	// always have a silent pause before them; mid-text references don't")
+	// but only enforced it for bridged links — The Selfish Gene proved the
+	// gap: Dawkins's prefaces reference "chapter 1..13" of his own books
+	// mid-sentence (measured gaps 0.00-0.24s), forming a perfect monotonic
+	// chain that beat the true announcements (measured gaps 0.84-3.68s).
+	MinAnnouncementGapSecs float64
 }
 
 func defaultDetectionOpts() detectionOpts {
 	return detectionOpts{
-		SilenceGapSecs:    2.0,
-		SilenceBoost:      0.2,
-		SequenceBoost:     0.3,
-		BaseConfidence:    0.5,
+		SilenceGapSecs: 2.0,
+		SilenceBoost:   0.2,
+		SequenceBoost:  0.3,
+		BaseConfidence: 0.5,
 		// Allow up to 2 missing chapter announcements in a row — Whisper
 		// occasionally drops a chapter cue, and we'd rather bridge a small
 		// gap than split a 30-chapter book into two short runs. Gap-bridging
 		// candidates must have a silence boost (validateSequence enforces),
 		// which prevents orphan dialogue references from filling gaps.
 		SequenceTolerance: 2,
+		// A breath. True announcements measure ≥0.8s; mid-sentence
+		// references ≤0.25s. 0.35 splits them with margin both ways.
+		MinAnnouncementGapSecs: 0.35,
 	}
 }
 
@@ -130,11 +142,27 @@ func findCandidates(words []db.SyncTimestamp, norm []string, keyword string, opt
 		if num <= 0 {
 			continue
 		}
+		// Reference GRAMMAR is disqualifying: "chapter N of the original
+		// edition", "chapter 2 of my book" — a heading is never "Chapter N
+		// of/in ...". (The Selfish Gene's prefaces are full of these and
+		// they form perfect monotonic chains.)
+		if isChapterReference(norm, i) {
+			continue
+		}
 		conf := opts.BaseConfidence
 		hasSilence := false
 		// Silence boost: was there a significant pause right before this word?
 		if i > 0 {
 			gap := words[i].Start - words[i-1].End
+			// Mid-breath DEMOTION (not disqualification): a heading is
+			// normally preceded by a breath, but narrators sometimes run
+			// straight in (The Selfish Gene ch6: 0.32s, ch10: 0.00s), and
+			// STT seam artifacts can under-measure gaps. Demoted candidates
+			// can still hold a numbered slot when nothing better exists;
+			// run selection prefers higher-confidence chains.
+			if opts.MinAnnouncementGapSecs > 0 && gap < opts.MinAnnouncementGapSecs {
+				conf -= 0.25
+			}
 			if gap >= opts.SilenceGapSecs {
 				conf += opts.SilenceBoost
 				hasSilence = true
@@ -155,6 +183,17 @@ func findCandidates(words []db.SyncTimestamp, norm []string, keyword string, opt
 	return out
 }
 
+// isChapterReference reports whether the match at i reads as a textual
+// REFERENCE rather than a heading: the first word after the (possibly
+// multi-word) number is "of" or "in".
+func isChapterReference(norm []string, i int) bool {
+	j := i + 1
+	for j < len(norm) && j < i+4 && (isNumberWord(norm[j]) || isAllDigits(norm[j])) {
+		j++
+	}
+	return j < len(norm) && (norm[j] == "of" || norm[j] == "in")
+}
+
 // validateSequence walks candidates and keeps only those that form a monotonic
 // run. Orphan matches (Chapter 17 with no Chapter 16 nearby) are dropped. The
 // winner is the run with the most kept entries.
@@ -170,9 +209,17 @@ func validateSequence(cands []DetectedChapter, opts detectionOpts) []DetectedCha
 	// prev[i] = index of the previous candidate in that run (-1 if none).
 	best := make([]int, len(cands))
 	prev := make([]int, len(cands))
+	// sumConf[i]: summed confidence of the best run ending at i — the
+	// intra-chain tie-break. With one prev[] per candidate, equal-length
+	// predecessors otherwise resolve by array order, which is TIME order,
+	// which systematically prefers an early mid-breath reference over a
+	// later true announcement (The Selfish Gene ch11: three gap-0.00
+	// references preceded the real heading).
+	sumConf := make([]float64, len(cands))
 	for i := range cands {
 		best[i] = 1
 		prev[i] = -1
+		sumConf[i] = cands[i].Confidence
 		for j := 0; j < i; j++ {
 			// Must be later in time AND the next expected number.
 			if cands[j].StartSec >= cands[i].StartSec {
@@ -191,9 +238,11 @@ func validateSequence(cands []DetectedChapter, opts detectionOpts) []DetectedCha
 			if diff > 1 && !cands[i].HasSilence {
 				continue
 			}
-			if best[j]+1 > best[i] {
+			if best[j]+1 > best[i] ||
+				(best[j]+1 == best[i] && sumConf[j]+cands[i].Confidence > sumConf[i]+1e-9) {
 				best[i] = best[j] + 1
 				prev[i] = j
+				sumConf[i] = sumConf[j] + cands[i].Confidence
 			}
 		}
 	}
@@ -207,7 +256,18 @@ func validateSequence(cands []DetectedChapter, opts detectionOpts) []DetectedCha
 			continue
 		}
 		if best[i] == best[bestEnd] {
-			// Tie-break: prefer the run whose start number is lower (closer to 1).
+			// Tie-break 1: prefer the run with higher summed confidence —
+			// a chain of silence-backed announcements beats an equal-length
+			// chain of mid-breath references (The Selfish Gene case).
+			ci, cb := runConfidence(cands, prev, i), runConfidence(cands, prev, bestEnd)
+			if ci > cb+1e-9 {
+				bestEnd = i
+				continue
+			}
+			if cb > ci+1e-9 {
+				continue
+			}
+			// Tie-break 2: prefer the run whose start number is lower (closer to 1).
 			startI := firstInRun(cands, prev, i)
 			startBest := firstInRun(cands, prev, bestEnd)
 			if cands[startI].Number < cands[startBest].Number {
@@ -298,11 +358,11 @@ func titleFor(kind string, num int) string {
 // NormalizeChapterTitle unifies the surface form of chapter titles produced
 // by different detection paths so the user-facing TOC isn't a mix of:
 //
-//   "Chapter One", "Chapter 2", "Ch 3", "Ch. 4: Subtitle", "Chapter Forty-two: ..."
+//	"Chapter One", "Chapter 2", "Ch 3", "Ch. 4: Subtitle", "Chapter Forty-two: ..."
 //
 // All of those collapse to:
 //
-//   "Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4: Subtitle", "Chapter 42: ..."
+//	"Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4: Subtitle", "Chapter 42: ..."
 //
 // Rules:
 //   - Prefix unified to "Chapter" / "Part" — accepts "Ch", "Ch.", "Chap",
@@ -506,4 +566,13 @@ func writeDetectedChapters(store *db.Store, audioBookID int64, detected []Detect
 		}
 	}
 	log.Printf("chapter-detect: saved %d chapters for book %d", len(detected), audioBookID)
+}
+
+// runConfidence sums the confidences along the run ending at i.
+func runConfidence(cands []DetectedChapter, prev []int, i int) float64 {
+	sum := 0.0
+	for j := i; j >= 0; j = prev[j] {
+		sum += cands[j].Confidence
+	}
+	return sum
 }

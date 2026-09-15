@@ -206,3 +206,41 @@ func TestDetectChapters_OrphanWithoutSilenceCannotBridge(t *testing.T) {
 		}
 	}
 }
+
+// The Selfish Gene case (2026-09-15): the author's prefaces reference
+// "chapter 1", "chapter 2"... of his own books MID-SENTENCE, forming a
+// perfect monotonic chain that outran the true announcements. The true
+// headings are always preceded by a breath (measured ≥0.8s); the
+// references are not (≤0.25s). Mid-breath candidates must not merely
+// score lower — they must be disqualified.
+func TestDetectChapters_MidSentenceReferencesLoseToAnnouncements(t *testing.T) {
+	var words []db.SyncTimestamp
+	t0 := 0.0
+	add := func(text string, gapBefore float64) {
+		for i, w := range strings.Fields(text) {
+			g := 0.05
+			if i == 0 {
+				g = gapBefore
+			}
+			words = append(words, db.SyncTimestamp{Word: w, Start: t0 + g, End: t0 + g + 0.25})
+			t0 += g + 0.25
+		}
+	}
+	add("as discussed in chapter 1 of the original edition and", 0.05) // reference, mid-breath
+	add("later in chapter 2 of that same book we argued", 0.05)        // reference
+	add("filler prose to separate the sections meaningfully here", 3.0)
+	add("chapter 1 why are people", 2.5) // TRUE announcement
+	add("body text of the first chapter continues for a while", 0.4)
+	add("chapter 2 the replicators", 2.5) // TRUE announcement
+	add("body text of the second chapter continues onward", 0.4)
+	add("chapter 3 immortal coils", 2.5) // TRUE announcement
+	add("closing body text", 0.4)
+	got := DetectChapters(words, t0+10)
+	if len(got) != 3 {
+		t.Fatalf("want the 3 true announcements, got %d: %+v", len(got), got)
+	}
+	// The winning chain must be the LATE (announced) one, not the early references.
+	if got[0].StartSec < 5 {
+		t.Errorf("chapter 1 boundary landed on the mid-sentence reference (t=%.1f)", got[0].StartSec)
+	}
+}
