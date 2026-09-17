@@ -235,10 +235,12 @@ function nodes(xml) {
     if (!b) continue;
     const t = tag.match(/\btext="([^"]*)"/);
     const d = tag.match(/\bcontent-desc="([^"]*)"/);
+    const k = tag.match(/\bclass="([^"]*)"/);
     const [x1, y1, x2, y2] = [+b[1], +b[2], +b[3], +b[4]];
     out.push({
       text: decode(t ? t[1] : ''),
       desc: decode(d ? d[1] : ''),
+      cls: k ? k[1] : '',
       x1, y1, x2, y2, cx: (x1 + x2) >> 1, cy: (y1 + y2) >> 1,
     });
   }
@@ -406,25 +408,40 @@ function fileOf(audio, bookSec) {
 // above or below: swipe to the top first, then page down. Returns the xml the
 // tap was made on, or null.
 async function tapTocRow(title) {
-  const sheetXml = () => dump();
-  let xml = sheetXml();
-  const header = findNode(xml, 'Chapters (');
-  if (!header) return null;
-  // Swipe inside the sheet: x at 40% width, from just under the header to the
-  // bottom of the screen (the sheet is bottom-anchored).
-  const W = 1080, H = 2400; // Pixel_7 AVD; bounds are in px
-  const x = Math.round(W * 0.4), yTop = header.y2 + 200, yBot = H - 150;
-  const swipe = (fromY, toY) => adb(`shell input swipe ${x} ${fromY} ${x} ${toY} 250`);
-  for (let i = 0; i < 8; i++) { swipe(yTop, yBot); await sleep(250); } // to the top
-  await sleep(400);
-  for (let page = 0; page < 12; page++) {
-    xml = sheetXml();
-    // Only rows BELOW the sheet header count (the header line above the sheet
-    // can also carry the chapter title).
-    const row = nodes(xml).find((n) => n.y1 > header.y2 && (n.text.toLowerCase().includes(title.toLowerCase()) || n.desc.toLowerCase().includes(title.toLowerCase())));
-    if (row && row.cy < H - 60) { tap(row.cx, row.cy); return xml; }
-    swipe(yBot, yTop); await sleep(500);
+  // Geometry facts measured on the Pixel_7 AVD (2026-09-17): the sheet opens
+  // scrolled to the CURRENT chapter; uiautomator dumps EVERY row, and a row
+  // clipped by the sheet's ScrollView comes back with INVERTED bounds (y1 > y2)
+  // — tapping those does nothing and leaves the sheet open. Fast flings don't
+  // scroll this list; slow drags (~900ms) do, ~1:1. So: find the row; tap it
+  // only when upright and inside the scroller; else drag slowly in the
+  // direction its geometry indicates and re-dump. Verify the tap CLOSED the
+  // sheet (jumpToChapter → setShowToc(false)) before calling it done.
+  const W = 1080; // Pixel_7 AVD; bounds are in px
+  const x = Math.round(W * 0.4);
+  const drag = (fromY, toY) => adb(`shell input swipe ${x} ${fromY} ${x} ${toY} 900`);
+  for (let step = 0; step < 10; step++) {
+    const xml = dump();
+    const ns = nodes(xml);
+    const header = findNode(xml, 'Chapters (');
+    if (!header) return null;
+    const scroller = ns.find((n) => /ScrollView/.test(n.cls) && n.y1 >= header.y1) || { y1: header.y2, y2: 2300 };
+    const row = ns.find((n) => n.y1 > header.y1 && /starts at/i.test(n.desc) && n.desc.toLowerCase().includes(title.toLowerCase()));
+    if (!row) { drag(scroller.y2 - 120, scroller.y1 + 120); await sleep(1200); continue; } // not even laid out → page on
+    const visible = row.y1 < row.y2 && row.y1 >= scroller.y1 - 2 && row.y2 <= scroller.y2 + 2;
+    if (visible) {
+      tap(row.cx, row.cy);
+      const after = await waitFor((x2) => !findNode(x2, 'Chapters ('), 4000, 700);
+      if (!findNode(after, 'Chapters (')) return xml;
+      continue; // sheet still open → the tap missed; re-measure and retry
+    }
+    // Clipped: below the fold when its top sits at/after the scroller's bottom
+    // region; above when its top is at the scroller's top (inverted bounds).
+    const below = row.y1 >= scroller.y2 - 40 || (row.y1 > row.y2 && row.y1 > scroller.y1 + 40);
+    if (below) drag(scroller.y2 - 120, scroller.y1 + 120); else drag(scroller.y1 + 120, scroller.y2 - 120);
+    await sleep(1200);
   }
+  // Give up, but never leave the sheet open over the transport controls.
+  if (findNode(dump(), 'Chapters (')) tapLabel(dump(), 'Close chapters');
   return null;
 }
 // After a chapter jump: let the (re-anchored) stream play a few seconds, pause,
@@ -962,24 +979,49 @@ async function connect() {
       const midFile = (c) => { const f = fileOf(audio, c.start_sec); return audio.length > 1 && f.local >= 60 && f.fileDur - f.local >= 60; };
       const pos0 = typeof p0.pos === 'number' ? p0.pos : 0;
       let target = null;
-      if (process.env.E2E_CHAPTER_N) target = chapters[+process.env.E2E_CHAPTER_N - 1] || null;
+      // E2E_CHAPTER=<title substring> pins the target by name (e.g. "Memes").
+      if (process.env.E2E_CHAPTER) target = timed.find((c) => (c.title || '').toLowerCase().includes(process.env.E2E_CHAPTER.toLowerCase())) || null;
+      if (!target && process.env.E2E_CHAPTER_N) target = chapters[+process.env.E2E_CHAPTER_N - 1] || null;
       if (!target) target = timed.find((c) => real(c) && midFile(c) && c.start_sec > pos0 && fileOf(audio, c.start_sec).index > curFile)
         || timed.find((c) => real(c) && midFile(c)) || timed.find(real) || timed[1];
       const tf = fileOf(audio, target.start_sec);
       const title = (target.title || '').trim() || `Chapter ${chapters.indexOf(target) + 1}`;
       const where = (c) => { const f = fileOf(audio, c.start_sec); return `${c.start_sec.toFixed(1)}s = file ${f.index} @ ${f.local.toFixed(0)}s`; };
       const SETTLE = 6000;
+      // Landing = the ANCHOR the stream was re-started at: probe pos (book-
+      // global, read after the pause) minus the media session's sub-stream
+      // clock (read just before it). That is exact to ~3s regardless of how
+      // long the audio played between the tap and the pause (a verified row
+      // tap can take 20s of drags/re-dumps; the seek itself is instant). The
+      // raw pos is still sanity-checked (never BEFORE the start, and within a
+      // generous play window) for the case the media clock is unreadable.
       const landed = (r, c) => {
-        const okPos = r.p && typeof r.p.pos === 'number' && r.p.pos >= c.start_sec - 2 && r.p.pos <= c.start_sec + SETTLE / 1000 + 8;
+        const pos = r.p && typeof r.p.pos === 'number' ? r.p.pos : null;
+        const clock = r.ms && typeof r.ms.pos === 'number' ? r.ms.pos : null;
+        const anchor = pos != null && clock != null ? pos - clock : null;
+        const okAnchor = anchor != null ? Math.abs(anchor - c.start_sec) <= 4 : true;
+        const okPos = pos != null && pos >= c.start_sec - 2 && pos <= c.start_sec + 40;
         const okCh = r.p && r.p.ch === c.index;
-        return { okPos, okCh, ok: okPos && okCh,
-          line: `probe pos=${r.p && typeof r.p.pos === 'number' ? r.p.pos.toFixed(1) : '?'} (Δ${r.p && typeof r.p.pos === 'number' ? (r.p.pos - c.start_sec >= 0 ? '+' : '') + (r.p.pos - c.start_sec).toFixed(1) : '?'}s from start) ch=${r.p ? r.p.ch : '?'} (want ${c.index}); media clock ${r.ms ? r.ms.pos.toFixed(1) + 's ' + r.ms.state : '?'}` };
+        return { okPos, okCh, ok: okAnchor && okPos && okCh,
+          line: `anchor=${anchor == null ? '?' : anchor.toFixed(1)} (Δ${anchor == null ? '?' : (anchor - c.start_sec >= 0 ? '+' : '') + (anchor - c.start_sec).toFixed(1)}s from start; pos ${pos == null ? '?' : pos.toFixed(1)} after ${clock == null ? '?' : clock.toFixed(1)}s played) ch=${r.p ? r.p.ch : '?'} (want ${c.index})` };
       };
 
       // (a) chapter_seek: open the TOC (the labeled control), tap the row, land.
       if (!tapLabel(npXml, 'Chapters — jump to a chapter')) throw new Error('no "Chapters" control on the full player');
       const sheet = await waitFor((x) => !!findNode(x, 'Chapters ('), 5000);
       if (!findNode(sheet, 'Chapters (')) throw new Error('the chapter sheet did not open');
+      // ---- toc_named: the sheet must list NAMED chapters (not "N file-sized
+      // lumps"): header count vs the API timeline, and the visible rows are
+      // titles rather than "Part/Track/File N".
+      {
+        const hdr = findNode(sheet, 'Chapters (');
+        const shown = +((hdr.text.match(/Chapters \((\d+)\)/) || [])[1] || 0);
+        const rows = nodes(sheet).filter((n) => n.y1 > hdr.y2 && /starts at/i.test(n.desc)).map((n) => n.desc.replace(/^Now playing: /, '').replace(/, starts at.*$/, ''));
+        const lumps = rows.filter((t) => /^(part|track|file|disc)\s*\d+/i.test(t) || /unabridged \d/i.test(t));
+        const ok = shown >= Math.min(timed.length, 10) && rows.length > 0 && lumps.length === 0;
+        report('toc_named', ok, `sheet "Chapters (${shown})" vs API ${timed.length} timed; visible rows: ${rows.slice(0, 4).map((t) => `"${t}"`).join(', ')}${rows.length > 4 ? ', …' : ''}${lumps.length ? ` — ${lumps.length} file-lump row(s)` : ''}`);
+        if (!ok) shot('toc_named');
+      }
       if (!(await tapTocRow(title))) throw new Error(`TOC row "${title}" not found in the sheet after scrolling`);
       const r1 = await landAfterJump(SETTLE);
       const L1 = landed(r1, target);
