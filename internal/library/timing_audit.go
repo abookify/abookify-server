@@ -144,6 +144,22 @@ func AuditChapterTiming(store *db.Store, workID int64) (TimingReport, error) {
 		textStarts = append(textStarts, start{ch.Index, ch.Title, rng[0]})
 	}
 	sort.Slice(textStarts, func(i, j int) bool { return textStarts[i].sec < textStarts[j].sec })
+	// Every ebook chapter under one title is a running head stamped on spine
+	// lumps (Kitchen Confidential: 27 × "Kitchen Confidential") — file splits,
+	// not chapters; there is no structure to hold against the announcements.
+	if len(textStarts) >= minTimingMatches {
+		same := true
+		for _, ts := range textStarts[1:] {
+			if normalize(ts.title) != normalize(textStarts[0].title) {
+				same = false
+				break
+			}
+		}
+		if same {
+			rep.Skipped = fmt.Sprintf("ebook chapters carry no titles (%d × %q — spine lumps)", len(textStarts), textStarts[0].title)
+			return rep, nil
+		}
+	}
 	var audioStarts []start
 	for _, ch := range audioChs {
 		audioStarts = append(audioStarts, start{ch.Index, ch.Title, ch.StartSec})
