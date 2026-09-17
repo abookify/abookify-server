@@ -97,13 +97,18 @@ func BuildSyncBasis(store *db.Store, workID, playingAudioBookID int64) *SyncBasi
 	return nil
 }
 
-// minChainConfidence — below this measured audio_to_ebook (the QUALITY signal: how
-// much of the narration is backed by the printed edition), the anchor chain is too
-// weak to trust a word highlight on the ebook, so the reader degrades to the
-// transcript (synced natively to the human narration). Chosen to err toward the
-// transcript — an honest lesser experience beats a confident wrong one; PJ's
-// library splits cleanly around it (41 works ≥0.86, a weak cluster ≤0.63).
-const minChainConfidence = 0.8
+// minChainConfidence — below this measured audio_to_ebook_in_text (the QUALITY
+// signal where the printed edition has text: how much of the narration is backed
+// by it, excluding narrated material the edition simply lacks — see
+// DirectionalCoverage.NarratedExtraWords), the anchor chain is too weak to trust a
+// word highlight on the ebook, so the reader degrades to the transcript (synced
+// natively to the human narration). Chosen to err toward the transcript — an
+// honest lesser experience beats a confident wrong one. 0.85 is the same bar the
+// edition verdict calls "same edition"; on PJ's library the two measures agree
+// for every work that passed at the old 0.80 on whole-book audio_to_ebook (all
+// ≥0.86 there, ≥0.90 in-text), admit The Selfish Gene (0.75 whole-book, 0.91
+// in-text: inline endnotes), and still hold Life of Pi's genuine break at 0.80.
+const minChainConfidence = 0.85
 
 // degradeReason — the plain-words note when the reader falls back to the transcript
 // (PJ/META-approved, provisional; in-app copy is PJ's to override).
@@ -156,7 +161,7 @@ func weakChainTranscript(store *db.Store, work *db.Work, bookID, playingAudioBoo
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
 		return 0, false
 	}
-	if directionalFrom(p, 0, 0).AudioToEbook < minChainConfidence {
+	if directionalFrom(p, 0, 0).AudioToEbookInText < minChainConfidence {
 		return transID, true
 	}
 	return 0, false

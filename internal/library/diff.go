@@ -53,6 +53,55 @@ type DirectionalCoverage struct {
 	TransOnlyWords    int     `json:"trans_only_words"`
 	AudioToEbook      float64 `json:"audio_to_ebook"` // quality
 	EbookToAudio      float64 `json:"ebook_to_audio"` // scope
+	// NarratedExtraWords is narration the edition simply does not contain at
+	// that position — runs of ≥ narratedExtraMinWords with no ebook counterpart
+	// (endnotes read inline, a new-edition introduction, a credits outro). The
+	// Selfish Gene audiobook reads every endnote where it is cited, ~27k words
+	// the 1989 EPUB omits: AudioToEbook read 0.75 for a chain that is 0.91
+	// wherever the ebook has text. Those words cannot be highlighted anyway and
+	// say nothing about the chain's quality elsewhere, so the trust signal for
+	// word highlights on the ebook excludes them:
+	//
+	//	AudioToEbookInText = aligned_trans_words / (trans_words − NarratedExtraWords)
+	//
+	// A weak chain (different translation, amateur audio) does NOT hide here:
+	// its unaligned narration sits in short runs, or in replace runs with real
+	// ebook text on the other side, and both keep counting against it.
+	NarratedExtraWords int     `json:"narrated_extra_words"`
+	AudioToEbookInText float64 `json:"audio_to_ebook_in_text"` // quality where the ebook has text
+}
+
+const (
+	// narratedExtraMinWords — a couple of minutes of narration; an inline
+	// endnote or an introduction, never STT noise.
+	narratedExtraMinWords = 300
+	// narratedExtraEbookShare — a replace run counts as narrated-extra only when
+	// its ebook side is this small relative to its narration side (a few words
+	// of chapter text caught between the bounding anchors), never when both
+	// sides carry real text (that is divergence, not extra material).
+	narratedExtraEbookShare = 0.1
+)
+
+// narratedExtraWords tallies transcript words in narration-only runs — see
+// DirectionalCoverage.NarratedExtraWords.
+func narratedExtraWords(segs []Segment) int {
+	extra := 0
+	for _, s := range segs {
+		tl := s.TransEnd - s.TransStart
+		if tl < narratedExtraMinWords {
+			continue
+		}
+		el := s.EbookEnd - s.EbookStart
+		switch s.Kind {
+		case SegTransOnly:
+			extra += tl
+		case SegReplace:
+			if float64(el) <= narratedExtraEbookShare*float64(tl) {
+				extra += tl
+			}
+		}
+	}
+	return extra
 }
 
 // directionalFrom forms both-direction coverage from a payload. ebookFallback/
@@ -81,15 +130,18 @@ func directionalFrom(p AnchorAlignmentPayload, ebookFallback, transFallback int)
 		}
 		return float64(n) / float64(d)
 	}
+	extra := narratedExtraWords(p.Segments)
 	return DirectionalCoverage{
-		EbookWords:        eb,
-		TransWords:        tr,
-		AlignedEbookWords: alignedEb,
-		AlignedTransWords: alignedTr,
-		EbookOnlyWords:    p.Divergence.EbookOnlyWords,
-		TransOnlyWords:    p.Divergence.TransOnlyWords,
-		AudioToEbook:      ratio(alignedTr, tr),
-		EbookToAudio:      ratio(alignedEb, eb),
+		EbookWords:         eb,
+		TransWords:         tr,
+		AlignedEbookWords:  alignedEb,
+		AlignedTransWords:  alignedTr,
+		EbookOnlyWords:     p.Divergence.EbookOnlyWords,
+		TransOnlyWords:     p.Divergence.TransOnlyWords,
+		AudioToEbook:       ratio(alignedTr, tr),
+		EbookToAudio:       ratio(alignedEb, eb),
+		NarratedExtraWords: extra,
+		AudioToEbookInText: ratio(alignedTr, tr-extra),
 	}
 }
 
@@ -439,7 +491,9 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 			Method:              a.Method,
 			Unit:                a.Unit,
 			DirectionalCoverage: dir,
-			Verdict:             computeEditionVerdict(dir.AudioToEbook, hasEmb, emb.quality, emb.share),
+			// Verdict on the in-text quality: narrated endnotes/introductions the
+			// edition lacks are scope, not evidence against the lexical chain.
+			Verdict: computeEditionVerdict(dir.AudioToEbookInText, hasEmb, emb.quality, emb.share),
 		})
 	}
 
