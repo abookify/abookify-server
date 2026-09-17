@@ -163,6 +163,18 @@ func VerifyWorkDerivation(store *db.Store, work *db.Work) (DerivationReport, err
 			})
 		}
 	}
+	// Chapter timing: the narration's own chapter clock against the ebook's
+	// alignment-timed chapters. Coverage cannot see a timing fault (fe2833d:
+	// identical coverage, chapters minutes late); this can, and cheaply.
+	if rep.KaraokeExpected {
+		if tr, err := AuditChapterTiming(store, work.ID); err == nil && tr.Skipped == "" && !tr.OK {
+			rep.OK = false
+			rep.Issues = append(rep.Issues, DerivationIssue{
+				Kind:   "chapter_timing_drift",
+				Detail: fmt.Sprintf("only %d/%d ebook chapters start within %.0fs of a spoken announcement (median %.0fs; worst %q at %.0fs)", tr.Within, tr.Compared, chapterTimingToleranceSec, tr.MedianAbsSec, tr.WorstTitle, tr.WorstAbsSec),
+			})
+		}
+	}
 	return rep, nil
 }
 
