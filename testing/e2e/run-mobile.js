@@ -379,6 +379,17 @@ async function openNowPlayingPaused() {
 function apiTimeline(workId) {
   const full = apiJson(`/api/works/${workId}`);
   if (!full) return { chapters: [], audio: [] };
+  // Canonical (board #23): the audio anchor book's detected chapters, declared
+  // as canon.active.chapters_anchor_book_id. Text sources only as a fallback
+  // when nothing is declared — same rule as the app.
+  const canon = apiJson(`/api/works/${workId}/canon`);
+  const anchorId = canon && canon.active && canon.active.chapters_anchor_book_id;
+  if (anchorId) {
+    const chs = (apiJson(`/api/books/${anchorId}/chapters`) || []).filter((c) => c.src !== 'part');
+    if (chs.length) {
+      return { chapters: chs.map((c) => ({ index: c.index, start_sec: c.start_sec || 0, end_sec: c.end_sec || 0, title: c.title || '' })), audio: full.audio_files || [] };
+    }
+  }
   let best = []; let bestScore = -1;
   for (const tb of (full.text_files || [])) {
     const chs = (apiJson(`/api/books/${tb.id}/chapters`) || []).filter((c) => c.src !== 'part');
