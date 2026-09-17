@@ -255,6 +255,21 @@ function tapText(xml, sub) {
   tap(n.cx, n.cy);
   return true;
 }
+// EXACT accessibility-label match — for controls whose label is an ordinary
+// phrase that can also occur in BOOK TEXT on screen. A substring search for
+// "Next chapter" matched the karaoke paragraph "…The next chapter introduces…"
+// (dump order puts the text pane before the transport bar) and tapped a WORD
+// (a word-seek: probe mapS == pos to the decimal) instead of ⏭ (2026-09-17).
+function findLabel(xml, label) {
+  const l = label.toLowerCase();
+  return nodes(xml).find((n) => n.desc.toLowerCase() === l || n.text.toLowerCase() === l);
+}
+function tapLabel(xml, label) {
+  const n = findLabel(xml, label);
+  if (!n) return false;
+  tap(n.cx, n.cy);
+  return true;
+}
 
 // Playback is live when the work's play circle has flipped to Pause, the work
 // card reads "Playing", or a mini-player ("Now playing:") is on screen. NOT
@@ -325,6 +340,103 @@ async function openReaderPaused() {
     await sleep(1200); // settle, then retry the pause/dump
   }
   return false;
+}
+
+// Reach the FULL PLAYER (NowPlaying) paused — the screen that carries the
+// chapter TOC + the ⏭/⏮ controls + the E2E probe. Identified by its labeled
+// "Chapters" control (the Reader also renders the probe, so the probe alone
+// isn't proof). From any content screen the paused mini-player's "Now playing:"
+// row opens it; from the Reader we back out first. Same 3× pause→dump→tap
+// hardening as openReaderPaused (fire-and-forget taps on a slow host).
+const onNowPlaying = (xml) => !!findLabel(xml, 'Chapters — jump to a chapter');
+async function openNowPlayingPaused() {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await mediaPause();
+    let xml = dump();
+    if (onNowPlaying(xml)) return xml;
+    if (!/com\.abookify/.test(xml)) {
+      adb(`shell monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
+      await sleep(1500);
+      xml = dump();
+      if (onNowPlaying(xml)) return xml;
+    }
+    if (tapText(xml, 'Now playing:')) {
+      xml = await waitFor(onNowPlaying, 8000);
+      if (onNowPlaying(xml)) return xml;
+    } else {
+      keyBack(); // e.g. on the Reader (no mini-player row) → back to the work page
+    }
+    await sleep(1200);
+  }
+  return null;
+}
+
+// The work's chapter timeline the way the APP derives it (utils/chapters.ts):
+// over the work's text sources, the one with the most chapters carrying a real
+// start_sec wins; 'part' rows excluded. Book-global seconds.
+function apiTimeline(workId) {
+  const full = apiJson(`/api/works/${workId}`);
+  if (!full) return { chapters: [], audio: [] };
+  let best = []; let bestScore = -1;
+  for (const tb of (full.text_files || [])) {
+    const chs = (apiJson(`/api/books/${tb.id}/chapters`) || []).filter((c) => c.src !== 'part');
+    const score = chs.filter((c) => (c.start_sec || 0) > 0).length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = chs.map((c) => ({ index: c.index, start_sec: c.start_sec || 0, end_sec: c.end_sec || 0, title: c.title || '' }));
+    }
+  }
+  return { chapters: best, audio: full.audio_files || [] };
+}
+// Which FILE (index + local offset) a book-global second falls in — mirrors
+// player.ts resolveBookSec (sidecar start_sec, else cumulative durations).
+function fileOf(audio, bookSec) {
+  const haveStart = audio.some((t) => typeof t.start_sec === 'number' && t.start_sec > 0);
+  let cum = 0;
+  for (let i = 0; i < audio.length; i++) {
+    const s = haveStart ? (audio[i].start_sec || 0) : cum;
+    const d = audio[i].duration_secs || 0;
+    if ((bookSec >= s && bookSec < s + d) || i === audio.length - 1) return { index: i, local: bookSec - s, fileDur: d };
+    cum += d;
+  }
+  return { index: 0, local: bookSec, fileDur: 0 };
+}
+// Scroll the open TOC sheet until a row containing `title` is on screen, then
+// tap it. The sheet opens scrolled to the CURRENT chapter, so the target may be
+// above or below: swipe to the top first, then page down. Returns the xml the
+// tap was made on, or null.
+async function tapTocRow(title) {
+  const sheetXml = () => dump();
+  let xml = sheetXml();
+  const header = findNode(xml, 'Chapters (');
+  if (!header) return null;
+  // Swipe inside the sheet: x at 40% width, from just under the header to the
+  // bottom of the screen (the sheet is bottom-anchored).
+  const W = 1080, H = 2400; // Pixel_7 AVD; bounds are in px
+  const x = Math.round(W * 0.4), yTop = header.y2 + 200, yBot = H - 150;
+  const swipe = (fromY, toY) => adb(`shell input swipe ${x} ${fromY} ${x} ${toY} 250`);
+  for (let i = 0; i < 8; i++) { swipe(yTop, yBot); await sleep(250); } // to the top
+  await sleep(400);
+  for (let page = 0; page < 12; page++) {
+    xml = sheetXml();
+    // Only rows BELOW the sheet header count (the header line above the sheet
+    // can also carry the chapter title).
+    const row = nodes(xml).find((n) => n.y1 > header.y2 && (n.text.toLowerCase().includes(title.toLowerCase()) || n.desc.toLowerCase().includes(title.toLowerCase())));
+    if (row && row.cy < H - 60) { tap(row.cx, row.cy); return xml; }
+    swipe(yBot, yTop); await sleep(500);
+  }
+  return null;
+}
+// After a chapter jump: let the (re-anchored) stream play a few seconds, pause,
+// and read where the APP says it is (probe pos/ch, book-global) + the media
+// session's own clock. `settleMs` covers a reload over the host link.
+async function landAfterJump(settleMs = 6000) {
+  await sleep(settleMs);
+  const ms = mediaState();
+  await mediaPause();
+  await sleep(600);
+  const xml = dump();
+  return { p: parseProbe(xml), ms, xml };
 }
 
 // ── The mobile "DOM contract": the E2E{...} probe + the mini-player clock ─────
@@ -494,10 +606,19 @@ async function connect() {
 
   // ---- open_book: tap the target work card (by CARD_KEY — a distinguishing
   // badge like "11 audio" when the title alone is ambiguous), assert the work
-  // page rendered.
-  tapText(xml, CARD_KEY);
-  xml = await waitFor((x) => /Play book|Playing|Paused/i.test(x), 12000);
-  const onWork = /Play book|Playing|Paused/i.test(xml) && !!findNode(xml, WORK_SUB);
+  // page rendered. After a search the soft keyboard is still UP: a tap that
+  // lands while it's animating/covering can hit a KEY instead (observed
+  // 2026-09-17: the query became "Selfishq" and no card was tapped). Dismiss it
+  // (Back only closes the keyboard here), re-dump for fresh coordinates, and
+  // retry the tap — a dropped tap must not read as a broken work page.
+  const workUp = (x) => /Play book|Playing|Paused/i.test(x) && !!findNode(x, WORK_SUB);
+  if (SEARCH) { keyBack(); await sleep(700); xml = dump(); }
+  for (let t = 0; t < 3 && !workUp(xml); t++) {
+    if (!findNode(xml, CARD_KEY)) { xml = dump(); }
+    tapText(xml, CARD_KEY);
+    xml = await waitFor(workUp, 12000);
+  }
+  const onWork = workUp(xml);
   report('open_book', onWork, onWork ? '' : 'work page (title + "Play book") did not render');
   if (!onWork) { shot('open_book'); process.exit(finish()); }
 
@@ -615,6 +736,12 @@ async function connect() {
   // tap "Open reader"), then RESUME and read the probe stream the app emits to
   // logcat over a 11s play window. p1/p2 are the first/last probes → A3 (widx
   // advanced) and A5 (clock advanced) measure REAL motion during real playback.
+  // E2E_SKIP_KARAOKE=1: skip the reader/karaoke legs (a chapter-navigation-only
+  // calibration, e.g. against a build whose reader has no logcat probe).
+  const skipKaraoke = process.env.E2E_SKIP_KARAOKE === '1';
+  if (skipKaraoke) {
+    skip('karaoke_advances', 'E2E_SKIP_KARAOKE=1'); skip('resume_reader_follows', 'E2E_SKIP_KARAOKE=1');
+  } else {
   if (!(await openReaderPaused())) {
     console.error('INFRA(3) could not reach the Reader (no "Open reader" control while paused) — ' +
       'cannot place the probe on screen.');
@@ -709,6 +836,7 @@ async function connect() {
       ? 'reader stuck on front-matter ch0 while audio played on (map far behind pos) — KNOWN server-web resume→ebook-karaoke bug (dispatched); EXPECTED-RED until fixed'
       : 'reader followed the audio onto its chapter after resume');
   if (readerStuckOnResume) shot('resume_reader_follows');
+  } // end !skipKaraoke
 
   // ---- change_chapter / switch_source / export_import_populated — later.
   skip('change_chapter', 'next increment');
@@ -786,6 +914,110 @@ async function connect() {
   } finally {
     // ALWAYS restore connectivity, even on an early throw.
     if (airplaneOn) { try { adb('shell cmd connectivity airplane-mode disable'); } catch {} }
+  }
+
+  // ---- chapter_seek / next_chapter / prev_chapter (mobile-owned, board #21 —
+  // PJ's Selfish Gene: nine EQUAL-SIZE files, chapters straddle the splits).
+  // On a work WITH a chapter timeline: (a) tapping a TOC row must land the audio
+  // at that chapter's book-global start — into the RIGHT FILE at the RIGHT
+  // OFFSET (the silent-seek-break class); (b) ⏭ must move by CHAPTER, not by
+  // file (the jump that stranded PJ); (c) ⏮ restarts the chapter. Read from the
+  // NowPlaying probe while PAUSED (`pos` = the book-global second the app
+  // renders, `ch` = chapter index) plus the media session's sub-stream clock —
+  // a streamed MP3 chapter jump is a ?t=-anchored RELOAD, so that clock restarts
+  // near 0: proof the stream was re-anchored, not seeked in place in a stale
+  // file. Tolerance ±(settle + 8)s on pos: it PLAYS between the jump and the
+  // pause. SKIPPED (not failed) when the work has no timeline.
+  // E2E_SKIP_CHAPTERS=1 skips; E2E_CHAPTER_N=<1-based row> pins the TOC target.
+  if (process.env.E2E_SKIP_CHAPTERS === '1') {
+    skip('chapter_seek', 'E2E_SKIP_CHAPTERS=1'); skip('next_chapter', 'E2E_SKIP_CHAPTERS=1'); skip('prev_chapter', 'E2E_SKIP_CHAPTERS=1');
+  } else try {
+    const list = apiJson('/api/works') || [];
+    const works = Array.isArray(list) ? list : (list.works || []);
+    const w = WORK_ID ? works.find((x) => String(x.id) === String(WORK_ID))
+      : works.find((x) => (x.title || '').includes(WORK_SUB));
+    const { chapters, audio } = w ? apiTimeline(w.id) : { chapters: [], audio: [] };
+    const timed = chapters.filter((c) => c.start_sec > 0);
+    if (!w || timed.length < 2) {
+      skip('chapter_seek', 'work has no chapter timeline (fewer than 2 timed chapters)');
+      skip('next_chapter', 'no chapter timeline'); skip('prev_chapter', 'no chapter timeline');
+    } else {
+      const npXml = await openNowPlayingPaused();
+      if (!npXml) throw new Error('could not reach the full player (no labeled "Chapters" control after 4 tries)');
+      // The landing assertions read the probe; without it this is an INFRA
+      // condition (a non-EXPO_PUBLIC_E2E build), never an app red.
+      if (parseProbe(npXml) == null) {
+        console.error('INFRA(3) no E2E probe on the full player — not an EXPO_PUBLIC_E2E=1 build.');
+        shot('probe-absent'); process.exit(3);
+      }
+      // Where is the playhead now (book-global)? From the probe on the paused player.
+      const p0 = parseProbe(npXml) || {};
+      const curFile = typeof p0.pos === 'number' ? fileOf(audio, p0.pos).index : -1;
+      // Target: a REAL chapter (≥60s long — an aligned title page can be a
+      // 0.6s sliver) that starts MID-FILE (≥60s from either edge of its file),
+      // preferring one AHEAD of the playhead in a LATER file (PJ's actual move:
+      // a cross-file landing forward), else any mid-file one, else the 2nd.
+      const dur = (c) => { const nx = timed.filter((o) => o.start_sec > c.start_sec).sort((a, b) => a.start_sec - b.start_sec)[0]; return (c.end_sec > c.start_sec ? c.end_sec : (nx ? nx.start_sec : c.start_sec + 1e9)) - c.start_sec; };
+      const real = (c) => dur(c) >= 60;
+      const midFile = (c) => { const f = fileOf(audio, c.start_sec); return audio.length > 1 && f.local >= 60 && f.fileDur - f.local >= 60; };
+      const pos0 = typeof p0.pos === 'number' ? p0.pos : 0;
+      let target = null;
+      if (process.env.E2E_CHAPTER_N) target = chapters[+process.env.E2E_CHAPTER_N - 1] || null;
+      if (!target) target = timed.find((c) => real(c) && midFile(c) && c.start_sec > pos0 && fileOf(audio, c.start_sec).index > curFile)
+        || timed.find((c) => real(c) && midFile(c)) || timed.find(real) || timed[1];
+      const tf = fileOf(audio, target.start_sec);
+      const title = (target.title || '').trim() || `Chapter ${chapters.indexOf(target) + 1}`;
+      const where = (c) => { const f = fileOf(audio, c.start_sec); return `${c.start_sec.toFixed(1)}s = file ${f.index} @ ${f.local.toFixed(0)}s`; };
+      const SETTLE = 6000;
+      const landed = (r, c) => {
+        const okPos = r.p && typeof r.p.pos === 'number' && r.p.pos >= c.start_sec - 2 && r.p.pos <= c.start_sec + SETTLE / 1000 + 8;
+        const okCh = r.p && r.p.ch === c.index;
+        return { okPos, okCh, ok: okPos && okCh,
+          line: `probe pos=${r.p && typeof r.p.pos === 'number' ? r.p.pos.toFixed(1) : '?'} (Δ${r.p && typeof r.p.pos === 'number' ? (r.p.pos - c.start_sec >= 0 ? '+' : '') + (r.p.pos - c.start_sec).toFixed(1) : '?'}s from start) ch=${r.p ? r.p.ch : '?'} (want ${c.index}); media clock ${r.ms ? r.ms.pos.toFixed(1) + 's ' + r.ms.state : '?'}` };
+      };
+
+      // (a) chapter_seek: open the TOC (the labeled control), tap the row, land.
+      if (!tapLabel(npXml, 'Chapters — jump to a chapter')) throw new Error('no "Chapters" control on the full player');
+      const sheet = await waitFor((x) => !!findNode(x, 'Chapters ('), 5000);
+      if (!findNode(sheet, 'Chapters (')) throw new Error('the chapter sheet did not open');
+      if (!(await tapTocRow(title))) throw new Error(`TOC row "${title}" not found in the sheet after scrolling`);
+      const r1 = await landAfterJump(SETTLE);
+      const L1 = landed(r1, target);
+      report('chapter_seek', L1.ok, `tapped "${title}" (${where(target)}) → ${L1.line}`);
+      if (!L1.ok) shot('chapter_seek');
+
+      // (b) next_chapter: ⏭ must be CHAPTER-aware. The control's label says which
+      // it is: "Next chapter" on a chaptered work; "Next track" = the file-skip
+      // bug (PJ's). Then it must land on the NEXT chapter's start.
+      const after = timed.filter((c) => c.start_sec > target.start_sec + 0.5).sort((a, b) => a.start_sec - b.start_sec)[0];
+      if (!after) {
+        skip('next_chapter', `"${title}" is the last chapter`); skip('prev_chapter', 'no next chapter to come back from');
+      } else {
+        let xml = r1.xml;
+        const isTrack = !!findLabel(xml, 'Next track') && !findLabel(xml, 'Next chapter');
+        if (isTrack) {
+          report('next_chapter', false, '⏭ is labeled "Next track" on a chaptered work — it skips a FILE, not a chapter (PJ\'s Selfish Gene bug)');
+          shot('next_chapter'); skip('prev_chapter', '⏭ not chapter-aware');
+        } else {
+          if (!tapLabel(xml, 'Next chapter')) throw new Error('no "Next chapter" control on the full player');
+          const r2 = await landAfterJump(SETTLE);
+          const L2 = landed(r2, after);
+          report('next_chapter', L2.ok, `⏭ from "${title}" → expected "${(after.title || '').trim()}" (${where(after)}) → ${L2.line}`);
+          if (!L2.ok) shot('next_chapter');
+
+          // (c) prev_chapter: a few seconds into `after`, ⏮ RESTARTS it (>3s in).
+          xml = r2.xml;
+          if (!tapLabel(xml, 'Previous chapter')) throw new Error('no "Previous chapter" control on the full player');
+          const r3 = await landAfterJump(SETTLE);
+          const L3 = landed(r3, after);
+          report('prev_chapter', L3.ok, `⏮ ${r2.p && typeof r2.p.pos === 'number' ? (r2.p.pos - after.start_sec).toFixed(1) : '?'}s into "${(after.title || '').trim()}" → restart it (${where(after)}) → ${L3.line}`);
+          if (!L3.ok) shot('prev_chapter');
+        }
+      }
+    }
+  } catch (e) {
+    report('chapter_seek', false, e.message); shot('chapter_seek');
+    skip('next_chapter', 'chapter_seek errored'); skip('prev_chapter', 'chapter_seek errored');
   }
 
   // ---- signout_signin — later.
