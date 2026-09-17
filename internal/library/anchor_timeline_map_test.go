@@ -92,3 +92,27 @@ func TestBuildTokToTimeline_ResyncsAcrossLocalDivergence(t *testing.T) {
 		}
 	}
 }
+
+// Older imports dropped the narrator's credits from the content ("This is
+// Audible… presents", 30–50 words) while the timeline keeps them — further
+// than the lockstep window looks. The walk must find the content's opening in
+// the timeline instead of refusing it (which fell back to the drifting map on
+// Why We Sleep, Handmaid's Tale, Brave New World, Chocolat, The Secret Agent).
+func TestBuildTokToTimeline_DroppedIntroBeyondWindow(t *testing.T) {
+	var tl []db.SyncTimestamp
+	for k := 0; k < 40; k++ {
+		tl = append(tl, db.SyncTimestamp{Word: " credits", Start: float64(k)})
+	}
+	body := []string{" do", " you", " think", " you", " got", " enough", " sleep", " this", " past", " week"}
+	for k, w := range body {
+		tl = append(tl, db.SyncTimestamp{Word: w, Start: 100 + float64(k)})
+	}
+	stream, _ := AssembleStream([]ChapterText{{Index: 0, Text: joinWords(tl[40:])}})
+	m, share := buildTokToTimeline(tl, stream)
+	if m == nil || share < 0.99 {
+		t.Fatalf("map refused a dropped-intro timeline: share %.3f", share)
+	}
+	if m[0] != 40 || m[len(m)-1] != 49 {
+		t.Fatalf("map = %v, want 40..49", m)
+	}
+}

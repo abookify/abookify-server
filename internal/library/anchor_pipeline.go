@@ -28,6 +28,7 @@ package library
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -144,6 +145,14 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 		if i == 0 {
 			primary = cov
 		}
+	}
+	// The publisher's titles are authoritative over the narrator's spoken ones
+	// once the two are aligned — trim bled-in trailing words on the canonical
+	// (audio anchor) and transcript chapter rows.
+	if n, err := ReconcileSpokenTitles(store, work, authority.ID); err != nil {
+		log.Printf("align: reconcile spoken titles for work %d: %v", workID, err)
+	} else if n > 0 {
+		log.Printf("align: reconciled %d spoken chapter title(s) on work %d against publisher edition %d", n, workID, authority.ID)
 	}
 	return primary, nil
 }
@@ -400,6 +409,13 @@ func buildTokToTimeline(timeline []db.SyncTimestamp, stream []string) ([]int, fl
 				}
 			}
 		}
+		if bi < 0 {
+			// Beyond the window: a dropped credits/intro run ("This is Audible…
+			// presents", 30–50 tokens on older imports) or a stretch the content
+			// lost. Search further, bounded, for a five-token run — from either
+			// side — and take the cheaper resync.
+			bi, bj = farResync(stream, tt, i, j)
+		}
 		park := j
 		if park >= len(tt) {
 			park = len(tt) - 1
@@ -417,6 +433,49 @@ func buildTokToTimeline(timeline []db.SyncTimestamp, stream []string) ([]int, fl
 		j += bj
 	}
 	return m, float64(matched) / float64(len(stream))
+}
+
+// farResync looks past the lockstep window for the next place the two token
+// streams agree on five tokens: the content's next five in the timeline, or
+// the timeline's next five in the content, within farResyncSpan tokens.
+// Returns the (di, dj) skip pair, or (-1, -1).
+func farResync(stream, tt []string, i, j int) (int, int) {
+	const run = 5
+	const farResyncSpan = 4000
+	find := func(needle []string, hay []string, from, span int) int {
+		if len(needle) < run {
+			return -1
+		}
+		end := from + span
+		if end > len(hay)-run {
+			end = len(hay) - run
+		}
+		for k := from; k <= end; k++ {
+			match := true
+			for q := 0; q < run; q++ {
+				if hay[k+q] != needle[q] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return k
+			}
+		}
+		return -1
+	}
+	bestDi, bestDj, best := -1, -1, 1<<30
+	if i+run <= len(stream) {
+		if k := find(stream[i:i+run], tt, j, farResyncSpan); k >= 0 && k-j < best {
+			bestDi, bestDj, best = 0, k-j, k-j
+		}
+	}
+	if j+run <= len(tt) {
+		if k := find(tt[j:j+run], stream, i, farResyncSpan); k >= 0 && k-i < best {
+			bestDi, bestDj, best = k-i, 0, k-i
+		}
+	}
+	return bestDi, bestDj
 }
 
 // minTimelineMatch — the matched share below which a timeline is not this
