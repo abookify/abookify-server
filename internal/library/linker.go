@@ -11,7 +11,11 @@ import (
 	"github.com/pj/abookify/internal/db"
 )
 
-var chapterNumRe = regexp.MustCompile(`(?i)(?:chapter|ch\.?|letter|part)\s*(\d+)`)
+// chapterNumRe accepts the announced form ("Chapter 8", "Ch. 8", "Part 2") and
+// the numbered-title form publishers use when the word "chapter" never
+// appears at all ("8. Battle of the generations") — which is how The Selfish
+// Gene's EPUB names every chapter.
+var chapterNumRe = regexp.MustCompile(`(?i)(?:chapter|ch\.?|letter|part)\s*(\d+)|^\s*(\d{1,3})\.\s+\S`)
 var romanRe = regexp.MustCompile(`(?i)(?:chapter|ch\.?|part)\s+((?:x{0,3})(?:ix|iv|v?i{0,3}))$`)
 
 // audioChapter is one unit on the audio side that wants a text-chapter link.
@@ -388,7 +392,11 @@ func extractChapterNum(title string) int {
 	// Try arabic numerals first
 	m := chapterNumRe.FindStringSubmatch(title)
 	if m != nil {
-		n, err := strconv.Atoi(m[1])
+		num := m[1]
+		if num == "" {
+			num = m[2]
+		}
+		n, err := strconv.Atoi(num)
 		if err == nil {
 			return n
 		}

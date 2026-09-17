@@ -8,6 +8,8 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pj/abookify/internal/db"
@@ -176,6 +178,13 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		if title == "" {
 			title = tocTitles[stripFragment(firstHref)]
 		}
+		if title == "" && seg.lead {
+			// Title page, blurbs, dedication — whatever precedes the first
+			// chapter boundary without a heading of its own. Calling it
+			// "Chapter 1" put a page of review quotes ahead of the real
+			// chapter 1 in The Selfish Gene's TOC.
+			title = "Front matter"
+		}
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", chapterIdx+1)
 		}
@@ -254,9 +263,10 @@ func trimGutenbergBoilerplate(html string) string {
 // Two Project Gutenberg front-matter blocks slip past trimGutenbergBoilerplate
 // (they sit INSIDE the content, not between the START/END sentinels) AND past the
 // running-head pass (they are multi-line blocks, not one short repeated line):
-//   1. the "editions of this ebook" listing — an intro line, a "click the
-//      filenumbers" line, then N "<number> (edition description)" rows; and
-//   2. a "Project Gutenberg Editor's Note:" label + its one-sentence note.
+//  1. the "editions of this ebook" listing — an intro line, a "click the
+//     filenumbers" line, then N "<number> (edition description)" rows; and
+//  2. a "Project Gutenberg Editor's Note:" label + its one-sentence note.
+//
 // Both carry PG-unique phrasing that never occurs in an author's prose, so they
 // match precisely with no risk to real text — a chapter that merely mentions
 // "Gutenberg" (or names the printer), or a prose line that happens to start with
@@ -737,15 +747,27 @@ var headingRe = regexp.MustCompile(`(?is)<h[1-3][^>]*>(.*?)</h[1-3]>`)
 type htmlSegment struct {
 	title string
 	html  string
+	lead  bool // content before the first chapter boundary (front matter)
 }
 
 // A heading whose text names a chapter: a chapter-word prefix, a bare roman
 // numeral, or a bare number. Front-matter/illustration/section headings
-// ("Preface", "Marley's Ghost", "The Project Gutenberg eBook…") don't match,
-// so we only split on real chapter boundaries.
-var chapterHeadingTextRe = regexp.MustCompile(`(?i)^\s*((chapter|stave|part|book|letter|canto|act|scene|prologue|epilogue|volume)\b|[ivxlcdm]{1,7}\.?\s*$|\d{1,3}\.?\s*$)`)
+// ("Marley's Ghost", "The Project Gutenberg eBook…") don't match, so we only
+// split on real chapter boundaries. Preface/foreword/afterword ARE reading
+// units the narrator reads (The Selfish Gene's audio opens with both prefaces),
+// so they count as boundaries too.
+var chapterHeadingTextRe = regexp.MustCompile(`(?i)^\s*((chapter|stave|part|book|letter|canto|act|scene|prologue|epilogue|volume|preface|foreword|afterword)\b|[ivxlcdm]{1,7}\.?\s*$|\d{1,3}\.?\s*$)`)
 var anyHeadingRe = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`)
 var tagStripRe = regexp.MustCompile(`(?s)<[^>]+>`)
+
+// A chapter boundary found in the concatenated book HTML. title is empty for a
+// tagged heading (the segment's first <h1-3> names it, as before) and set for a
+// numbered-paragraph title, which no heading tag would recover.
+type headingStart struct {
+	pos         int
+	title       string
+	frontMatter bool // preface/foreword/afterword rather than a chapter
+}
 
 // splitHTMLByHeadings splits (concatenated) book HTML at each CHAPTER heading.
 // Content before the first chapter heading becomes a leading segment (front
@@ -755,31 +777,150 @@ var tagStripRe = regexp.MustCompile(`(?s)<[^>]+>`)
 // This handles modern Project Gutenberg EPUBs that pack several chapters per
 // XHTML file and split files mid-chapter (e.g. #75011) — a chapter can span
 // file boundaries, which 1-chapter-per-file extraction buried and mislabeled.
+//
+// When the book has no tagged chapter headings at all, numbered title
+// paragraphs ("7. Family planning") are tried instead — see
+// numberedParagraphStarts.
 func splitHTMLByHeadings(rawHTML string) []htmlSegment {
-	var starts []int
-	for _, m := range anyHeadingRe.FindAllStringSubmatchIndex(rawHTML, -1) {
-		inner := strings.TrimSpace(tagStripRe.ReplaceAllString(rawHTML[m[2]:m[3]], ""))
-		if chapterHeadingTextRe.MatchString(inner) {
-			starts = append(starts, m[0])
+	starts, chapterKind := taggedHeadingStarts(rawHTML)
+	if chapterKind < 2 {
+		// No tagged chapter structure. Numbered title paragraphs may carry it;
+		// a preface/foreword heading in front of them stays a boundary too.
+		if numbered := numberedParagraphStarts(rawHTML); numbered != nil {
+			var merged []headingStart
+			for _, t := range starts {
+				if t.frontMatter {
+					merged = append(merged, t)
+				}
+			}
+			merged = append(merged, numbered...)
+			sort.Slice(merged, func(i, j int) bool { return merged[i].pos < merged[j].pos })
+			starts = merged
 		}
 	}
 	if len(starts) < 2 {
 		return nil
 	}
 	var segs []htmlSegment
-	if starts[0] > 0 {
-		lead := rawHTML[:starts[0]]
-		segs = append(segs, htmlSegment{title: extractFirstHeading(lead), html: lead})
+	if starts[0].pos > 0 {
+		lead := rawHTML[:starts[0].pos]
+		segs = append(segs, htmlSegment{title: extractFirstHeading(lead), html: lead, lead: true})
 	}
 	for i, s := range starts {
 		end := len(rawHTML)
 		if i+1 < len(starts) {
-			end = starts[i+1]
+			end = starts[i+1].pos
 		}
-		h := rawHTML[s:end]
-		segs = append(segs, htmlSegment{title: extractFirstHeading(h), html: h})
+		h := rawHTML[s.pos:end]
+		title := s.title
+		if title == "" {
+			title = extractFirstHeading(h)
+		}
+		segs = append(segs, htmlSegment{title: title, html: h})
 	}
 	return segs
+}
+
+// Front-matter units the narrator reads but which say nothing about how the
+// body is divided: a book with two prefaces and no <hN> chapter headings has
+// NO tagged chapter structure, and must not be treated as if it had.
+var frontMatterHeadingRe = regexp.MustCompile(`(?i)^\s*(preface|foreword|afterword)\b`)
+
+// taggedHeadingStarts finds every <h1-6> whose text names a chapter or a
+// front-matter unit, and reports how many are chapter-kind (not front matter).
+func taggedHeadingStarts(rawHTML string) ([]headingStart, int) {
+	var starts []headingStart
+	chapterKind := 0
+	for _, m := range anyHeadingRe.FindAllStringSubmatchIndex(rawHTML, -1) {
+		inner := strings.TrimSpace(tagStripRe.ReplaceAllString(rawHTML[m[2]:m[3]], ""))
+		if !chapterHeadingTextRe.MatchString(inner) {
+			continue
+		}
+		fm := frontMatterHeadingRe.MatchString(inner)
+		if !fm {
+			chapterKind++
+		}
+		starts = append(starts, headingStart{pos: m[0], frontMatter: fm})
+	}
+	return starts, chapterKind
+}
+
+// Numbered title paragraphs. Older Calibre conversions (and plenty of
+// publisher files) carry no heading tags at all: every chapter title is an
+// ordinary <p> — "1. Why are people?", "2. The replicators." — visually a
+// heading, structurally prose. The tagged-heading split sees nothing and the
+// book falls back to one chapter per spine file, which for The Selfish Gene
+// meant thirteen chapters buried inside six file-sized lumps, so the reader
+// could not follow a tapped audio chapter to its text.
+//
+// A numbered paragraph is only trusted as a chapter title when the set of them
+// reads like a table of contents that the book then delivers on:
+//   - each is followed by at least a chapter's worth of prose before the next
+//     one (a contents list — the same titles packed together — fails this, and
+//     so does a short numbered list inside a chapter);
+//   - there are at least three;
+//   - their numbers strictly increase (one stray "1. …" list item mid-book
+//     breaks the chain, and the whole heuristic stands down).
+//
+// Failing any of these returns nil, i.e. exactly the pre-existing behaviour.
+var (
+	titleBlockRe    = regexp.MustCompile(`(?is)<(?:p|h[1-6])\b[^>]*>(.*?)</(?:p|h[1-6])>`)
+	numberedTitleRe = regexp.MustCompile(`^(\d{1,3})\.\s+\S`)
+)
+
+const (
+	numberedTitleMaxLen     = 80  // a title is short; a numbered prose paragraph is not
+	numberedChapterMinWords = 200 // prose that must follow a title for it to head a chapter
+	numberedChapterMinCount = 3
+)
+
+func numberedParagraphStarts(rawHTML string) []headingStart {
+	type cand struct {
+		pos, end, num int
+		title         string
+	}
+	var cands []cand
+	for _, m := range titleBlockRe.FindAllStringSubmatchIndex(rawHTML, -1) {
+		inner := gohtml.UnescapeString(tagStripRe.ReplaceAllString(rawHTML[m[2]:m[3]], " "))
+		inner = strings.Join(strings.Fields(inner), " ")
+		if inner == "" || len(inner) > numberedTitleMaxLen {
+			continue
+		}
+		nm := numberedTitleRe.FindStringSubmatch(inner)
+		if nm == nil {
+			continue
+		}
+		n, err := strconv.Atoi(nm[1])
+		if err != nil || n == 0 {
+			continue
+		}
+		cands = append(cands, cand{pos: m[0], end: m[1], num: n, title: strings.TrimRight(inner, ". ")})
+	}
+	var kept []cand
+	for i, c := range cands {
+		bodyEnd := len(rawHTML)
+		if i+1 < len(cands) {
+			bodyEnd = cands[i+1].pos
+		}
+		body := tagStripRe.ReplaceAllString(rawHTML[c.end:bodyEnd], " ")
+		if len(strings.Fields(body)) < numberedChapterMinWords {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if len(kept) < numberedChapterMinCount {
+		return nil
+	}
+	for i := 1; i < len(kept); i++ {
+		if kept[i].num <= kept[i-1].num {
+			return nil
+		}
+	}
+	starts := make([]headingStart, 0, len(kept))
+	for _, c := range kept {
+		starts = append(starts, headingStart{pos: c.pos, title: c.title})
+	}
+	return starts
 }
 
 func extractFirstHeading(html string) string {
