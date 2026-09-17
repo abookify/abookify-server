@@ -43,7 +43,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -133,10 +132,7 @@ func CleanTTSCas(generatedDir string, grace time.Duration, keepJobs map[string]b
 		if err != nil {
 			return nil
 		}
-		nlink := uint64(1)
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			nlink = uint64(st.Nlink)
-		}
+		nlink := fileNlink(info) // platform helper: tts_cas_nlink_{unix,windows}.go
 		if nlink <= 1 && time.Since(info.ModTime()) > grace {
 			if os.Remove(path) == nil {
 				removed++
