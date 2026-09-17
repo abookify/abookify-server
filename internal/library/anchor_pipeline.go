@@ -173,13 +173,21 @@ func anchorAlignPair(store *db.Store, workID int64, ebook, transcript *db.Book, 
 	// Bake the audio timeline. The anchor transcript stream is in Tokenize
 	// basis; sync_data is in the transcript's whitespace-word (Fields) basis,
 	// so map Tokenize offsets → Fields offsets before the timeline lookup.
-	tokToFields := buildTokToFields(transChapters)
-	fieldCount := 0
-	if n := len(tokToFields); n > 0 {
-		fieldCount = tokToFields[n-1] + 1
-	}
-	if timeline := pickTimeline(timelines, fieldCount); len(timeline) > 0 {
-		bakeSegmentTimes(aln.Segments, timeline, tokToFields, true)
+	//
+	// Prefer the map built from the timeline's OWN words (exact by construction
+	// — see buildTokToTimeline); the content-Fields map is the fallback for a
+	// timeline whose words don't reproduce the transcript's token stream.
+	if timeline, tokToSync := pickTimelineByTokens(timelines, transToks); timeline != nil {
+		bakeSegmentTimes(aln.Segments, timeline, tokToSync, true)
+	} else {
+		tokToFields := buildTokToFields(transChapters)
+		fieldCount := 0
+		if n := len(tokToFields); n > 0 {
+			fieldCount = tokToFields[n-1] + 1
+		}
+		if timeline := pickTimeline(timelines, fieldCount); len(timeline) > 0 {
+			bakeSegmentTimes(aln.Segments, timeline, tokToFields, true)
+		}
 	}
 
 	payload := AnchorAlignmentPayload{
@@ -312,6 +320,125 @@ func pickTimeline(timelines [][]db.SyncTimestamp, fieldCount int) []db.SyncTimes
 		}
 	}
 	return best
+}
+
+// buildTokToTimeline maps each token of the transcript's anchor stream to the
+// timeline word that carries it, by tokenizing the timeline's own words and
+// walking the two token streams in lockstep.
+//
+// The transcript's chapter content is the timeline's words concatenated
+// verbatim (joinWords), and Whisper words carry their own leading space — so a
+// word that arrives WITHOUT one ("-off" after "showing", a bare "…") is glued
+// onto its predecessor and the content has one whitespace word where the
+// timeline has two. buildTokToFields walks the content's whitespace words and
+// so drifts by one index at every glue. On The Selfish Gene that drift reached
+// 1,160 words by chapter 13: every EPUB word was baked ~5–8 minutes early, the
+// chapter row seeked into the previous chapter's endnote, and karaoke lit words
+// the narrator had not reached. Every human-narrated aligned work in the
+// library drifts the same way. The only exact basis is the timeline itself.
+//
+// The two token streams are identical for a sidecar-imported transcript, but
+// older imports normalised the content separately (the content's "o'clock" is
+// one token where the timeline's is two; one content dropped a leading word),
+// so the walk tolerates local divergence: on a mismatch it resyncs at the
+// nearest three-token run within a small window and parks the skipped content
+// tokens on the current timeline word. Returns the map and the matched share
+// of stream tokens; the caller refuses a timeline that matches too little
+// (another edition's narration) and falls back to the content-Fields map.
+func buildTokToTimeline(timeline []db.SyncTimestamp, stream []string) ([]int, float64) {
+	var tt []string
+	var owner []int
+	for i, w := range timeline {
+		for _, t := range Tokenize(w.Word) {
+			tt = append(tt, t)
+			owner = append(owner, i)
+		}
+	}
+	if len(tt) == 0 || len(stream) == 0 {
+		return nil, 0
+	}
+	const window = 12
+	const run = 3
+	runMatches := func(i, j int) bool {
+		n := run
+		if rem := len(stream) - i; rem < n {
+			n = rem
+		}
+		if rem := len(tt) - j; rem < n {
+			n = rem
+		}
+		if n <= 0 {
+			return false
+		}
+		for k := 0; k < n; k++ {
+			if stream[i+k] != tt[j+k] {
+				return false
+			}
+		}
+		return true
+	}
+	m := make([]int, len(stream))
+	matched := 0
+	i, j := 0, 0
+	for i < len(stream) {
+		if j < len(tt) && stream[i] == tt[j] {
+			m[i] = owner[j]
+			matched++
+			i++
+			j++
+			continue
+		}
+		// Diverged: find the nearest resync point within the window.
+		bi, bj, best := -1, -1, 1<<30
+		for di := 0; di <= window && i+di < len(stream); di++ {
+			for dj := 0; dj <= window && j+dj < len(tt); dj++ {
+				if di+dj >= best {
+					continue
+				}
+				if runMatches(i+di, j+dj) {
+					best, bi, bj = di+dj, di, dj
+				}
+			}
+		}
+		park := j
+		if park >= len(tt) {
+			park = len(tt) - 1
+		}
+		if bi < 0 {
+			// Nothing to resync on: park this token and move on.
+			m[i] = owner[park]
+			i++
+			continue
+		}
+		for k := 0; k < bi; k++ {
+			m[i+k] = owner[park]
+		}
+		i += bi
+		j += bj
+	}
+	return m, float64(matched) / float64(len(stream))
+}
+
+// minTimelineMatch — the matched share below which a timeline is not this
+// transcript's (another edition's narration, a per-chapter TTS row) and the
+// caller falls back. Real pairs sit at 0.999+; the tolerance is for the
+// handful of normalisation differences, not for a different recording.
+const minTimelineMatch = 0.9
+
+// pickTimelineByTokens returns the timeline whose tokenized words best
+// reproduce the transcript's anchor stream (matched share ≥ minTimelineMatch),
+// with the token→timeline map; (nil, nil) when none qualifies.
+func pickTimelineByTokens(timelines [][]db.SyncTimestamp, stream []string) ([]db.SyncTimestamp, []int) {
+	var bestTL []db.SyncTimestamp
+	var bestMap []int
+	bestShare := 0.0
+	for _, ts := range timelines {
+		m, share := buildTokToTimeline(ts, stream)
+		if m != nil && share >= minTimelineMatch && share > bestShare {
+			bestTL, bestMap, bestShare = ts, m, share
+		}
+	}
+	return bestTL, bestMap
 }
 
 // buildTokToFields maps each Tokenize-token index (the anchor stream's basis)
