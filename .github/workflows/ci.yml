@@ -30,6 +30,26 @@ jobs:
       - name: Run Go tests
         run: go test -buildvcs=false ./... -count=1
 
+  # The CAS garbage collector on a real Windows filesystem. Its hard-link
+  # count is the one platform-split behaviour in the product (Unix reads
+  # Stat_t.Nlink; Windows asks GetFileInformationByHandle for NumberOfLinks),
+  # and a build-tagged file that cross-compiles is not a GC that is correct:
+  # this runs the helper and the sweep on NTFS. An unreadable count must
+  # KEEP the blob; a linked blob must survive; an old orphan must go.
+  cas-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: CAS store + GC tests on NTFS
+        run: go test -buildvcs=false ./internal/library -run "TestCas|TestFileNlink|TestTTSContentKey" -count=1 -v
+
   # Endpoint status-contract smoke. Boots the server with no engines running,
   # then asserts every major route returns a sensible status (2xx, or a graceful
   # 4xx with a JSON error) and NEVER a bare 500.
