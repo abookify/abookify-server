@@ -769,6 +769,9 @@ async function connect() {
   const skipKaraoke = process.env.E2E_SKIP_KARAOKE === '1';
   if (skipKaraoke) {
     skip('karaoke_advances', 'E2E_SKIP_KARAOKE=1'); skip('resume_reader_follows', 'E2E_SKIP_KARAOKE=1');
+    // The karaoke leg leaves playback PAUSED; the legs after it dump the UI,
+    // which only reaches idle while paused. Match that state here.
+    await mediaPause();
   } else {
   if (!(await openReaderPaused())) {
     console.error('INFRA(3) could not reach the Reader (no "Open reader" control while paused) — ' +
@@ -923,8 +926,23 @@ async function connect() {
 
     // Go offline and confirm local playback still advances — measured from the
     // media session (same idle-proof approach as play_and_hear).
+    // HONESTY GUARD: on the adb-reverse host path (E2E_HOST=127.0.0.1) airplane
+    // mode does NOT cut the app off — the reverse tunnel rides the adb
+    // transport, so a "downloaded" work could still STREAM and read green. Drop
+    // the tunnel too, so the only way audio advances is from the local file.
     adb('shell cmd connectivity airplane-mode enable'); airplaneOn = true;
+    if (HOST === '127.0.0.1') { try { adb('reverse --remove-all'); } catch {} }
     await sleep(2500);
+    // Prove the cut (the AVD has no curl, so measure the two facts that make
+    // the server unreachable): no reverse tunnel is listed for our port, and
+    // the radio is off. With both, the app's 127.0.0.1:PORT has no listener.
+    let rev = ''; let air = '';
+    try { rev = adb('reverse --list'); } catch {}
+    try { air = adb('shell settings get global airplane_mode_on'); } catch {}
+    const tunnelGone = !new RegExp(`tcp:${PORT}\\b`).test(rev);
+    console.log(`offline check: reverse tunnels=[${rev.replace(/\s+/g, ' ').trim() || 'none'}] airplane_mode_on=${air.trim()}`);
+    if (HOST === '127.0.0.1' && !tunnelGone) throw new Error('NOT offline — the adb reverse tunnel is still up; an offline green here would be a lie');
+    if (air.trim() !== '1') throw new Error(`NOT offline — airplane_mode_on=${air.trim() || '?'}`);
     const playingOffline = await startPlayback();
     if (!playingOffline) throw new Error('offline: playback did not start (no PLAYING media session)');
     const ot0 = Date.now(); const om1 = mediaState();
@@ -942,6 +960,7 @@ async function connect() {
   } finally {
     // ALWAYS restore connectivity, even on an early throw.
     if (airplaneOn) { try { adb('shell cmd connectivity airplane-mode disable'); } catch {} }
+    if (HOST === '127.0.0.1') { try { adb(`reverse tcp:${PORT} tcp:${PORT}`); } catch {} }
   }
 
   // ---- chapter_seek / next_chapter / prev_chapter (mobile-owned, board #21 —
