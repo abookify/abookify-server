@@ -12,8 +12,10 @@
 //
 // LAYOUT (both under the generator's own dir — the scanner never walks it,
 // so neither is ever discovered or served):
-//   <generated>/cas/<hh>/<hash>.mp3   immutable finished chapter audio
-//   <generated>/work/<job-id>/        the in-progress chapter's assembly
+//
+//	<generated>/cas/<hh>/<hash>.mp3   immutable finished chapter audio
+//	<generated>/work/<job-id>/        the in-progress chapter's assembly
+//
 // A chapter file in an edition dir is a HARDLINK to its CAS entry, with a
 // tiny sidecar (chapter-N.mp3.cas) recording the key. "Done" means the
 // sidecar key MATCHES the current content key — not merely that a file
@@ -118,11 +120,15 @@ func CasPromote(generatedDir, key, workFile, mp3Path string) error {
 	return nil
 }
 
+// casNlink is fileNlink behind a variable so a test can make a count
+// unreadable and prove the GC keeps its hands off.
+var casNlink = fileNlink
+
 // CleanTTSCas is the GC sweep: unreferenced CAS entries (nlink==1) older
 // than grace are removed; work dirs not in keepJobs are removed. Returns
 // (entries removed, work dirs removed).
 func CleanTTSCas(generatedDir string, grace time.Duration, keepJobs map[string]bool) (int, int) {
-	removed := 0
+	removed, unknown := 0, 0
 	casRoot := filepath.Join(generatedDir, "cas")
 	filepath.WalkDir(casRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".mp3") {
@@ -132,7 +138,14 @@ func CleanTTSCas(generatedDir string, grace time.Duration, keepJobs map[string]b
 		if err != nil {
 			return nil
 		}
-		nlink := fileNlink(info) // platform helper: tts_cas_nlink_{unix,windows}.go
+		// Platform helper (tts_cas_nlink_{unix,windows}.go). An entry whose
+		// count cannot be read is left in place: "unknown" is not a number,
+		// and a blob we cannot prove unreferenced is a blob we keep.
+		nlink, known := casNlink(path, info)
+		if !known {
+			unknown++
+			return nil
+		}
 		if nlink <= 1 && time.Since(info.ModTime()) > grace {
 			if os.Remove(path) == nil {
 				removed++
@@ -140,6 +153,9 @@ func CleanTTSCas(generatedDir string, grace time.Duration, keepJobs map[string]b
 		}
 		return nil
 	})
+	if unknown > 0 {
+		log.Printf("tts-cas: gc left %d entries whose link count could not be read", unknown)
+	}
 	workRemoved := 0
 	entries, _ := os.ReadDir(filepath.Join(generatedDir, "work"))
 	for _, e := range entries {

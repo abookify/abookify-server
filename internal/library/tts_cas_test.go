@@ -71,3 +71,47 @@ func TestCasLifecycleAndGC(t *testing.T) {
 		t.Error("GC broke a live edition file")
 	}
 }
+
+// A link count the platform cannot read is NOT a number: the GC must leave
+// the entry in place even when it is old, rather than treat "unknown" as
+// unreferenced (or as referenced — either guess is the fault class this
+// project has spent months removing).
+func TestCasGCKeepsEntriesWithUnknownLinkCount(t *testing.T) {
+	gen := t.TempDir()
+	orphan := casPath(gen, TTSContentKey("orphan", "v", 0, 0))
+	os.MkdirAll(filepath.Dir(orphan), 0755)
+	os.WriteFile(orphan, []byte("X"), 0644)
+	old := time.Now().Add(-48 * time.Hour)
+	os.Chtimes(orphan, old, old)
+
+	saved := casNlink
+	casNlink = func(string, os.FileInfo) (uint64, bool) { return 0, false }
+	defer func() { casNlink = saved }()
+
+	if removed, _ := CleanTTSCas(gen, 24*time.Hour, map[string]bool{}); removed != 0 {
+		t.Fatalf("GC removed %d entries with an unreadable link count, want 0", removed)
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatal("entry with unknown link count was deleted")
+	}
+}
+
+// The real helper on this platform: a fresh file has one link, a hard link
+// makes two, and the count is reported as KNOWN.
+func TestFileNlinkCountsHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a")
+	os.WriteFile(p, []byte("X"), 0644)
+	info, _ := os.Stat(p)
+	n, ok := fileNlink(p, info)
+	if !ok || n != 1 {
+		t.Fatalf("fresh file: nlink=%d known=%v, want 1 known", n, ok)
+	}
+	if err := os.Link(p, filepath.Join(dir, "b")); err != nil {
+		t.Skipf("hard links unsupported here: %v", err)
+	}
+	info, _ = os.Stat(p)
+	if n, ok = fileNlink(p, info); !ok || n != 2 {
+		t.Fatalf("after link: nlink=%d known=%v, want 2 known", n, ok)
+	}
+}
