@@ -17,6 +17,19 @@ going green is as much a finding as a green going red.
      -e CGO_ENABLED=0 golang:1.24-bookworm go build -o bin/abookify-e2e ./cmd/abookify
    Report: `ls -la bin/abookify-e2e` (mtime must be NOW; a stale mtime
    means the build silently failed — STOP and report, do not proceed).
+   FIXTURE DATA LIVES UNDER $HOME/.abookify-e2e/<board>, NOT /tmp: a /tmp wipe
+   (2026-09-18) took every fixture with it. Rebuild a board from its .abook
+   inputs with fixture-server.sh (imports FAIL LOUDLY):
+     F=testing/e2e/fixtures; R=$HOME/.abookify-e2e
+     E2E_PORT=8199 E2E_DIR=$R/canon E2E_CLEAN_ABOOK=$F/clean-carol.abook \
+       E2E_SECOND_ABOOK=$F/timemachine.abook setsid bash testing/e2e/fixture-server.sh
+     E2E_PORT=8198 E2E_DIR=$R/messy E2E_CLEAN_ABOOK=$F/messy-carol.abook \
+       E2E_SECOND_ABOOK=$F/timemachine.abook setsid bash testing/e2e/fixture-server.sh
+   (messy Carol goes in the CLEAN slot so it is work 1 — importing it NEXT TO
+   clean Carol 409s on identity dedupe.) The other boards' inputs (weak 8195,
+   poc 8196, repaired 8197, textonly 8194, audioonly 8193, degraded 8192) were
+   /tmp-only and have no committed recipe — rebuild from the register before
+   trusting their rows below. The board that exists is what was run; say so.
 2. RESTART the fleet — kill by PARSED PID only (a pattern pkill matches
    the runner itself; known self-kill, exit 144):
    for port in 8195 8196 8197 8198 8199; do
@@ -24,7 +37,7 @@ going green is as much a finding as a green going red.
      if [ -n "$pid" ]; then kill "$pid" || true; fi
    done
    for d in weak:8195 poc:8196 repaired:8197 messy:8198 canon:8199; do
-     dir=/tmp/abookify-e2e-${d%%:*}; port=${d##*:}
+     dir=$HOME/.abookify-e2e/${d%%:*}; port=${d##*:}
      nohup ./bin/abookify-e2e --data-dir "$dir" --port "$port" >/tmp/e2e-$port.log 2>&1 &
    done
 3. HEALTH WAIT — bounded loop, attempts recorded, NEVER an ad-hoc retry:

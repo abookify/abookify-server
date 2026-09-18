@@ -41,3 +41,6 @@ Thumbs.db
 dist/
 docker-compose.override.yml
 services/*/__pycache__/
+
+# e2e fixture .abooks (100+ MB each; regenerate per testing/e2e/fixtures/README.md)
+testing/e2e/fixtures/*.abook

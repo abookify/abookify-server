@@ -86,7 +86,55 @@ loaded by now") is a RULE-4 VIOLATION: it flakes under load and hides the wait.
 Convert every readiness sleep to `waitFor`; a settle may stay a bounded sleep,
 but prefer `waitFor` wherever a real condition exists to test.
 
-## Known debt (tracked, not hidden — RULE 1 applied to the runner itself)
+## RULE 5 — A readiness condition must mean what the sleep stood for
+
+Learned converting run-web.js (2026-09-18). Replacing `sleep(1800)` with "the
+detail's menu button exists" fired in ~5 ms — 1.8 s EARLIER than the sleep — and
+the drive that followed raced the still-in-flight hydrate: both seeks landed at
+0:00 and the run went 9/11 while the OLD runner, kept as a CONTROL and run on the
+same server in the same minute, was 11/11. Three corollaries, all bitten today:
+
+- **The condition is the drive's OUTCOME, not any state that happens to be true.**
+  "Audio is playing" was already true from the previous step; the right condition
+  for "seek to 697 s" is *the book clock sits at ~697 s*. Name the target in the
+  wait label (`seek-landed@697s`) so the artifact says what was waited for.
+- **Two async drives on one player: land the first before issuing the second.** A
+  faster second seek loses to a slower first one that resolves later.
+- **Keep the previous runner as a control** until the converted one is green on
+  the same board in the same session. A conversion that is faster AND red is the
+  conversion's bug until the control says otherwise.
+- **A precondition must be unambiguous.** Planting a resume position at exactly a
+  file edge let the player's auto-advance re-render the reader between the poll
+  and the assert. Plant ≥30 s from any edge, inside the DISPLAY edition.
+- **A green that a recorded TIMEOUT contradicts is a finding.** Work 85 passed
+  resume_flow while `resume-landed@~9372s` TIMED OUT: the plant had fallen into the
+  other edition and the map-extent assert was too weak to fail (RULE 2). The
+  assert now also requires landing within 90 s of the plant.
+
+## Guard matching (the "notarized" class)
+
+A guard whose match is looser than its intent fires on the name of the thing it
+watches for: a CI tripwire for "Notarize" cancelled a healthy run because the
+BUILD step's name contained "notarized next step". In run-web.js the same class
+was `text=/AUDIOBOOK|EBOOK/i` (matches the library's own copy), `[class*=card]`,
+and `/transcribe/i` over the whole body. Match ids and exact selectors
+(`#work-detail[data-hydrated="<id>"]`, `#gen-text-<id>`, `.work-card`), never a
+word that can appear in prose or in a label.
+
+## Conversion debt — CLOSED 2026-09-18 (task 15)
+
+Every readiness wait in `run-web.js` is a recorded, bounded `waitFor`; the two
+remaining fixed sleeps are MEASUREMENT windows (6 s clock check, 10 s karaoke
+window), which are meant to be fixed. In-page waits (shape boards, change_chapter)
+are bounded polls whose attempt counts are returned and recorded. Drive-step
+errors are recorded under their journey and fail it (`DRIVE ERRORS` block). The
+last `networkidle` goto (resume_flow's reload) is gone. Proven on a quiet server:
+8199 canon 11/11, 8198 messy 9/11 (its two named reds intact), live 7654 works
+85 + 28 11/11 — with every wait's attempts in the report and zero drive errors.
+The product gained one readiness signal for this: `#work-detail` sets
+`data-hydrated=<workId>` when every async hydrate step has settled.
+
+History of the debt (for the reasoning, not the status):
 
 - `run-web.js` currently uses blind `page.waitForTimeout(...)` for several
   READINESS waits (chapter render, reader mount, karaoke DOM). These flake under

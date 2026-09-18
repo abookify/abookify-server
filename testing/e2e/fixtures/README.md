@@ -9,3 +9,15 @@
 The messy fixture is load-bearing: the suite must FAIL correctly on its
 broken transcript (A1) and PASS its healthy journeys. A suite that only sees
 the pristine fixture has not been tested.
+
+## 2026-09-18 — provenance notes (read before trusting a copy)
+- `clean-carol.abook` = the showcase export `~/abookify-showcase/A Christmas Carol -
+  Charles Dickens (AI-narrated).abook` (same export lineage, same book ids). A copy
+  rescued from an old session scratchpad had a book.db whose sha256 did NOT match
+  its own manifest (edited after export) and the importer correctly refused it
+  (`book.db checksum: mismatch`) — kept as `*.TAMPERED-*.bad`, never use it.
+- `messy-carol.abook` (the load-bearing broken artifact) matches its manifest and
+  imports; it is the ONLY surviving copy — keep it here (gitignored) and back it up.
+- `timemachine.abook` = the showcase Time Machine export.
+- Check any copy before booting: `unzip -p X.abook book.db | sha256sum` must equal
+  the `checksums["book.db"]` in `unzip -p X.abook manifest.json`.

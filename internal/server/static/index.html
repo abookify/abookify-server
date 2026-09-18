@@ -5176,23 +5176,31 @@
       window.scrollTo(0, 0);
       fillTextTrustBadges(detail, true); // detail: keep a subtle entry for below-threshold works
       // Hydrate the panes (same work the accordion expand used to do).
-      hydrateWorkDetail(work);
+      // READINESS SIGNAL: data-hydrated=<workId> is set only once every async
+      // hydrate step has settled (chapter lists, resume decoration). The DOM shell
+      // above renders in ~5ms; a caller that seeks/resumes before the chapter
+      // lists land races the in-flight hydrate (the e2e runner's converted
+      // readiness wait hit exactly that: both seeks landed at 0:00). Anything
+      // that needs the detail DATA — not just its markup — waits on this attribute.
+      delete detail.dataset.hydrated;
+      hydrateWorkDetail(work).then(() => { if (currentDetailWorkId === work.id) detail.dataset.hydrated = String(work.id); });
       hydrateWorkProgress();
     }
 
-    function hydrateWorkDetail(work) {
+    async function hydrateWorkDetail(work) {
       const workId = work.id;
+      const pending = [];
       if (work.text_files) {
         for (const tf of work.text_files) {
-          if (tf.chapter_count > 0) loadChapterList(tf.id, workId);
+          if (tf.chapter_count > 0) pending.push(loadChapterList(tf.id, workId));
         }
       }
       // resumeIfSaved decorates the audio-file rows; markResumeOnTextToc
       // decorates the visible ebook-pane TOC (authoritative for time-synced
       // multi-file books, where the audio rows are hidden).
       if (work.has_audio) {
-        resumeIfSaved(workId);
-        markResumeOnTextToc(workId);
+        pending.push(resumeIfSaved(workId));
+        pending.push(markResumeOnTextToc(workId));
       }
       // Q&A chat sessions (no-op when LLM isn't configured).
       if (work.has_text && llmConfigured && document.getElementById('chat-tabs-' + workId)) {
@@ -5202,6 +5210,7 @@
       if ((work.text_files || []).some(tf => tf.format === 'epub')) {
         loadCast(workId);
       }
+      await Promise.allSettled(pending);
     }
 
     function closeWorkDetail() {
