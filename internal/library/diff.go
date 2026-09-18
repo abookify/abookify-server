@@ -581,8 +581,9 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 					Method:     "tts_construction",
 					Unit:       "word",
 					DirectionalCoverage: DirectionalCoverage{
-						AudioToEbook: 1,
-						EbookToAudio: 1,
+						AudioToEbook:       1,
+						EbookToAudio:       1,
+						AudioToEbookInText: 1, // provenance, like the two above — never a measured 0
 					},
 					Verdict: &EditionVerdict{
 						Bucket:        VerdictSameEdition,

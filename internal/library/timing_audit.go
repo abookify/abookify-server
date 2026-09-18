@@ -102,6 +102,12 @@ func AuditChapterTiming(store *db.Store, workID int64) (TimingReport, error) {
 	// transcript) has no timing to audit — its word map is not shown.
 	if wc, err := BuildCoverage(store, workID); err == nil {
 		for _, pc := range wc.Pairs {
+			// A TTS edition's pair is provenance, not an alignment: it says
+			// nothing about the narration chain under audit. Reading its
+			// unmeasured in-text figure as 0 skipped every dual-edition work.
+			if pc.ByConstruction {
+				continue
+			}
 			if pc.Ebook.BookID == ebook.ID && pc.Unit == "word" && pc.AudioToEbookInText < minChainConfidence {
 				rep.Skipped = fmt.Sprintf("weak chain (in-text quality %.2f) — the ebook highlight is not shown", pc.AudioToEbookInText)
 				return rep, nil
