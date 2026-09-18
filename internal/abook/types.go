@@ -11,16 +11,16 @@ const BookDBSchemaVersion = 1
 // at the root of a .abook v2 container. The heavy per-work detail lives in
 // book.db; this file is what mobile reads first to decide install/update.
 type Manifest struct {
-	Format   string `json:"format"`  // always "abook"
-	Version  int    `json:"version"` // container format MAJOR version (2)
+	Format  string `json:"format"`  // always "abook"
+	Version int    `json:"version"` // container format MAJOR version (2)
 	// MinorVersion is the container format minor version. Additive features bump
 	// it (readers keying off major Version==2 stay compatible). Minor 1 added
 	// bundled original ebook source files under originals/.
-	MinorVersion int   `json:"minor_version,omitempty"`
-	WorkID       int64 `json:"work_id"`
-	Title    string `json:"title"`
-	Author   string `json:"author"`
-	Language string `json:"language"`
+	MinorVersion int    `json:"minor_version,omitempty"`
+	WorkID       int64  `json:"work_id"`
+	Title        string `json:"title"`
+	Author       string `json:"author"`
+	Language     string `json:"language"`
 	// SourceKind summarizes what this work is: "aligned" | "transcript" |
 	// "text-only" | "audio-only". Drives the library listing badge.
 	SourceKind string `json:"source_kind"`
@@ -55,8 +55,8 @@ type Manifest struct {
 	// HasAudio / HasOriginalEbook make the container's contents explicit (vs
 	// inferring from the file list). Audio is opt-in (size); the original ebook
 	// source file(s) bundle by default (small, for fidelity + portability).
-	HasAudio         bool           `json:"has_audio"`
-	HasOriginalEbook bool           `json:"has_original_ebook"`
+	HasAudio         bool `json:"has_audio"`
+	HasOriginalEbook bool `json:"has_original_ebook"`
 	// Originals lists the bundled original source files under originals/. The
 	// carved book.db remains the render source; these are the untouched inputs.
 	Originals []OriginalFile `json:"originals,omitempty"`

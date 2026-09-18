@@ -32,11 +32,11 @@ type FileEntry struct {
 type SourceRow struct {
 	Filename   string `json:"filename"`
 	Format     string `json:"format"`
-	MediaType  string `json:"media_type"`  // "audio" | "text"
-	Origin     string `json:"origin"`      // publisher_epub, whisper_transcript, …
-	Visibility string `json:"visibility"`  // visible | internal
+	MediaType  string `json:"media_type"` // "audio" | "text"
+	Origin     string `json:"origin"`     // publisher_epub, whisper_transcript, …
+	Visibility string `json:"visibility"` // visible | internal
 	Chapters   int    `json:"chapters"`
-	Bundled    bool   `json:"bundled"`     // audio bundled in this .abook
+	Bundled    bool   `json:"bundled"` // audio bundled in this .abook
 }
 
 // ArchiveInfo is the full read-only view `abook info` reports.
@@ -57,8 +57,9 @@ type ArchiveInfo struct {
 
 // DirectionalCoverage expresses an alignment's coverage in both directions
 // (mirrors internal/library; the two numbers mean different things):
-//   Quality (audio→ebook) = how much of the narration is backed by ebook text.
-//   Scope   (ebook→audio) = how much of the ebook is actually narrated.
+//
+//	Quality (audio→ebook) = how much of the narration is backed by ebook text.
+//	Scope   (ebook→audio) = how much of the ebook is actually narrated.
 type DirectionalCoverage struct {
 	QualityPct float64 `json:"quality_pct"` // audio→ebook (aligned_trans/trans)
 	ScopePct   float64 `json:"scope_pct"`   // ebook→audio (aligned_ebook/ebook)

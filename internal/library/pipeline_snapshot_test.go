@@ -12,7 +12,9 @@
 // ships.
 //
 // To regenerate the golden after a deliberate algorithm change: run
-//   go test ./internal/library/... -run TestPipelineSnapshot -update
+//
+//	go test ./internal/library/... -run TestPipelineSnapshot -update
+//
 // and review the diff before committing.
 package library
 
@@ -40,11 +42,11 @@ type snapshot struct {
 }
 
 type chapterSnapshot struct {
-	Index          int      `json:"index"`
-	Title          string   `json:"title"`
-	WordCount      int      `json:"word_count"`
-	ParagraphCount int      `json:"paragraph_count"`
-	FirstSentence  string   `json:"first_sentence"` // first ~80 chars of paragraph 0
+	Index          int    `json:"index"`
+	Title          string `json:"title"`
+	WordCount      int    `json:"word_count"`
+	ParagraphCount int    `json:"paragraph_count"`
+	FirstSentence  string `json:"first_sentence"` // first ~80 chars of paragraph 0
 }
 
 type gapSnapshot struct {

@@ -375,7 +375,7 @@ func TestHandleWorkCoverage(t *testing.T) {
 	// HoD-shaped: lots of ebook-only (collection), little trans-only.
 	payload := library.AnchorAlignmentPayload{
 		Method: "anchor", Unit: "word", EbookWords: 1000, TransWords: 400, Coverage: 0.3,
-		Segments: []library.Segment{{EbookStart: 0, EbookEnd: 1, TransStart: 0, TransEnd: 1, Kind: library.SegAligned}},
+		Segments:   []library.Segment{{EbookStart: 0, EbookEnd: 1, TransStart: 0, TransEnd: 1, Kind: library.SegAligned}},
 		Divergence: library.DivergenceSummary{EbookOnlyWords: 700, TransOnlyWords: 40},
 	}
 	pj, _ := json.Marshal(payload)
@@ -454,8 +454,8 @@ func TestHandleGetCastGracefulDefault(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var got struct {
-		Experimental bool          `json:"experimental"`
-		Enabled      bool          `json:"enabled"`
+		Experimental bool           `json:"experimental"`
+		Enabled      bool           `json:"enabled"`
 		Characters   []db.Character `json:"characters"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {

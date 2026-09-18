@@ -29,8 +29,8 @@ type CanonEdition struct {
 	// recordings by their directory ("narr:a-christmas-carol"). The label
 	// backfill migration (2026-08-09, 44 rows + work 85's 3) made labels
 	// consistent, but consumers should bind to Key, never to the label.
-	Key        string  `json:"key"`
-	Label      string  `json:"label"` // display label ("" = unlabeled)
+	Key   string `json:"key"`
+	Label string `json:"label"` // display label ("" = unlabeled)
 	// Condition is the edition's rolled-up production testimony (task 12):
 	// "complete" (every file's producer testified complete), "degraded"
 	// (any file degraded — Reason says why), or "unknown" (some file has no
@@ -38,12 +38,12 @@ type CanonEdition struct {
 	// DESIGN — most of the library on day one, and the UIs must say so
 	// rather than dress it as complete). Canon READS testimony; it never
 	// authors it.
-	Condition       string `json:"condition"`
-	ConditionReason string `json:"condition_reason,omitempty"`
-	Origin     string  `json:"origin"`
-	Voice      string  `json:"voice,omitempty"` // TTS voice when known
-	Dir        string  `json:"dir"`             // grouping key (audio file directory)
-	BookIDs    []int64 `json:"book_ids"`
+	Condition       string  `json:"condition"`
+	ConditionReason string  `json:"condition_reason,omitempty"`
+	Origin          string  `json:"origin"`
+	Voice           string  `json:"voice,omitempty"` // TTS voice when known
+	Dir             string  `json:"dir"`             // grouping key (audio file directory)
+	BookIDs         []int64 `json:"book_ids"`
 	// ChaptersAnchorBookID names the book holding this edition's
 	// whole-timeline chapter rows (sidecar convention: chapters land on one
 	// anchor book with edition-continuous times). Consumers probing for
@@ -51,10 +51,10 @@ type CanonEdition struct {
 	// live 85 only because its anchor happened to sort first, and broke on
 	// 8195 where it didn't (the list-projection discovery defect). Absent
 	// (0) = the edition has no chapter rows anywhere.
-	ChaptersAnchorBookID int64 `json:"chapters_anchor_book_id,omitempty"`
-	Files      int     `json:"files"`
-	Duration   float64 `json:"duration_secs"`
-	AudioChaps int     `json:"audio_chapters"` // chapter rows across the edition's books
+	ChaptersAnchorBookID int64   `json:"chapters_anchor_book_id,omitempty"`
+	Files                int     `json:"files"`
+	Duration             float64 `json:"duration_secs"`
+	AudioChaps           int     `json:"audio_chapters"` // chapter rows across the edition's books
 }
 
 // CanonText is one text source of a work.
@@ -92,8 +92,8 @@ type WorkCanon struct {
 		// ChaptersAnchorBookID mirrors the active edition's anchor (see
 		// CanonEdition) so a consumer needs exactly one probe.
 		ChaptersAnchorBookID int64 `json:"chapters_anchor_book_id,omitempty"`
-		TextBookID   int64  `json:"text_book_id"`
-		TextChapters int    `json:"text_chapters"`
+		TextBookID           int64 `json:"text_book_id"`
+		TextChapters         int   `json:"text_chapters"`
 	} `json:"active"`
 	TotalAudioFiles int `json:"total_audio_files"`
 	TotalTexts      int `json:"total_texts"`

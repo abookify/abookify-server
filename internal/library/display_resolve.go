@@ -4,9 +4,9 @@
 // first available source without considering authority.
 //
 // Resolution order:
-//   1. User override per work (if persisted in settings — future)
-//   2. Highest OriginAuthority among visible sources of the requested media type
-//   3. Nil if no qualifying source exists
+//  1. User override per work (if persisted in settings — future)
+//  2. Highest OriginAuthority among visible sources of the requested media type
+//  3. Nil if no qualifying source exists
 package library
 
 import (

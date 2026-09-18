@@ -109,9 +109,9 @@ func TestAlign_RealData(t *testing.T) {
 		// Report the biggest divergence segments — these are the audiobook
 		// intros/outros and ebook front/back-matter the aligner found.
 		type div struct {
-			kind             SegmentKind
-			eWords, tWords   int
-			eStart           int
+			kind           SegmentKind
+			eWords, tWords int
+			eStart         int
 		}
 		var divs []div
 		for _, s := range a.Segments {

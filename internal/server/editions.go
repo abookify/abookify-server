@@ -18,13 +18,13 @@ import (
 
 // EditionView is one grouped edition of a work.
 type EditionView struct {
-	Key          string  `json:"key"`             // stable group key
-	Media        string  `json:"media"`           // "audio" | "text"
-	Label        string  `json:"label"`           // display name (edition/album/origin)
-	Edition      string  `json:"edition"`         // raw edition label ("" = default), for relabel
-	Provenance   string  `json:"provenance"`      // friendly source label
-	ProvKind     string  `json:"prov_kind"`       // human | tts | transcript | publisher | personal
-	BookIDs      []int64 `json:"book_ids"`        // every file in this edition
+	Key          string  `json:"key"`        // stable group key
+	Media        string  `json:"media"`      // "audio" | "text"
+	Label        string  `json:"label"`      // display name (edition/album/origin)
+	Edition      string  `json:"edition"`    // raw edition label ("" = default), for relabel
+	Provenance   string  `json:"provenance"` // friendly source label
+	ProvKind     string  `json:"prov_kind"`  // human | tts | transcript | publisher | personal
+	BookIDs      []int64 `json:"book_ids"`   // every file in this edition
 	FileCount    int     `json:"file_count"`
 	Format       string  `json:"format,omitempty"`
 	DurationSecs float64 `json:"duration_secs,omitempty"`

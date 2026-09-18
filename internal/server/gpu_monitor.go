@@ -50,8 +50,8 @@ type deviceAlarm int
 const (
 	alarmNone       deviceAlarm = iota
 	alarmStartedCPU             // first-ever read is cpu (info: slow, not a regression)
-	alarmDowngrade             // cuda→cpu after a known-good state (LOUD error)
-	alarmRestored              // cpu→cuda recovery (info)
+	alarmDowngrade              // cuda→cpu after a known-good state (LOUD error)
+	alarmRestored               // cpu→cuda recovery (info)
 )
 
 // deviceTransition decides, from the last-known baseline and a freshly read

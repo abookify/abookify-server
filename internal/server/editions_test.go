@@ -43,10 +43,10 @@ func TestGroupEditions(t *testing.T) {
 
 func TestProvenanceFor(t *testing.T) {
 	cases := map[string][2]string{
-		"librivox":     {"LibriVox (human)", "human"},
-		"tts_kokoro":   {"Kokoro TTS (Abookify)", "tts"},
-		"user_upload":  {"Your import", "personal"},
-		"":             {"Your import", "personal"},
+		"librivox":       {"LibriVox (human)", "human"},
+		"tts_kokoro":     {"Kokoro TTS (Abookify)", "tts"},
+		"user_upload":    {"Your import", "personal"},
+		"":               {"Your import", "personal"},
 		"publisher_epub": {"Publisher EPUB", "publisher"},
 	}
 	for origin, want := range cases {

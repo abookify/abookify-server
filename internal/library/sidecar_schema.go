@@ -142,9 +142,9 @@ type CharacterSection struct {
 
 // SidecarCharacterChapter holds the per-chapter character delta.
 type SidecarCharacterChapter struct {
-	ChapterIdx   int                       `json:"chapter_idx"`
-	Introduced   []SidecarCharacterIntro   `json:"introduced,omitempty"`
-	StateUpdates []SidecarCharacterUpdate  `json:"state_updates,omitempty"`
+	ChapterIdx   int                      `json:"chapter_idx"`
+	Introduced   []SidecarCharacterIntro  `json:"introduced,omitempty"`
+	StateUpdates []SidecarCharacterUpdate `json:"state_updates,omitempty"`
 }
 
 // SidecarCharacterIntro is a character first appearing in the chapter.

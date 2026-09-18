@@ -1,9 +1,10 @@
 // sidecar-upgrade: bring .stt.json files up to the latest schema version.
 //
 // Usage:
-//   sidecar-upgrade <path>...        # upgrade one or more files in place
-//   sidecar-upgrade -dir <directory> # upgrade every *.stt.json under a tree
-//   sidecar-upgrade -check <path>    # report version without rewriting
+//
+//	sidecar-upgrade <path>...        # upgrade one or more files in place
+//	sidecar-upgrade -dir <directory> # upgrade every *.stt.json under a tree
+//	sidecar-upgrade -check <path>    # report version without rewriting
 //
 // The actual upgrade logic lives in internal/library — this CLI is a thin
 // wrapper so batch jobs and CI can invoke it directly. The server itself

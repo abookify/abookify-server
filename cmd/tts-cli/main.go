@@ -110,14 +110,14 @@ func synthesize(client *tts.Client, text, voice, output, sourceFile string) {
 	// Sidecar JSON describing the synthesis for test fixtures.
 	sidecarPath := strings.TrimSuffix(output, filepath.Ext(output)) + ".tts.json"
 	sidecar := ttsSidecar{
-		OutputMP3:    filepath.Base(output),
-		SourceText:   sourceFile,
-		Voice:        voice,
-		WordCount:    words,
-		ChunkCount:   len(chunks),
-		OutputBytes:  len(allAudio),
-		ElapsedSecs:  elapsed.Seconds(),
-		KokoroURL:    client.BaseURL(),
+		OutputMP3:     filepath.Base(output),
+		SourceText:    sourceFile,
+		Voice:         voice,
+		WordCount:     words,
+		ChunkCount:    len(chunks),
+		OutputBytes:   len(allAudio),
+		ElapsedSecs:   elapsed.Seconds(),
+		KokoroURL:     client.BaseURL(),
 		SynthesizedAt: time.Now().Format(time.RFC3339),
 	}
 	sidecarData, _ := json.MarshalIndent(sidecar, "", "  ")

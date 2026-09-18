@@ -210,10 +210,18 @@ func Info(component, msg string)  { Log(LevelInfo, component, "", 0, msg, nil) }
 func Warn(component, msg string)  { Log(LevelWarn, component, "", 0, msg, nil) }
 func Error(component, msg string) { Log(LevelError, component, "", 0, msg, nil) }
 
-func Debugf(component, format string, a ...any) { Log(LevelDebug, component, "", 0, fmt.Sprintf(format, a...), nil) }
-func Infof(component, format string, a ...any)  { Log(LevelInfo, component, "", 0, fmt.Sprintf(format, a...), nil) }
-func Warnf(component, format string, a ...any)  { Log(LevelWarn, component, "", 0, fmt.Sprintf(format, a...), nil) }
-func Errorf(component, format string, a ...any) { Log(LevelError, component, "", 0, fmt.Sprintf(format, a...), nil) }
+func Debugf(component, format string, a ...any) {
+	Log(LevelDebug, component, "", 0, fmt.Sprintf(format, a...), nil)
+}
+func Infof(component, format string, a ...any) {
+	Log(LevelInfo, component, "", 0, fmt.Sprintf(format, a...), nil)
+}
+func Warnf(component, format string, a ...any) {
+	Log(LevelWarn, component, "", 0, fmt.Sprintf(format, a...), nil)
+}
+func Errorf(component, format string, a ...any) {
+	Log(LevelError, component, "", 0, fmt.Sprintf(format, a...), nil)
+}
 
 // JobEvent records a job-scoped event under component "jobs". The
 // generation queue uses it for status transitions; the transcription

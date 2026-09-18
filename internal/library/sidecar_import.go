@@ -910,6 +910,7 @@ func detectPartsFromSilences(sc *sttSidecar) []sttChapter {
 //     is a segment boundary or interpolated zero.
 //   - Every silence carries a source tag (silencedetect/vad/both) so we
 //     could eventually weight by detector agreement.
+//
 // minSilenceChapterGapSecs is the shortest span two silence-derived chapter
 // boundaries may be apart. Real chapters run minutes; sub-30s "chapters" are
 // artifacts of stacked silences (file joins + intro pauses).

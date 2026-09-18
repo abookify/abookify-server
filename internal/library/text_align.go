@@ -151,5 +151,3 @@ func normalizeWord(w string) string {
 	})
 	return w
 }
-
-

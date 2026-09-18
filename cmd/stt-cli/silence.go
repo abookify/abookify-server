@@ -15,9 +15,9 @@ type silenceEvent struct {
 	Start    float64 `json:"s"`
 	End      float64 `json:"e"`
 	Duration float64 `json:"duration"`
-	Source   string  `json:"source"`  // "silencedetect" | "vad" | "both"
-	RmsDB   float64 `json:"rms_db,omitempty"`
-	Kind     string  `json:"kind"`    // classified later: chapter/paragraph/sentence/breath
+	Source   string  `json:"source"` // "silencedetect" | "vad" | "both"
+	RmsDB    float64 `json:"rms_db,omitempty"`
+	Kind     string  `json:"kind"` // classified later: chapter/paragraph/sentence/breath
 }
 
 var (

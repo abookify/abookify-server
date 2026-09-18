@@ -69,7 +69,7 @@ func alignWordsDP(ebookNorm, transcriptNorm []string) []wordMatch {
 			}
 			diag := score[idx(i-1, j-1)] + s
 			up := score[idx(i-1, j)] + gapScore   // gap in transcript
-			left := score[idx(i, j-1)] + gapScore  // gap in ebook
+			left := score[idx(i, j-1)] + gapScore // gap in ebook
 			best := diag
 			if up > best {
 				best = up

@@ -51,7 +51,7 @@ func TestInAnyRange(t *testing.T) {
 		expect bool
 	}{
 		{0, false},
-		{5, true},   // boundary start: inclusive
+		{5, true}, // boundary start: inclusive
 		{9.99, true},
 		{10, false}, // boundary end: exclusive
 		{15, false},

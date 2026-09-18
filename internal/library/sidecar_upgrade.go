@@ -16,11 +16,11 @@ import (
 // target during upgrade so we don't need separate v1Sidecar/v2Sidecar
 // types — fields absent in v1 just stay zero-valued.
 type legacySidecar struct {
-	Version  int           `json:"version"` // 0 (v1) or 2
-	Language string        `json:"language"`
-	Duration float64       `json:"duration"`
-	Text     string        `json:"text"`
-	Words    []legacyWord  `json:"words"`
+	Version  int             `json:"version"` // 0 (v1) or 2
+	Language string          `json:"language"`
+	Duration float64         `json:"duration"`
+	Text     string          `json:"text"`
+	Words    []legacyWord    `json:"words"`
 	Silences []legacySilence `json:"silences"`
 	Sources  []legacySource  `json:"sources"`
 	Chapters []legacyChapter `json:"chapters"`

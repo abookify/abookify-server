@@ -4,15 +4,15 @@
 // user can fix Whisper failures without dropping to a CLI.
 //
 // Flow:
-//   1. Read the existing sidecar from disk.
-//   2. For each filename requested, find the matching audio book in
-//      the work, run transcribeChunked against it, shift timestamps
-//      onto the concatenated timeline using the sidecar's sources[]
-//      offsets.
-//   3. Merge: drop existing words whose Start falls in any redone
-//      file's time range, append the new words, re-sort.
-//   4. Write the sidecar back, then call ReimportWork to refresh the
-//      DB rows (chapters, paragraphs, transcription_gaps).
+//  1. Read the existing sidecar from disk.
+//  2. For each filename requested, find the matching audio book in
+//     the work, run transcribeChunked against it, shift timestamps
+//     onto the concatenated timeline using the sidecar's sources[]
+//     offsets.
+//  3. Merge: drop existing words whose Start falls in any redone
+//     file's time range, append the new words, re-sort.
+//  4. Write the sidecar back, then call ReimportWork to refresh the
+//     DB rows (chapters, paragraphs, transcription_gaps).
 //
 // Silences for the redone range are intentionally NOT recomputed —
 // silencedetect already ran during the original sidecar build for
@@ -38,14 +38,14 @@ import (
 // need are typed; everything else passes through as json.RawMessage so
 // we don't accidentally drop forward-compatible additions.
 type rawSidecar struct {
-	Version  int               `json:"version"`
-	Schema   string            `json:"schema"`
-	Language string            `json:"language,omitempty"`
-	Duration float64           `json:"duration"`
-	Sources  []sttSource       `json:"sources,omitempty"`
-	Words    []sttWord         `json:"words"`
-	Silences []sttSilence      `json:"silences,omitempty"`
-	Metadata json.RawMessage   `json:"metadata,omitempty"`
+	Version  int             `json:"version"`
+	Schema   string          `json:"schema"`
+	Language string          `json:"language,omitempty"`
+	Duration float64         `json:"duration"`
+	Sources  []sttSource     `json:"sources,omitempty"`
+	Words    []sttWord       `json:"words"`
+	Silences []sttSilence    `json:"silences,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // redoTranscriptionForFiles is the workhorse called by the queue.

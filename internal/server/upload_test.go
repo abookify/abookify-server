@@ -14,11 +14,11 @@ import (
 func TestSafeImportPath(t *testing.T) {
 	imp := "/lib/imports"
 	cases := []struct{ rel, name, want string }{
-		{"All Quiet/01.mp3", "01.mp3", "/lib/imports/All Quiet/01.mp3"},          // folder preserved
-		{"", "loose.mp3", "/lib/imports/loose.mp3"},                             // no rel → flat
-		{"../../etc/passwd", "x.mp3", "/lib/imports/etc/x.mp3"},                 // .. dropped; filename used; stays contained
-		{"a/../../b/c.mp3", "c.mp3", "/lib/imports/a/b/c.mp3"},                  // .. segments dropped (stays contained)
-		{"sub/", "f.mp3", "/lib/imports/sub/f.mp3"},                             // trailing slash → filename
+		{"All Quiet/01.mp3", "01.mp3", "/lib/imports/All Quiet/01.mp3"}, // folder preserved
+		{"", "loose.mp3", "/lib/imports/loose.mp3"},                     // no rel → flat
+		{"../../etc/passwd", "x.mp3", "/lib/imports/etc/x.mp3"},         // .. dropped; filename used; stays contained
+		{"a/../../b/c.mp3", "c.mp3", "/lib/imports/a/b/c.mp3"},          // .. segments dropped (stays contained)
+		{"sub/", "f.mp3", "/lib/imports/sub/f.mp3"},                     // trailing slash → filename
 	}
 	for _, c := range cases {
 		if got := safeImportPath(imp, c.rel, c.name); got != c.want {

@@ -8,12 +8,12 @@ import "testing"
 // substitutions must remain distinct.
 func TestNormalizeForCompare(t *testing.T) {
 	equal := [][2]string{
-		{"You", "you"},                         // case
-		{`he said "You`, "he said You"},         // STT leading-quote artifact
-		{"stomped on to", "stomped onto"},       // compounding + whitespace
-		{"hung over", "hungover"},               // compounding
-		{"Don't,", "dont"},                      // apostrophe + comma
-		{"well-being", "well being"},            // hyphen vs space
+		{"You", "you"},                           // case
+		{`he said "You`, "he said You"},          // STT leading-quote artifact
+		{"stomped on to", "stomped onto"},        // compounding + whitespace
+		{"hung over", "hungover"},                // compounding
+		{"Don't,", "dont"},                       // apostrophe + comma
+		{"well-being", "well being"},             // hyphen vs space
 		{"“Hello,” she said.", "hello she said"}, // smart quotes + punctuation
 	}
 	for _, c := range equal {
@@ -71,15 +71,15 @@ func TestNormalizeForCompareSpelling(t *testing.T) {
 	}
 	// These must STAY distinct — the rules must not collapse different words.
 	differ := [][2]string{
-		{"four", "for"},     // -our guard (short word)
-		{"flour", "flor"},   // -our exception
-		{"pouring", "poring"},   // pour stem excepted (would collide)
-		{"scouring", "scoring"}, // scour stem excepted (would collide)
-		{"score", "scorer"}, // -re vowel guard (score stays score)
-		{"timbre", "timber"}, // -re exception (different word)
-		{"reward", "rewards"}, // -wards exception
+		{"four", "for"},            // -our guard (short word)
+		{"flour", "flor"},          // -our exception
+		{"pouring", "poring"},      // pour stem excepted (would collide)
+		{"scouring", "scoring"},    // scour stem excepted (would collide)
+		{"score", "scorer"},        // -re vowel guard (score stays score)
+		{"timbre", "timber"},       // -re exception (different word)
+		{"reward", "rewards"},      // -wards exception
 		{"gambolling", "gambling"}, // gambol vs gamble — real mishear, must stay
-		{"colour", "flavour"}, // both fold, but to color vs flavor (distinct)
+		{"colour", "flavour"},      // both fold, but to color vs flavor (distinct)
 	}
 	for _, c := range differ {
 		if normalizeForCompare(c[0]) == normalizeForCompare(c[1]) {
@@ -100,8 +100,8 @@ func TestDisplayTokenizeMatchesTokenize(t *testing.T) {
 		"plain lowercase words",
 		"Title Case With Caps",
 		"ALL CAPS HEADING",
-		"don't can't it's o'clock",          // apostrophes
-		"Chapter 1: the year 1984, vol. 2",  // digits + punctuation
+		"don't can't it's o'clock",         // apostrophes
+		"Chapter 1: the year 1984, vol. 2", // digits + punctuation
 		"em—dash and ‘curly’ and “quotes”",  // unicode punctuation
 		"naïve café résumé Zoë",             // accented letters (stripped both ways)
 		"Mr. Frankenstein, who had spoken,", // commas/periods

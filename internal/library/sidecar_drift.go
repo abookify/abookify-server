@@ -39,12 +39,12 @@ import (
 
 // Drift verdicts.
 const (
-	DriftOK          = "ok"            // the database reflects the sidecar
-	DriftStale       = "stale"         // sidecar on disk differs from the imported text
-	DriftNotImported = "not_imported"  // sidecar exists, no transcript book at all
-	DriftNoSidecar   = "no_sidecar"    // nothing to compare (never transcribed)
-	DriftUnreadable  = "unreadable"    // sidecar present but unparseable
-	DriftChunksOnly  = "chunks_stale"  // text matches, retrieval index does not
+	DriftOK          = "ok"           // the database reflects the sidecar
+	DriftStale       = "stale"        // sidecar on disk differs from the imported text
+	DriftNotImported = "not_imported" // sidecar exists, no transcript book at all
+	DriftNoSidecar   = "no_sidecar"   // nothing to compare (never transcribed)
+	DriftUnreadable  = "unreadable"   // sidecar present but unparseable
+	DriftChunksOnly  = "chunks_stale" // text matches, retrieval index does not
 )
 
 // driftGram is the n-gram width compared. Long enough that a match is not
@@ -79,10 +79,10 @@ const driftMinMatchPct = 0.99
 
 // SidecarDrift is one work's verdict.
 type SidecarDrift struct {
-	WorkID       int64  `json:"work_id"`
-	Title        string `json:"title"`
-	State        string `json:"state"`
-	SidecarPath  string `json:"sidecar_path,omitempty"`
+	WorkID       int64   `json:"work_id"`
+	Title        string  `json:"title"`
+	State        string  `json:"state"`
+	SidecarPath  string  `json:"sidecar_path,omitempty"`
 	SidecarWords int     `json:"sidecar_words,omitempty"`
 	DBWords      int     `json:"db_words,omitempty"`
 	Editions     int     `json:"editions,omitempty"`

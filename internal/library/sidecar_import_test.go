@@ -812,7 +812,13 @@ func TestSilenceChapterBoundariesCoalesce(t *testing.T) {
 	chs := detectChaptersFromSilences(sc)
 	if len(chs) != 2 {
 		t.Fatalf("chapters = %d, want 2 (coalesced), got starts %v", len(chs),
-			func() []float64 { var s []float64; for _, c := range chs { s = append(s, c.Start) }; return s }())
+			func() []float64 {
+				var s []float64
+				for _, c := range chs {
+					s = append(s, c.Start)
+				}
+				return s
+			}())
 	}
 	for i := 1; i < len(chs); i++ {
 		if chs[i].Start-chs[i-1].Start < minSilenceChapterGapSecs {

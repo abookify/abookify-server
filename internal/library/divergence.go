@@ -23,17 +23,17 @@ type ParagraphCoverage struct {
 
 // DivergenceReport is the overall divergence summary for a work.
 type DivergenceReport struct {
-	WorkID              int64               `json:"work_id"`
-	EbookBookID         int64               `json:"ebook_book_id"`
-	TranscriptBookID    int64               `json:"transcript_book_id"`
-	TotalParagraphs     int                 `json:"total_paragraphs"`
-	CoveredParagraphs   int                 `json:"covered_paragraphs"`
-	PartialParagraphs   int                 `json:"partial_paragraphs"`
-	MissingParagraphs   int                 `json:"missing_paragraphs"`
-	CoverageRatio       float64             `json:"coverage_ratio"` // covered / total
-	OverallConfidence   float64             `json:"overall_confidence"`
-	Paragraphs          []ParagraphCoverage `json:"paragraphs,omitempty"`
-	Summary             string              `json:"summary"` // human-readable one-liner
+	WorkID            int64               `json:"work_id"`
+	EbookBookID       int64               `json:"ebook_book_id"`
+	TranscriptBookID  int64               `json:"transcript_book_id"`
+	TotalParagraphs   int                 `json:"total_paragraphs"`
+	CoveredParagraphs int                 `json:"covered_paragraphs"`
+	PartialParagraphs int                 `json:"partial_paragraphs"`
+	MissingParagraphs int                 `json:"missing_paragraphs"`
+	CoverageRatio     float64             `json:"coverage_ratio"` // covered / total
+	OverallConfidence float64             `json:"overall_confidence"`
+	Paragraphs        []ParagraphCoverage `json:"paragraphs,omitempty"`
+	Summary           string              `json:"summary"` // human-readable one-liner
 }
 
 // thresholds for classifying paragraph coverage
