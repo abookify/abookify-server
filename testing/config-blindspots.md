@@ -50,6 +50,18 @@ Also monitored, not blind: CAS sidecar-present vs -absent editions
 (transitional by design — key-miss regenerates; P&P pre-deploy files
 gained sidecars on resume, WotW born with them).
 
+## Sweep 3 (2026-09-18, the showcase close — three found by checking things that already read green)
+| Shape | Reached by | Status | Owner / artifact |
+|---|---|---|---|
+| human+TTS two narrations, through the TIMING AUDIT | nothing — the audit read the TTS edition's `tts_construction` coverage pair (in-text = 0, never populated) and skipped every dual-edition work as "weak chain"; all 11 showcase works had NO verdict while the audit reported "24 ok" | **CLOSED 2026-09-18** (47c0420): by-construction pairs ignored by the audit and given in-text = 1; sweep 24 → 33 verdicts. Lesson for the register: an instrument's no-verdict count is itself a blind-spot signal — 48 "skipped" hid a whole shipping class | mine — the store-backed audit test now covers a healthy + drifted bake; a dual-edition fixture row in that test would pin this specific skip |
+| a TWO-narration `.abook` on the RECEIVING server (distributable sample shape) | only 8197 (an "honest red") — no green path exists: the importer colocates both narrations in one dir, canon sees two voices in one edition → incoherent, resume n/a. Found when the first showcase cut (11 two-narration files) was gated on a fresh server | BLIND by product: the shape cannot be green until the importer separates editions per (origin, voice). Showcase ships single-narration files meanwhile | server-web: importer per-edition subdirs; then 8197 flips green (report it when it does — its red is load-bearing today) |
+| a newcomer importing BOTH the human and the AI-narrated file of the SAME title | nothing — every fixture imports different titles because a same-title second import 409s on identity dedupe; the showcase now ships exactly this pair for 11 titles | BLIND (product question: merge into one work as a second edition vs refuse) | server-web/product decision; then a fixture with human+AI Carol imported in sequence |
+
+Also from this sweep, monitored not blind: LibriVox per-file intros put the
+first ebook word 25–55 s after the spoken "Stave N" (Carol) — the timing
+audit's 30 s tolerance calls that DRIFT; it is a constant per-file offset,
+not a growing one. Structural false positive, stated on the report, left.
+
 ## Notes
 - 8199 work 2 (Time Machine, human+transcript+epub) sits in the fixture
   UNEXERCISED — the gate runs work 1 only. Free coverage if a journey
