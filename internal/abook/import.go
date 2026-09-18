@@ -22,34 +22,94 @@ import (
 // with fresh server-assigned IDs (only book ids need remapping — chapter and
 // sync references key off index numbers, which are stable). Audio + cover are
 // extracted under {libraryDir}/abooks/{title}/.
+// ImportOptions steers an import that must land INSIDE an existing work.
+//
+// THE DEFECT THIS REMOVES (2026-09-18, launch-relevant): the live showcase picker
+// offers both the human-narrated and the AI-narrated A Christmas Carol. The first
+// import made a work; the second, same title + author, hit identity dedupe and was
+// SKIPPED — the picker said "Already in your library" and opened the narration the
+// visitor already had. The second narration never arrived and the button said it
+// did. Even forced in (on_conflict=new) it became a duplicate WORK, and both
+// narrations extracted into the same abooks/<title>/audio/ directory — canon groups
+// editions BY DIRECTORY, so that is one edition with two voices: incoherent (the
+// fleet's 8197 shape). Two problems, one root: the importer colocated editions.
+//
+// Now every import extracts into abooks/<title>/<edition>/ (one directory per
+// narration, so editions stay distinct by construction), and IntoWorkID makes a
+// same-title file land as a SECOND EDITION of the existing work: its narration is
+// added, a text source identical to one the work already holds (same format,
+// chapter count and word count — the same publisher EPUB in both files) is reused
+// rather than duplicated, and its alignments/links are remapped onto the reused
+// text. On any failure only the books added by THIS import are rolled back — the
+// existing work is never touched. Existing works keep their paths: nothing here
+// moves a file that is already in the library, so PJ's two-edition works need no
+// migration.
+type ImportOptions struct {
+	IntoWorkID int64 // 0 = create a new work (the classic import)
+}
+
+// ImportResult says what the import did, for the caller's UI.
+type ImportResult struct {
+	WorkID      int64
+	Edition     string // the edition directory name this file landed in
+	AddedBooks  int
+	ReusedTexts int  // incoming text sources that matched an existing one and were reused
+	Skipped     bool // IntoWorkID already held this exact edition (idempotent re-import)
+}
+
+// Import is the classic entry point: a new work.
 func Import(store *db.Store, abookPath string, libraryDir string) error {
+	_, err := ImportInto(store, abookPath, libraryDir, ImportOptions{})
+	return err
+}
+
+// ImportInto imports an .abook, optionally as an additional edition of an
+// existing work (see ImportOptions).
+func ImportInto(store *db.Store, abookPath string, libraryDir string, opts ImportOptions) (*ImportResult, error) {
 	r, err := zip.OpenReader(abookPath)
 	if err != nil {
-		return fmt.Errorf("open abook: %w", err)
+		return nil, fmt.Errorf("open abook: %w", err)
 	}
 	defer r.Close()
 
 	manifestData, err := readFromZip(&r.Reader, "manifest.json")
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return nil, fmt.Errorf("read manifest: %w", err)
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return fmt.Errorf("parse manifest: %w", err)
+		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	if manifest.Format != "abook" {
-		return fmt.Errorf("not an abook file (format: %q)", manifest.Format)
+		return nil, fmt.Errorf("not an abook file (format: %q)", manifest.Format)
 	}
 	if manifest.Version != 2 {
-		return fmt.Errorf("unsupported .abook version %d (expected 2)", manifest.Version)
+		return nil, fmt.Errorf("unsupported .abook version %d (expected 2)", manifest.Version)
 	}
 
 	log.Printf("abook import: %q by %s (v2)", manifest.Title, manifest.Author)
 
 	safeName := sanitizeFilename(manifest.Title)
-	outDir := filepath.Join(libraryDir, "abooks", safeName)
+	// One directory PER EDITION under the title: canon derives editions from the
+	// audio files' directory, so two narrations of one book must never share one.
+	edition, err := editionDirName(&r.Reader, manifest.ContentVersion)
+	if err != nil {
+		return nil, err
+	}
+	outDir := filepath.Join(libraryDir, "abooks", safeName, edition)
+	if opts.IntoWorkID != 0 {
+		// Idempotent: the work already holds this edition (same narration re-tapped
+		// in the picker) → nothing to add, say so.
+		if w, err := store.GetWork(opts.IntoWorkID); err == nil && w != nil {
+			for _, b := range w.AudioFiles {
+				if filepath.Dir(b.Path) == filepath.Join(outDir, "audio") {
+					return &ImportResult{WorkID: opts.IntoWorkID, Edition: edition, Skipped: true}, nil
+				}
+			}
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(outDir, "audio"), 0755); err != nil {
-		return fmt.Errorf("create out dir: %w", err)
+		return nil, fmt.Errorf("create out dir: %w", err)
 	}
 
 	// Extract book.db + audio + cover.
@@ -69,7 +129,7 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 		if err != nil {
 			rc.Close()
 			os.RemoveAll(outDir)
-			return fmt.Errorf("create %q: %w", f.Name, err)
+			return nil, fmt.Errorf("create %q: %w", f.Name, err)
 		}
 		// A silently-truncated write (disk full) would leave a book with broken
 		// audio that still imports "successfully" — check it and fail loudly.
@@ -77,7 +137,7 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 			out.Close()
 			rc.Close()
 			os.RemoveAll(outDir)
-			return fmt.Errorf("extract %q failed (out of disk space?): %w", f.Name, cerr)
+			return nil, fmt.Errorf("extract %q failed (out of disk space?): %w", f.Name, cerr)
 		}
 		out.Close()
 		rc.Close()
@@ -86,39 +146,116 @@ func Import(store *db.Store, abookPath string, libraryDir string) error {
 	dbPath := filepath.Join(outDir, manifest.Assets.DB)
 	if want := manifest.Checksums["book.db"]; want != "" {
 		if err := verifyChecksum(dbPath, want); err != nil {
-			return fmt.Errorf("book.db checksum: %w", err)
+			os.RemoveAll(outDir)
+			return nil, fmt.Errorf("book.db checksum: %w", err)
 		}
 	}
 
-	if err := ingestBookDB(store, dbPath, outDir, libraryDir, &manifest); err != nil {
-		// The ingest already rolled back its half-built work row; also drop the
-		// extracted files so no orphaned folder sits on disk looking like a book.
+	res, err := ingestBookDB(store, dbPath, outDir, libraryDir, &manifest, opts.IntoWorkID)
+	if err != nil {
+		// The ingest already rolled back what it added; also drop the extracted
+		// files so no orphaned folder sits on disk looking like a book.
 		os.RemoveAll(outDir)
-		return err
+		return nil, err
 	}
-	return nil
+	res.Edition = edition
+	return res, nil
+}
+
+// editionDirName names the per-edition directory for an .abook from the narration
+// it carries (read from its book.db): "<origin>[-<voice>][-<label>]", e.g.
+// "tts_kokoro-af_heart" or "narrator_recording". A text-only file is "text"; a
+// file whose narration cannot be read falls back to its content version so two
+// unknowns still never share a directory.
+func editionDirName(zr *zip.Reader, contentVersion string) (string, error) {
+	data, err := readFromZip(zr, "book.db")
+	if err != nil {
+		return "", fmt.Errorf("read book.db: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "abook-edition-*.db")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	tmp.Close()
+	bdb, err := sql.Open("sqlite", tmpPath+"?mode=ro")
+	if err != nil {
+		return "", err
+	}
+	defer bdb.Close()
+	var origin, album, label string
+	hasAudio := false
+	rows, err := bdb.Query(`SELECT origin, album, edition FROM books WHERE asset_path IS NOT NULL AND asset_path != '' ORDER BY id`)
+	if err == nil {
+		for rows.Next() {
+			var o, a, l string
+			if rows.Scan(&o, &a, &l) == nil {
+				hasAudio = true
+				if origin == "" {
+					origin, album, label = o, a, l
+				}
+			}
+		}
+		rows.Close()
+	}
+	if !hasAudio {
+		return "text", nil
+	}
+	parts := []string{}
+	for _, p := range []string{origin, album, label} {
+		if p = editionSlug(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) == 0 {
+		if cv := sanitizeFilename(contentVersion); cv != "" {
+			return "edition-" + cv, nil
+		}
+		return "edition", nil
+	}
+	return strings.Join(parts, "-"), nil
 }
 
 // ingestBookDB opens the carved book.db and copies its rows into the monolith
 // under a fresh work id, remapping book ids as it goes. On ANY failure after the
 // work row is created it rolls that row back (named-return + defer), so a
 // half-finished import never leaves a partial "broken book" in the library.
-func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *Manifest) (err error) {
+func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *Manifest, intoWorkID int64) (res *ImportResult, err error) {
 	bdb, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&mode=ro")
 	if err != nil {
-		return fmt.Errorf("open book.db: %w", err)
+		return nil, fmt.Errorf("open book.db: %w", err)
 	}
 	defer bdb.Close()
 
-	newWorkID, err := store.CreateWork(manifest.Title, manifest.Author)
-	if err != nil {
-		return fmt.Errorf("create work: %w", err)
-	}
-	defer func() {
+	res = &ImportResult{}
+	var newWorkID int64
+	var addedBooks []int64 // rollback set when adding to an EXISTING work
+	if intoWorkID != 0 {
+		newWorkID = intoWorkID
+		defer func() {
+			if err != nil {
+				for _, id := range addedBooks {
+					store.DeleteBook(id) // only what THIS import added; the work stays
+				}
+			}
+		}()
+	} else {
+		newWorkID, err = store.CreateWork(manifest.Title, manifest.Author)
 		if err != nil {
-			store.DeleteWork(newWorkID) // roll back the partial work on any later failure
+			return nil, fmt.Errorf("create work: %w", err)
 		}
-	}()
+		defer func() {
+			if err != nil {
+				store.DeleteWork(newWorkID) // roll back the partial work on any later failure
+			}
+		}()
+	}
+	res.WorkID = newWorkID
 
 	// works row → series metadata (the rest is already on the new work).
 	var series string
@@ -135,7 +272,7 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 		       duration, start_sec, origin, visibility, edition, asset_path
 		FROM books`)
 	if err != nil {
-		return fmt.Errorf("read books: %w", err)
+		return nil, fmt.Errorf("read books: %w", err)
 	}
 	type bookrow struct {
 		oldID                                             int64
@@ -151,13 +288,53 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 			&b.author, &b.album, &b.duration, &b.startSec, &b.origin, &b.visibility,
 			&b.edition, &b.assetPath); err != nil {
 			rows.Close()
-			return fmt.Errorf("scan book: %w", err)
+			return nil, fmt.Errorf("scan book: %w", err)
 		}
 		books = append(books, b)
 	}
 	rows.Close()
 
+	// Adding to an existing work: a text source IDENTICAL to one the work already
+	// holds (same format, chapter count, total words — the same publisher EPUB
+	// shipped in both narrations' files) is REUSED: its old id remaps onto the
+	// existing book so the incoming alignments/links point at it, and its content
+	// rows (chapters/paragraphs/chunks/bookmarks) are not copied twice.
+	skipContent := map[int64]bool{}
+	if intoWorkID != 0 {
+		if existing, gerr := store.GetWork(intoWorkID); gerr == nil && existing != nil {
+			for _, b := range books {
+				if b.assetPath.Valid && b.assetPath.String != "" {
+					continue // audio is never deduped — it IS the new edition
+				}
+				var n int
+				var words int
+				bdb.QueryRow(`SELECT COUNT(*), COALESCE(SUM(word_count),0) FROM chapters WHERE book_id = ?`, b.oldID).Scan(&n, &words)
+				for _, tf := range existing.TextFiles {
+					if tf.Format != b.format {
+						continue
+					}
+					en, _ := store.ChapterCount(tf.ID)
+					ew := 0
+					if chs, cerr := store.ListChapters(tf.ID); cerr == nil {
+						for _, ch := range chs {
+							ew += ch.WordCount
+						}
+					}
+					if en == n && ew == words && n > 0 {
+						bookRemap[b.oldID] = tf.ID
+						skipContent[b.oldID] = true
+						res.ReusedTexts++
+						break
+					}
+				}
+			}
+		}
+	}
+
 	for _, b := range books {
+		if skipContent[b.oldID] {
+			continue
+		}
 		// Path: extracted audio file for audio sources; a synthetic unique
 		// path for text sources (their content lives in chapters).
 		var path string
@@ -186,56 +363,61 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 			Visibility: b.visibility,
 			Edition:    b.edition,
 		}); err != nil {
-			return fmt.Errorf("upsert book: %w", err)
+			return nil, fmt.Errorf("upsert book: %w", err)
 		}
 		newID, err := bookIDByPath(store, path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bookRemap[b.oldID] = newID
+		addedBooks = append(addedBooks, newID)
+		res.AddedBooks++
 	}
 
-	// chapters
-	if err := copyChapters(bdb, store, bookRemap); err != nil {
-		return err
+	// Content rows for reused texts are skipped (they already exist); links,
+	// alignments and sync remap through onto the reused ids.
+	if err := copyChapters(bdb, store, bookRemap, skipContent); err != nil {
+		return nil, err
 	}
-	// paragraphs
-	if err := copyParagraphs(bdb, store, bookRemap); err != nil {
-		return err
+	if err := copyParagraphs(bdb, store, bookRemap, skipContent); err != nil {
+		return nil, err
 	}
-	// chunks
-	if err := copyChunks(bdb, store, bookRemap); err != nil {
-		return err
+	if err := copyChunks(bdb, store, bookRemap, skipContent); err != nil {
+		return nil, err
 	}
-	// chapter_links
 	if err := copyChapterLinks(bdb, store, newWorkID, bookRemap); err != nil {
-		return err
+		return nil, err
 	}
-	// alignments
 	if err := copyAlignments(bdb, store, newWorkID, bookRemap); err != nil {
-		return err
+		return nil, err
 	}
-	// sync
 	if err := copySync(bdb, store, newWorkID, bookRemap); err != nil {
-		return err
+		return nil, err
 	}
-	// bookmarks
-	if err := copyBookmarks(bdb, store, newWorkID, bookRemap); err != nil {
-		return err
+	if err := copyBookmarks(bdb, store, newWorkID, bookRemap, skipContent); err != nil {
+		return nil, err
 	}
 
 	store.StampVersions(newWorkID, BookDBSchemaVersion)
 	// Preserve the manifest's generation stamp (StampVersions set it to "now"),
 	// so a sideloaded work reports when it was produced — dedupe-by-generation.
+	// Into an existing work: keep the NEWER of the two stamps.
 	if manifest.ContentVersion != "" {
-		store.SetContentVersion(newWorkID, manifest.ContentVersion)
+		keep := manifest.ContentVersion
+		if intoWorkID != 0 {
+			if _, cv, ok, _ := store.FindWorkByTitleAuthor(manifest.Title, manifest.Author); ok && cv > keep {
+				keep = cv
+			}
+		}
+		store.SetContentVersion(newWorkID, keep)
 	}
 	// Wire the bundled cover to where GET /api/works/{id}/cover serves from
 	// ({libraryDir}/covers/work-{id}.jpg). The zip extracts it into outDir, but
 	// without this copy an imported work — including the first-run sample, the
 	// one book a newcomer sees — renders as a coverless tile. Best-effort: a
 	// missing/broken cover must never fail an otherwise-good import.
-	if manifest.Assets.Cover != "" {
+	coverDst := filepath.Join(libraryDir, "covers", fmt.Sprintf("work-%d.jpg", newWorkID))
+	if _, serr := os.Stat(coverDst); manifest.Assets.Cover != "" && (intoWorkID == 0 || serr != nil) { // keep an existing work's cover
 		src := filepath.Join(outDir, manifest.Assets.Cover)
 		if data, rerr := os.ReadFile(src); rerr == nil && len(data) > 0 {
 			coversDir := filepath.Join(libraryDir, "covers")
@@ -247,11 +429,11 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 			}
 		}
 	}
-	log.Printf("abook import: completed %q → work %d (%d books)", manifest.Title, newWorkID, len(bookRemap))
-	return nil
+	log.Printf("abook import: completed %q → work %d (%d books added, %d texts reused)", manifest.Title, newWorkID, res.AddedBooks, res.ReusedTexts)
+	return res, nil
 }
 
-func copyChapters(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
+func copyChapters(bdb *sql.DB, store *db.Store, remap map[int64]int64, skip map[int64]bool) error {
 	rows, err := bdb.Query(`SELECT book_id, index_num, title, src, content, content_html, word_count, start_sec, end_sec, confidence FROM chapters`)
 	if err != nil {
 		return fmt.Errorf("read chapters: %w", err)
@@ -263,6 +445,9 @@ func copyChapters(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
 		if err := rows.Scan(&oldBook, &ch.Index, &ch.Title, &ch.Src, &ch.Content, &ch.ContentHTML, &ch.WordCount, &ch.StartSec, &ch.EndSec, &ch.Confidence); err != nil {
 			return err
 		}
+		if skip[oldBook] {
+			continue
+		}
 		ch.BookID = remap[oldBook]
 		if err := store.InsertChapter(ch); err != nil {
 			return fmt.Errorf("insert chapter: %w", err)
@@ -271,7 +456,7 @@ func copyChapters(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
 	return rows.Err()
 }
 
-func copyParagraphs(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
+func copyParagraphs(bdb *sql.DB, store *db.Store, remap map[int64]int64, skip map[int64]bool) error {
 	rows, err := bdb.Query(`SELECT book_id, chapter_idx, paragraph_idx, word_start, word_end, text FROM paragraphs`)
 	if err != nil {
 		return fmt.Errorf("read paragraphs: %w", err)
@@ -283,6 +468,9 @@ func copyParagraphs(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
 		if err := rows.Scan(&oldBook, &p.ChapterIdx, &p.ParagraphIdx, &p.WordStart, &p.WordEnd, &p.Text); err != nil {
 			return err
 		}
+		if skip[oldBook] {
+			continue
+		}
 		p.BookID = remap[oldBook]
 		if err := store.InsertParagraph(p); err != nil {
 			return fmt.Errorf("insert paragraph: %w", err)
@@ -291,7 +479,7 @@ func copyParagraphs(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
 	return rows.Err()
 }
 
-func copyChunks(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
+func copyChunks(bdb *sql.DB, store *db.Store, remap map[int64]int64, skip map[int64]bool) error {
 	rows, err := bdb.Query(`SELECT book_id, chapter_idx, chunk_idx, content, start_word, end_word, embedding FROM chunks`)
 	if err != nil {
 		return fmt.Errorf("read chunks: %w", err)
@@ -302,6 +490,9 @@ func copyChunks(bdb *sql.DB, store *db.Store, remap map[int64]int64) error {
 		var oldBook int64
 		if err := rows.Scan(&oldBook, &c.ChapterIdx, &c.ChunkIdx, &c.Content, &c.StartWord, &c.EndWord, &c.Embedding); err != nil {
 			return err
+		}
+		if skip[oldBook] {
+			continue
 		}
 		c.BookID = remap[oldBook]
 		if err := store.InsertChunk(c); err != nil {
@@ -374,7 +565,7 @@ func copySync(bdb *sql.DB, store *db.Store, workID int64, remap map[int64]int64)
 	return rows.Err()
 }
 
-func copyBookmarks(bdb *sql.DB, store *db.Store, workID int64, remap map[int64]int64) error {
+func copyBookmarks(bdb *sql.DB, store *db.Store, workID int64, remap map[int64]int64, skip map[int64]bool) error {
 	rows, err := bdb.Query(`SELECT book_id, type, chapter_idx, position_secs, start_word, end_word, text_snippet, note, color FROM bookmarks`)
 	if err != nil {
 		return fmt.Errorf("read bookmarks: %w", err)
@@ -387,6 +578,9 @@ func copyBookmarks(bdb *sql.DB, store *db.Store, workID int64, remap map[int64]i
 			return err
 		}
 		bm.WorkID = workID
+		if skip[oldBook] {
+			continue
+		}
 		bm.BookID = remap[oldBook]
 		// Imported annotations land with the primary reader (user 1).
 		if _, err := store.CreateBookmark(bm, 1); err != nil {
@@ -473,4 +667,25 @@ func sanitizeFilename(s string) string {
 		s = s[:100]
 	}
 	return strings.TrimSpace(s)
+}
+
+// editionSlug makes a directory-safe, readable token from a narration field:
+// lowercase ASCII letters/digits, runs of anything else collapsed to one "-".
+// "Kokoro · Fable" → "kokoro-fable"; "A Christmas Carol" → "a-christmas-carol".
+func editionSlug(s string) string {
+	var out []rune
+	dash := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out = append(out, r)
+			dash = false
+		default:
+			if !dash && len(out) > 0 {
+				out = append(out, '-')
+				dash = true
+			}
+		}
+	}
+	return strings.TrimRight(string(out), "-")
 }

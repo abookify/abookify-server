@@ -2514,7 +2514,12 @@
       // instead of implying they must wait here.
       btn.textContent = 'Adding… (downloading — you can leave; it keeps going)';
       try {
-        const res = await fetch('/api/import?on_conflict=skip&url=' + encodeURIComponent(url), { method: 'POST' });
+        // on_conflict=edition: a title the visitor already holds (the picker offers
+        // both the human and the AI Carol) lands as a SECOND NARRATION of that book —
+        // not a silent skip that said "Already in your library" and opened the
+        // narration they already had (the second file never arrived; launch bug,
+        // 2026-09-18). The same narration re-tapped is a real no-op ("skipped").
+        const res = await fetch('/api/import?on_conflict=edition&url=' + encodeURIComponent(url), { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           btn.disabled = false;
@@ -2524,7 +2529,8 @@
           alert(data.error || `Couldn't add ${title}. Please try again.`);
           return;
         }
-        btn.textContent = data.status === 'skipped' ? '✓ Already in your library' : '✓ Added';
+        btn.textContent = data.status === 'skipped' ? '✓ Already in your library'
+          : data.status === 'edition_added' ? '✓ Added as another narration' : '✓ Added';
         // The library is no longer empty — reload works so the welcome gives way
         // to the book, then OPEN it straight into the reader so a first-run visitor
         // reaches the actual read-along in one tap (not a tour of a one-book grid).
@@ -8663,12 +8669,25 @@
       form.append('file', file);
 
       try {
-        const res = await fetch('/api/import', { method: 'POST', body: form });
-        const data = await res.json();
+        let res = await fetch('/api/import', { method: 'POST', body: form });
+        let data = await res.json();
+        if (res.status === 409 && data.status === 'conflict') {
+          // Same title + author already in the library. The usual reason is a
+          // second NARRATION of the same book (human vs AI) — offer to add it as
+          // another edition of the existing work rather than "Import failed: unknown".
+          const asEdition = confirm(`You already have “${data.title}”${data.author ? ' by ' + data.author : ''}.\n\nAdd this file as another narration of that book?\n\n(Cancel keeps your library as it is.)`);
+          if (!asEdition) return;
+          const form2 = new FormData();
+          form2.append('file', file);
+          res = await fetch('/api/import?on_conflict=edition', { method: 'POST', body: form2 });
+          data = await res.json();
+        }
         if (res.ok) {
           loadWorks();
+          if (data.status === 'edition_added') showToast(`Added as another narration of “${data.title}”`);
+          else if (data.status === 'skipped') showToast('That narration is already in your library');
         } else {
-          alert('Import failed: ' + (data.error || 'unknown'));
+          alert('Import failed: ' + (data.error || data.message || 'unknown'));
         }
       } catch(e) {
         alert('Import failed: ' + e.message);

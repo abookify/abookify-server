@@ -620,11 +620,29 @@ function clockSecs(txt) { // "1:34" or "1:02:03" -> seconds
       const ch = list.filter(c => (c.word_count || 0) > 200).sort((a, b) => (b.word_count || 0) - (a.word_count || 0))[0]
         || list[Math.floor(list.length / 2)];
       if (!ch) return { na: true, why: 'no substantial epub chapter' };
-      const ext = async (aud) => {
-        const m = await fetch(`/api/works/${w.id}/word-sync/${epub.id}/${ch.index}?audio=${aud}`).then(r => r.json()).catch(() => []);
+      const ext = async (aud, ep) => {
+        const m = await fetch(`/api/works/${w.id}/word-sync/${ep.id}/${ch.index}?audio=${aud}`).then(r => r.json()).catch(() => []);
         return (Array.isArray(m) && m.length) ? { n: m.length, first: m[0].s, last: m[m.length - 1].s } : null;
       };
-      return { na: false, chIndex: ch.index, ttsMap: await ext(tts.id), humanMap: await ext(human.id) };
+      const ttsMap = await ext(tts.id, epub), humanMap = await ext(human.id, epub);
+      // TWO-EPUB work (the showcase's human + AI Carol carry DIFFERENT Gutenberg
+      // editions; a same-title second import lands as a second edition and keeps
+      // both texts): each narration is aligned to ITS OWN epub, so asking the human
+      // narration for a map onto the TTS edition's epub is not a binding gap — it is
+      // a different book edition. n/a when the other epub has the missing map.
+      if (!humanMap || !ttsMap) {
+        const others = (w.text_files || []).filter(b => b.format === 'epub' && b.id !== epub.id);
+        for (const o of others) {
+          const chs2 = await fetch(`/api/books/${o.id}/chapters`).then(r => r.json()).catch(() => []);
+          const c2 = (Array.isArray(chs2) ? chs2 : []).filter(c => (c.word_count || 0) > 200)[0];
+          if (!c2) continue;
+          const probe = async (aud) => { const m = await fetch(`/api/works/${w.id}/word-sync/${o.id}/${c2.index}?audio=${aud}`).then(r => r.json()).catch(() => []); return Array.isArray(m) && m.length > 0; };
+          if ((!humanMap && await probe(human.id)) || (!ttsMap && await probe(tts.id))) {
+            return { na: true, why: `two epub editions (${epub.id} + ${o.id}) — each narration follows its own text; nothing to bind across` };
+          }
+        }
+      }
+      return { na: false, chIndex: ch.index, ttsMap, humanMap };
     }, WORK);
     if (nb.na) {
       report('narration_binding', true, `n/a: ${nb.why} — nothing to bind`);

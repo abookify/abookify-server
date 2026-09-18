@@ -2941,11 +2941,40 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a valid .abook: " + err.Error()})
 		return
 	}
-	onConflict := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("on_conflict"))) // prompt(default)|replace|skip|new
+	onConflict := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("on_conflict"))) // prompt(default)|replace|skip|new|edition
 
 	existingID, existingCV, exists, err := s.store.FindWorkByTitleAuthor(manifest.Title, manifest.Author)
 	if err != nil {
 		writeServerError(w, r, err)
+		return
+	}
+	// "edition": a same-title file is ANOTHER NARRATION of the book the visitor
+	// already holds (the showcase picker offers the human and the AI Carol; PJ's
+	// own library pairs them the same way). Land it as a second edition of the
+	// existing work — never a duplicate work, never a silent skip. Re-importing
+	// the same narration is a no-op ("skipped"). No existing work → plain import.
+	if exists && onConflict == "edition" {
+		res, ierr := abook.ImportInto(s.store, tmpPath, s.importRoot(), abook.ImportOptions{IntoWorkID: existingID})
+		if ierr != nil {
+			applog.Warnf("system", "abook edition import failed for %q into work %d: %v", manifest.Title, existingID, ierr)
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+				"error": "This narration couldn't be added — the file may be damaged or the disk may be full. Your existing copy of the book is untouched.",
+			})
+			return
+		}
+		if res.Skipped {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "skipped", "reason": "this narration is already in the library",
+				"existing_work_id": existingID, "work_id": existingID, "edition": res.Edition,
+			})
+			return
+		}
+		s.Events.Broadcast(Event{Type: "library_updated"})
+		s.EmbedNewWorks()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "edition_added", "work_id": existingID, "title": manifest.Title,
+			"edition": res.Edition, "added_books": res.AddedBooks, "reused_texts": res.ReusedTexts,
+		})
 		return
 	}
 	replaced := false
@@ -2973,7 +3002,7 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 				"incoming_content_version": manifest.ContentVersion,
 				// content_version is an RFC3339 UTC stamp — lexically sortable.
 				"incoming_newer": manifest.ContentVersion > existingCV,
-				"message":        "resend with ?on_conflict=replace (newer wins), skip, or new",
+				"message":        "resend with ?on_conflict=edition (add as another narration of the same book), replace (newer wins), skip, or new",
 			})
 			return
 		}
