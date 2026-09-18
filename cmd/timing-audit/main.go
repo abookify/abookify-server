@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"sort"
 
 	"github.com/pj/abookify/internal/db"
 	"github.com/pj/abookify/internal/library"
@@ -52,6 +54,13 @@ func main() {
 	}
 	fmt.Printf("%-5s %-40s %-7s %7s %8s %8s  %s\n", "work", "title", "verdict", "within", "median", "worst", "note")
 	var ok, bad, skipped int
+	// Silences are a signal: a class of work the audit declines to judge is
+	// invisible to it, which reads exactly like passing unless someone counts.
+	// (The audit skipped every dual-edition work for a day — 11 showcase
+	// books — while reporting "24 ok".) Group no-verdict works by the SHAPE
+	// they share: the skip reason with its numbers stripped.
+	shape := map[string][]int64{}
+	numbers := regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)
 	for _, w := range works {
 		if *only != 0 && w.ID != *only {
 			continue
@@ -68,6 +77,8 @@ func main() {
 		switch {
 		case r.Skipped != "":
 			skipped++
+			k := numbers.ReplaceAllString(r.Skipped, "N")
+			shape[k] = append(shape[k], w.ID)
 			if *all || *only != 0 {
 				fmt.Printf("%-5d %-40s %-7s %7s %8s %8s  %s\n", w.ID, title, "skip", "-", "-", "-", r.Skipped)
 			}
@@ -85,6 +96,22 @@ func main() {
 		}
 	}
 	fmt.Printf("\n%d ok, %d DRIFT, %d skipped (no verdict)\n", ok, bad, skipped)
+	if skipped > 0 {
+		keys := make([]string, 0, len(shape))
+		for k := range shape {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool { return len(shape[keys[i]]) > len(shape[keys[j]]) })
+		fmt.Printf("no verdict, by shape (a shape the audit cannot judge is a shape it cannot fail):\n")
+		for _, k := range keys {
+			ids := shape[k]
+			show := ids
+			if len(show) > 8 {
+				show = show[:8]
+			}
+			fmt.Printf("  %3d  %-70s works %v%s\n", len(ids), k, show, map[bool]string{true: " …", false: ""}[len(ids) > 8])
+		}
+	}
 	if bad > 0 {
 		os.Exit(1)
 	}

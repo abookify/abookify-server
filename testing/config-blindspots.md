@@ -68,3 +68,10 @@ not a growing one. Structural false positive, stated on the report, left.
   ever needs a second same-instance work.
 - The register names and assigns; it does not authorize building. Every
   artifact above waits for its opener.
+- **Third instrument in the family (2026-09-18):** the self-description
+  audit asks what our DATA misdescribes; this register asks what our TESTING
+  cannot reach; `bin/timing-audit` now asks WHEN AN INSTRUMENT DECLINES TO
+  JUDGE — its summary groups every no-verdict work by the shape it shares
+  (skip reason, numbers stripped) so silences are counted, not listed. A
+  shape the audit cannot judge is a shape it cannot fail; the dual-edition
+  skip that hid all 11 showcase works would have been its own row.
