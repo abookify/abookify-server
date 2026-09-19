@@ -974,8 +974,19 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		*db.Work
 		DisplayTextID  *int64 `json:"display_text_id,omitempty"`
 		DisplayAudioID *int64 `json:"display_audio_id,omitempty"`
+		// Condition (task 12): the same rolled-up production standing the list
+		// carries, on the payload mobile reads for a single work. Words live in
+		// GET /api/conditions/legend. Empty only if the rollup itself failed.
+		Condition       string `json:"condition,omitempty"`
+		ConditionReason string `json:"condition_reason,omitempty"`
 	}
 	resp := workWithDisplay{Work: work}
+	if conditions, err := s.store.WorkConditionsRollup(); err == nil {
+		if c, ok := conditions[id]; ok {
+			resp.Condition = c.Condition
+			resp.ConditionReason = c.Reason
+		}
+	}
 	if dt := library.ResolveDisplayText(work); dt != nil {
 		resp.DisplayTextID = &dt.ID
 	}
@@ -1039,11 +1050,21 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		ContentVersion string `json:"content_version"`
 		SchemaVersion  int    `json:"schema_version"`
 		UpdatedAt      string `json:"updated_at"`
+		// Condition (task 12): "complete" | "degraded" | "unknown" — the listing
+		// shape mobile mirrors into its catalog, so the library grid can badge a
+		// degraded book without N detail calls. Absence of testimony is
+		// "unknown" here too, never dressed as complete.
+		Condition string `json:"condition"`
 	}
+	conditions, _ := s.store.WorkConditionsRollup()
 	out := make([]catalogEntry, 0, len(works))
 	for i := range works {
 		wk := &works[i]
 		sum := abook.SummarizeWork(s.store, wk)
+		cond := "unknown"
+		if c, ok := conditions[wk.ID]; ok && c.Condition != "" {
+			cond = c.Condition
+		}
 		out = append(out, catalogEntry{
 			ID:             wk.ID,
 			Title:          wk.Title,
@@ -1060,6 +1081,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			ContentVersion: wk.ContentVersion,
 			SchemaVersion:  wk.SchemaVersion,
 			UpdatedAt:      wk.UpdatedAt.UTC().Format(time.RFC3339),
+			Condition:      cond,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
