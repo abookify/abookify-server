@@ -344,6 +344,9 @@
         <span class="status-dot" id="stt-dot"></span>
         <span>Speech-to-Text (Whisper): <span id="stt-status">checking...</span></span>
       </div>
+      <!-- The support page tells people to quote this when reporting a bug, so it
+           has to actually be here. Stamped at build time; "dev" for a source run. -->
+      <div class="hint" style="margin-top:10px;">Server version: <code id="server-version">…</code></div>
     </div>
 
     <div class="section">
@@ -1544,6 +1547,8 @@
       if (!el) return;
       try {
         const info = await fetch('/api/info').then(r => r.json());
+        const ver = document.getElementById('server-version');
+        if (ver) ver.textContent = info.version || 'unknown';
         const dev = info.stt_device;
         if (!dev) { el.textContent = 'Current device: transcription engine offline.'; return; }
         const nice = dev === 'cuda' ? 'GPU' : dev.toUpperCase();
