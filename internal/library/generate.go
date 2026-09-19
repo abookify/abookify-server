@@ -500,12 +500,13 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 		// after any text change; the key makes that impossible. We STILL
 		// register + link + align below even when reusing — the book row may
 		// have been removed (edition deleted) while the audio remained.
-		segments := PreprocessForTTSSegments(chMeta.Title, ch.Content)
+		titlePause, paraPause := g.ttsPauses()
+		segments := PreprocessForTTSSegmentsWithPauses(chMeta.Title, ch.Content, titlePause, paraPause)
 		var segTexts []string
 		for _, seg := range segments {
 			segTexts = append(segTexts, seg.Text)
 		}
-		contentKey := TTSContentKey(strings.Join(segTexts, "\n\n"), voice, ttsTitlePauseMs, ttsParagraphPauseMs)
+		contentKey := TTSContentKey(strings.Join(segTexts, "\n\n"), voice, titlePause, paraPause)
 		if !CasHasChapter(mp3Path, contentKey) && !CasLinkChapter(g.generatedDir, contentKey, mp3Path) {
 			// Not in the store: synthesize into the job's WORKING DIR (under
 			// the generator dir — never scanned, never served) and promote
@@ -657,6 +658,26 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 	}
 
 	log.Printf("tts: completed generation for book %d (%d chapters)", bookID, len(chapters))
+}
+
+// ttsPauses reads the narration pause settings the Settings UI exposes
+// (tts_chapter_title_pause_ms / tts_paragraph_pause_ms), falling back to the
+// PAUSED defaults PJ chose by ear. Read per chapter at assembly time, so a
+// change applies to narration generated from then on; audio already made
+// keeps its cadence (the pauses are part of its content key).
+func (g *Generator) ttsPauses() (titleMs, paragraphMs int) {
+	titleMs, paragraphMs = ttsTitlePauseMs, ttsParagraphPauseMs
+	if v, _ := g.store.GetSetting("tts_chapter_title_pause_ms"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			titleMs = n
+		}
+	}
+	if v, _ := g.store.GetSetting("tts_paragraph_pause_ms"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			paragraphMs = n
+		}
+	}
+	return titleMs, paragraphMs
 }
 
 // TranscribeAudio creates text transcripts from audio files using STT.

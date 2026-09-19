@@ -297,6 +297,22 @@ const (
 // silence between them is new (word-sync alignment is unaffected: silence
 // adds no words, and Whisper timestamps simply carry the offsets).
 func PreprocessForTTSSegments(title string, content string) []TTSSegment {
+	return PreprocessForTTSSegmentsWithPauses(title, content, ttsTitlePauseMs, ttsParagraphPauseMs)
+}
+
+// PreprocessForTTSSegmentsWithPauses is PreprocessForTTSSegments with the
+// pause lengths supplied — the Settings UI exposes them ("Pause after a
+// chapter title", "Space between paragraphs"; PJ: "things like those gaps
+// could be something built into the settings web UI"), and a setting the
+// assembly never read would be decoration. Non-positive values fall back to
+// the PAUSED defaults.
+func PreprocessForTTSSegmentsWithPauses(title string, content string, titlePauseMs, paragraphPauseMs int) []TTSSegment {
+	if titlePauseMs <= 0 {
+		titlePauseMs = ttsTitlePauseMs
+	}
+	if paragraphPauseMs <= 0 {
+		paragraphPauseMs = ttsParagraphPauseMs
+	}
 	full := PreprocessForTTS(title, content)
 	if full == "" {
 		return nil
@@ -316,9 +332,9 @@ func PreprocessForTTSSegments(title string, content string) []TTSSegment {
 		if p == "" {
 			continue
 		}
-		pause := ttsParagraphPauseMs
+		pause := paragraphPauseMs
 		if len(segs) == 0 && spokenTitle != "" && p == spokenTitle {
-			pause = ttsTitlePauseMs
+			pause = titlePauseMs
 		}
 		segs = append(segs, TTSSegment{Text: p, PauseAfterMs: pause})
 	}
