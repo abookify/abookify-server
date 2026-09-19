@@ -875,15 +875,26 @@ func TestMergeDegenerateTextChapters_HeaderStubFoldsForward(t *testing.T) {
 		{Title: "Chapter 6", WordIdx: 522, Start: 208.8},
 		{Title: "Chapter 6: stub", WordIdx: 900, Start: 360}, // 10 plain words: tiny, not a header
 		{Title: "Chapter 7", WordIdx: 910, Start: 364},
+		{Title: "Chapter 7: Chapter 8", WordIdx: 1000, Start: 402}, // 20 plain words, NEGATIVE length: boundary artifact → forward
+		{Title: "Chapter 8", WordIdx: 1020, Start: 400},
+		{Title: "Chapter 8: End of the book", WordIdx: 1180, Start: 470}, // trailing outro credit → back
+	}
+	for i, w := range []string{"The", "book", "was", "recorded", "by", "a", "volunteer"} {
+		words[1180+i].Word = w
 	}
 	out := mergeDegenerateTextChapters(ranges, words)
-	if len(out) != 3 {
-		t.Fatalf("got %d chapters, want 3: %+v", len(out), out)
+	if len(out) != 4 {
+		t.Fatalf("got %d chapters, want 4: %+v", len(out), out)
+	}
+	if out[3].WordIdx != 1000 || out[3].Title != "Chapter 8" {
+		t.Errorf("negative-length stub must fold FORWARD into Chapter 8: %+v", out[3])
 	}
 	if out[1].WordIdx != 500 || out[1].Start != 200 || out[1].Title != "Chapter 6" {
 		t.Errorf("header stub must fold FORWARD into Chapter 6 (start pulled back to the announcement): %+v", out[1])
 	}
-	if out[2].WordIdx != 910 {
-		t.Errorf("the plain tiny stub must fold BACK (Chapter 7 keeps its own start): %+v", out[2])
+	// The 10-word stub 4 s before the next cut is a DOUBLE CUT: it folds
+	// forward and Chapter 7 starts where the stub started.
+	if out[2].WordIdx != 900 || out[2].Title != "Chapter 7" {
+		t.Errorf("a short range followed by a cut within 30 s must fold FORWARD: %+v", out[2])
 	}
 }

@@ -2057,7 +2057,11 @@ const minTextChapterWords = 15
 // credit onto the previous chapter's last line.
 const (
 	headerStubMaxWords = 60
-	headerStubMaxSecs  = 30.0
+	// A credit + announcement can run 40–60 s ("Recorded March 4, 2006 in
+	// Bishop, California… Chapter 46"); a pattern-less short range counts as
+	// a double cut only when the next boundary follows within doubleCutSecs.
+	headerStubMaxSecs = 60.0
+	doubleCutSecs     = 30.0
 )
 
 var headerStubRe = regexp.MustCompile(`(?i)\b(?:chapter|stave|part|book|section|letter|volume)\s+(?:\d{1,3}|[ivxlc]{1,6}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)\b|librivox`)
@@ -2079,6 +2083,26 @@ func isHeaderStub(words []sttWord, r sttChapter, span int, dur float64) bool {
 		b.WriteByte(' ')
 	}
 	return headerStubRe.MatchString(b.String())
+}
+
+var trailingCreditRe = regexp.MustCompile(`(?i)\b(?:recorded\s+by|read\s+by|end\s+of|librivox|proof-?listened)\b`) // words carry their own leading space
+
+// isTrailingCredit reports whether a final short range reads as an outro
+// credit rather than a chapter.
+func isTrailingCredit(words []sttWord, r sttChapter, span int) bool {
+	if r.WordIdx < 0 || r.WordIdx >= len(words) || span <= 0 {
+		return false
+	}
+	n := span
+	if n > 24 {
+		n = 24
+	}
+	var b strings.Builder
+	for _, w := range words[r.WordIdx : r.WordIdx+n] {
+		b.WriteString(w.Word)
+		b.WriteByte(' ')
+	}
+	return trailingCreditRe.MatchString(b.String())
 }
 
 // mergeDegenerateTextChapters drops sub-minimum chapters and header stubs so
@@ -2105,16 +2129,47 @@ func mergeDegenerateTextChapters(ranges []sttChapter, words []sttWord) []sttChap
 		}
 		return ranges[i+1].Start - ranges[i].Start
 	}
+	timed := ranges[len(ranges)-1].Start > 0 // untimed ranges cannot be judged by length in seconds
+	debug := os.Getenv("ABOOKIFY_DEBUG_MERGE") != ""
 	out := ranges[:0]
 	for i := range ranges {
+		if debug {
+			sp := span(i)
+			n := sp
+			if n > 24 {
+				n = 24
+			}
+			txt := ""
+			if ranges[i].WordIdx >= 0 && ranges[i].WordIdx+n <= len(words) {
+				var b strings.Builder
+				for _, w := range words[ranges[i].WordIdx : ranges[i].WordIdx+n] {
+					b.WriteString(w.Word)
+					b.WriteByte(' ')
+				}
+				txt = b.String()
+			}
+			log.Printf("merge-debug: range %d %q wordIdx=%d span=%d dur=%.1f text=%q", i, ranges[i].Title, ranges[i].WordIdx, sp, dur(i), txt)
+		}
 		if ranges[i].Src == "part" {
 			out = append(out, ranges[i])
 			continue
 		}
 		sp := span(i)
+		d := dur(i)
 		tiny := sp < minTextChapterWords
-		header := i+1 < len(ranges) && isHeaderStub(words, ranges[i], sp, dur(i))
-		if !tiny && !header {
+		// A zero/negative-length range is a boundary artifact whatever its
+		// words say (P&P 'Chapter 42: Chapter 43', 17 words, −3 s): the
+		// announcement landed in the title and the cut fell after it.
+		// Double cut: a short range whose next boundary follows within
+		// doubleCutSecs is the detector cutting twice at one chapter start
+		// (P&P 'Chapter 42: Chapter 43': 17 body words, 6 s, the announcement
+		// already consumed into the title) — whatever its words say.
+		header := i+1 < len(ranges) && sp < headerStubMaxWords &&
+			((timed && d < doubleCutSecs) || isHeaderStub(words, ranges[i], sp, d))
+		// A short trailing credit ("The Call of the Wild was recorded by…",
+		// "End of…") is the previous chapter's outro, not a chapter.
+		trailingCredit := i == len(ranges)-1 && sp < headerStubMaxWords && isTrailingCredit(words, ranges[i], sp)
+		if !tiny && !header && !trailingCredit {
 			out = append(out, ranges[i])
 			continue
 		}
