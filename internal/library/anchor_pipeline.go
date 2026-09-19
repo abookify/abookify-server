@@ -154,6 +154,13 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 	} else if n > 0 {
 		log.Printf("align: reconciled %d spoken chapter title(s) on work %d against publisher edition %d", n, workID, authority.ID)
 	}
+	// …and where the publisher edition NAMES a chapter the narrator only
+	// numbered, the name propagates onto the canonical TOC rows by time.
+	if ch, err := PropagateEbookTitles(store, work, authority.ID, false); err != nil {
+		log.Printf("align: propagate ebook titles for work %d: %v", workID, err)
+	} else if len(ch) > 0 {
+		log.Printf("align: propagated %d publisher chapter title(s) on work %d from edition %d", len(ch), workID, authority.ID)
+	}
 	return primary, nil
 }
 

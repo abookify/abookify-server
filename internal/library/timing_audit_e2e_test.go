@@ -22,14 +22,20 @@ import (
 // the metric shown to users cannot see this class; this test proves the
 // audit can, so a regression of the bake goes red in `go test`, not in a
 // listener's ear months later.
-func TestChapterTimingAudit_EndToEnd(t *testing.T) {
-	store, cleanup := newTestStore(t)
-	defer cleanup()
+// buildGluedNarrationFixture creates a work with a narration whose Whisper
+// words include glued tokens, a transcript, a publisher ebook of the same
+// text (8 chapters of growing length) and detected chapters at the
+// announcements. Returns the work + book ids.
+const chapters = 8 // fixture chapters
+
+var lastFixtureTimeline []db.SyncTimestamp
+
+func buildGluedNarrationFixture(t *testing.T, store *db.Store) (workID, audioID, transID, ebookID int64) {
+	t.Helper()
 
 	// Chapter k has 150+45k words: lengths that vary the way real chapters do,
 	// so a drift can never alias onto a neighbouring announcement for every
 	// chapter at once (uniform lengths let a one-chapter drift score 0 s).
-	const chapters = 8
 	const wordSec = 0.4
 	wordsIn := func(k int) int { return 150 + 45*k }
 	totalWords := 0
@@ -37,7 +43,8 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 		totalWords += wordsIn(k)
 	}
 
-	workID, err := store.CreateWork("Timing fixture", "Nobody")
+	var err error
+	workID, err = store.CreateWork("Timing fixture", "Nobody")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +58,6 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var audioID, transID, ebookID int64
 	books, _ := store.ListBooks()
 	for _, b := range books {
 		switch b.Path {
@@ -89,6 +95,7 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 	}
 
 	var tl []db.SyncTimestamp
+	lastFixtureTimeline = nil
 	push := func(w string) {
 		s := float64(len(tl)) * wordSec
 		tl = append(tl, db.SyncTimestamp{Word: w, Start: s, End: s + 0.3})
@@ -122,6 +129,16 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 	if err := store.SaveSyncData(workID, audioID, 0, string(raw)); err != nil {
 		t.Fatal(err)
 	}
+	lastFixtureTimeline = tl
+
+	return workID, audioID, transID, ebookID
+}
+
+func TestChapterTimingAudit_EndToEnd(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+	workID, audioID, transID, ebookID := buildGluedNarrationFixture(t, store)
+	_ = audioID
 
 	cov, err := ComputeAnchorAlignment(store, workID)
 	if err != nil {
@@ -160,6 +177,7 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	transChs, _ := loadContentChapters(store, transID, false)
+	tl := lastFixtureTimeline
 	bakeSegmentTimes(payload.Segments, tl, buildTokToFields(transChs), true)
 	buildRenderTimeline(&payload)
 	drifted, _ := json.Marshal(payload)
@@ -187,4 +205,45 @@ func TestChapterTimingAudit_EndToEnd(t *testing.T) {
 	t.Logf("healthy: %d/%d within, median %.1fs worst %.1fs; drifted: %d/%d within, median %.0fs worst %.0fs — coverage %.3f both",
 		healthy.Within, healthy.Compared, healthy.MedianAbsSec, healthy.WorstAbsSec,
 		bad.Within, bad.Compared, bad.MedianAbsSec, bad.WorstAbsSec, cov)
+}
+
+// Once the chain is trusted, the publisher edition's chapter NAMES land on the
+// narration's canonical chapter rows by time; a publisher title that only
+// numbers the chapter leaves the spoken title alone.
+func TestPropagateEbookTitles_ByTime(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+	workID, audioID, transID, ebookID := buildGluedNarrationFixture(t, store)
+	if _, err := ComputeAnchorAlignment(store, workID); err != nil {
+		t.Fatal(err)
+	}
+	work, _ := store.GetWork(workID)
+	// idx 3 + 5 say no more than "Chapter N" (digits, spelled out) and must not
+	// propagate; idx 6 is the book's OWN unit name (Carol's staves) and must.
+	names := map[int]string{0: "The Eve of the War", 1: "The Falling Star", 3: "Chapter 4", 5: "Chapter Six", 6: "STAVE\u00a0SEVEN.", 7: "The Heat-Ray"}
+	for idx, n := range names {
+		if err := store.UpdateChapterTitle(ebookID, idx, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changes, err := PropagateEbookTitles(store, work, ebookID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{0: "The Eve of the War", 1: "The Falling Star", 2: "Chapter 3", 3: "Chapter 4", 5: "Chapter 6", 6: "STAVE SEVEN.", 7: "The Heat-Ray"}
+	for _, bookID := range []int64{audioID, transID} {
+		chs, _ := store.ListChapters(bookID)
+		got := map[int]string{}
+		for _, c := range chs {
+			got[c.Index] = c.Title
+		}
+		for idx, w := range want {
+			if got[idx] != w {
+				t.Errorf("book %d ch %d = %q, want %q (changes: %v)", bookID, idx, got[idx], w, changes)
+			}
+		}
+	}
+	if len(changes) != 8 { // 4 names × 2 books (audio anchor + transcript)
+		t.Errorf("changes = %d, want 8: %v", len(changes), changes)
+	}
 }
