@@ -17,16 +17,24 @@ recording on the public showcase release (see handoff server-web pm191/pm192).
   source proven (the two failures were OpenLibrary backfills — reproduce
   `FetchCoverFromOpenLibrary`'s exact request and hash-compare).
 
-THE GATE (designed, UNBUILT — do not treat these scripts as the gate):
-1. export: manifest.json gains a `provenance` block, per bundled source
-   {kind, source_url, license, cleared: bool, cleared_by, note} and for the
-   cover {source: epub|audio|openlibrary:<olid>|upload, cleared}; a `--public`
-   export REFUSES unless every source and the cover are cleared.
-2. the cover backfill (fetch-missing → OpenLibrary) records `openlibrary:<olid>`
-   as the cover's source at fetch time; such a cover is never bundled publicly.
-3. `bin/publish-check`: runs these physical checks + the cleared flags on every
-   artifact, at the TWO places publishing happens — the release upload and the
-   site deploy — and refuses on any red.
+THE GATE — BUILT 2026-09-19 (abookify-server dc1eb8f). It checks CLEARED, not declared.
+
+- `publish_check.py abook <file.abook>...` or `--remote <showcase-v1 asset name>...`
+  → GREEN only if manifest.publishing.public is true, every source is cleared
+  (with cleared_by), the cover is the bundled EPUB's own image or carries its own
+  clearance, no equal-split audio, ATTRIBUTION.txt present. Notes the Gutenberg id.
+- `publish_check.py site <marketing/site>` → GREEN only if every file under
+  showcase/covers, showcase/samples and shots is in PROVENANCE.json, cleared,
+  and hash-identical to when it was cleared.
+- The ONLY sanctioned publish paths run it first and refuse on any red:
+  `scripts/release-upload.sh <tag> <files>` and the meta repo's `bin/site-deploy`.
+- Producing a clearable file: declare + clear each source via
+  `PUT /api/books/{id}/provenance` (`GET /api/works/{id}/provenance` shows a
+  dry-run `publishable` verdict), then export with `?public=1` — a 422 names
+  every missing or uncleared book; success writes the `publishing` block and a
+  generated ATTRIBUTION.txt. Cover sources are recorded at write time in
+  `covers/work-N.jpg.source.json`; OpenLibrary/upload art is never bundled publicly.
+
 Rule learned from Owl Creek: it HAD declared provenance ("verify before public
 redistribution") and was published anyway — the gate checks CLEARED, not
 DECLARED.
