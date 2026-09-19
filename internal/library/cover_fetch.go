@@ -75,6 +75,9 @@ func FetchCoverFromOpenLibrary(title, author, coversDir string, workID int64) st
 	if err := writeFileAtomic(coverPath, data); err != nil {
 		return ""
 	}
+	// MARK AT FETCH TIME: this is a third party's edition art (2026-09-18: two of
+	// these shipped in the public showcase). Personal use only; never published.
+	WriteCoverSource(coverPath, CoverSource{Source: "openlibrary", Ref: "olid:" + olid})
 
 	log.Printf("cover: fetched from OpenLibrary for work %d (%s)", workID, title)
 	return coverPath
@@ -278,7 +281,11 @@ func FetchCoverToPath(coverURL, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
-	return writeFileAtomic(destPath, data)
+	if err := writeFileAtomic(destPath, data); err != nil {
+		return err
+	}
+	WriteCoverSource(destPath, CoverSource{Source: "openlibrary", Ref: coverURL})
+	return nil
 }
 
 // SaveCoverBytes validates raw image bytes (e.g. an uploaded file) and writes
@@ -290,7 +297,11 @@ func SaveCoverBytes(data []byte, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
-	return writeFileAtomic(destPath, data)
+	if err := writeFileAtomic(destPath, data); err != nil {
+		return err
+	}
+	WriteCoverSource(destPath, CoverSource{Source: "upload", Ref: "user upload"})
+	return nil
 }
 
 // searchOpenLibrary returns the OLID (OpenLibrary ID) of the best matching

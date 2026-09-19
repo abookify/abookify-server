@@ -391,6 +391,25 @@ func migrate(db *sql.DB) error {
 			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 
+		-- Source provenance: a person's DECLARATION of where a source came from
+		-- and, separately, whether it is CLEARED for public redistribution
+		-- (2026-09-18: Owl Creek had a declaration that said "verify before
+		-- redistribution" and shipped anyway — the publish gate checks cleared,
+		-- not declared). scope: book (ref_id = books.id) | cover (ref_id = works.id).
+		CREATE TABLE IF NOT EXISTS source_provenance (
+			scope       TEXT NOT NULL CHECK(scope IN ('book','cover')),
+			ref_id      INTEGER NOT NULL,
+			kind        TEXT NOT NULL DEFAULT '',
+			source_url  TEXT NOT NULL DEFAULT '',
+			license     TEXT NOT NULL DEFAULT '',
+			cleared     INTEGER NOT NULL DEFAULT 0,
+			cleared_by  TEXT NOT NULL DEFAULT '',
+			cleared_at  TEXT NOT NULL DEFAULT '',
+			note        TEXT NOT NULL DEFAULT '',
+			updated_at  TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (scope, ref_id)
+		);
+
 		CREATE TABLE IF NOT EXISTS summaries (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			book_id     INTEGER NOT NULL,

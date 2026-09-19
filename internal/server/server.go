@@ -455,6 +455,11 @@ func New(store *db.Store, port string) *Server {
 	mux.HandleFunc("GET /api/covers/search", s.handleSearchCovers)
 	mux.HandleFunc("POST /api/works/{id}/cover", s.handleUploadCover)
 	mux.HandleFunc("POST /api/works/{id}/cover/from-url", s.handlePickCover)
+	// Provenance: declared + CLEARED per source; read by public exports + the publish gate.
+	mux.HandleFunc("GET /api/books/{id}/provenance", s.handleGetBookProvenance)
+	mux.HandleFunc("PUT /api/books/{id}/provenance", s.handlePutBookProvenance)
+	mux.HandleFunc("GET /api/works/{id}/provenance", s.handleWorkProvenance)
+	mux.HandleFunc("PUT /api/works/{id}/cover/provenance", s.handlePutCoverProvenance)
 	mux.HandleFunc("DELETE /api/works/{id}/sources/{bookId}", s.handleDeleteSource)
 	mux.HandleFunc("GET /api/works/{id}/editions", s.handleListEditions)
 	mux.HandleFunc("PATCH /api/works/{id}/editions", s.handleRelabelEdition)
@@ -2695,7 +2700,16 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 	// Carry chunk embeddings so a downloaded .abook can do on-device cosine
 	// retrieval offline (mobile semantic Q&A). Backward-compatible — older
 	// clients ignore the column. See the size note in ExportOptions.
-	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true, OnlyBookIDs: onlyBooks}); err != nil {
+	// ?public=1 marks a DISTRIBUTION export: refused (422, naming what is
+	// missing) unless every bundled source is declared AND cleared; the cover
+	// is bundled only if its recorded source is cleared. See internal/abook.
+	public := r.URL.Query().Get("public") == "1"
+	if err := abook.ExportV2(s.store, work, tmpPath, s.LibraryDir, abook.ExportOptions{IncludeAudio: includeAudio, IncludeEmbeddings: true, OnlyBookIDs: onlyBooks, Public: public}); err != nil {
+		var nc *abook.ErrNotCleared
+		if errors.As(err, &nc) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "public export refused: not cleared for redistribution", "missing": nc.Missing})
+			return
+		}
 		writeServerError(w, r, err)
 		return
 	}

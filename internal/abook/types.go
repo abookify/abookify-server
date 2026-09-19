@@ -60,6 +60,12 @@ type Manifest struct {
 	// Originals lists the bundled original source files under originals/. The
 	// carved book.db remains the render source; these are the untouched inputs.
 	Originals []OriginalFile `json:"originals,omitempty"`
+	// Publishing is present ONLY on a PUBLIC export (ExportOptions.Public): the
+	// per-source declarations + clearances the exporter verified, and what it
+	// decided about the cover. A file WITHOUT this block is not cleared for
+	// public redistribution, whatever its attribution text says — the publish
+	// gate (testing/provenance, bin/publish-check) refuses it.
+	Publishing *Publishing `json:"publishing,omitempty"`
 	// Checksums maps in-zip asset path -> "sha256:<hex>". Currently book.db.
 	Checksums map[string]string `json:"checksums"`
 }
@@ -78,4 +84,37 @@ type Assets struct {
 	AudioDir     string `json:"audio_dir"`     // "audio/"
 	OriginalsDir string `json:"originals_dir"` // "originals/"
 	Cover        string `json:"cover"`         // "cover.jpg" ("" when absent)
+}
+
+// Publishing records what a PUBLIC export verified. Cleared is a human's
+// verified clearance (source_provenance.cleared + cleared_by), never a
+// declaration alone — Owl Creek (2026-09-18) had a declaration that said
+// "verify before public redistribution" and was published anyway.
+type Publishing struct {
+	Public     bool              `json:"public"`
+	VerifiedAt string            `json:"verified_at"`
+	Sources    []PublishedSource `json:"sources"`
+	Cover      PublishedCover    `json:"cover"`
+}
+
+type PublishedSource struct {
+	BookID    int64  `json:"book_id"`
+	Media     string `json:"media"` // audio | text
+	Format    string `json:"format"`
+	Origin    string `json:"origin"`
+	Kind      string `json:"kind"` // gutenberg | librivox | kokoro | pg-open-audiobook | ...
+	SourceURL string `json:"source_url"`
+	License   string `json:"license"`
+	Cleared   bool   `json:"cleared"`
+	ClearedBy string `json:"cleared_by"`
+	Note      string `json:"note,omitempty"`
+}
+
+type PublishedCover struct {
+	Bundled   bool   `json:"bundled"`
+	Source    string `json:"source,omitempty"` // epub | audio | openlibrary | upload | abook | unknown
+	Ref       string `json:"ref,omitempty"`
+	Cleared   bool   `json:"cleared"`
+	ClearedBy string `json:"cleared_by,omitempty"`
+	Reason    string `json:"reason,omitempty"` // why it was or was not bundled
 }

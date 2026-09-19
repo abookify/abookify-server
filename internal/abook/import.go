@@ -15,6 +15,7 @@ import (
 	"database/sql"
 
 	"github.com/pj/abookify/internal/db"
+	"github.com/pj/abookify/internal/library"
 )
 
 // Import reads a v2 .abook file and ingests it into the library as a NEW work.
@@ -425,6 +426,11 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 				dst := filepath.Join(coversDir, fmt.Sprintf("work-%d.jpg", newWorkID))
 				if werr := os.WriteFile(dst, data, 0644); werr != nil {
 					log.Printf("abook import: cover wire failed for work %d: %v", newWorkID, werr)
+				} else {
+					// Provenance travels with the file: an imported cover is whatever the
+					// exporter bundled — its publishing clearance is in the manifest, not
+					// here. Record it as "abook" so a re-export never mistakes it for ours.
+					library.WriteCoverSource(dst, library.CoverSource{Source: "abook", Ref: manifest.Title})
 				}
 			}
 		}

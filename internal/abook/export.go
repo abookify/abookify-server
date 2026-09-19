@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pj/abookify/internal/db"
+	"github.com/pj/abookify/internal/library"
 )
 
 const (
@@ -43,6 +44,100 @@ type ExportOptions struct {
 	// must not be produced — the showcase featured artifact once shipped exactly that
 	// to strangers. The escape hatch exists only for deliberate diagnostics.
 	AllowIncoherent bool
+	// Public marks a distribution export. Every bundled book must carry a
+	// source_provenance row with cleared=true (+ cleared_by); the cover is
+	// bundled only if its recorded source is a cleared bundled book's own
+	// embedded art, or the work's cover has its own cleared row. Otherwise the
+	// export is REFUSED (ErrNotCleared, naming what is missing) — never
+	// silently degraded, so a human can't publish an uncleared file by
+	// forgetting a step. The manifest then carries a Publishing block.
+	Public bool
+}
+
+// ErrNotCleared is returned by a Public export that cannot prove clearance.
+type ErrNotCleared struct {
+	Missing []string
+}
+
+func (e *ErrNotCleared) Error() string {
+	return "public export refused — not cleared for redistribution: " + strings.Join(e.Missing, "; ")
+}
+
+// bundledBooks lists the books this export will carry (OnlyBookIDs honoured).
+func bundledBooks(work *db.Work, opts ExportOptions) []db.Book {
+	var out []db.Book
+	for _, b := range work.AudioFiles {
+		if len(opts.OnlyBookIDs) == 0 || opts.OnlyBookIDs[b.ID] {
+			out = append(out, b)
+		}
+	}
+	for _, b := range work.TextFiles {
+		if len(opts.OnlyBookIDs) == 0 || opts.OnlyBookIDs[b.ID] {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// verifyPublishing builds the Publishing block for a public export or returns
+// ErrNotCleared. It reads only human-authored rows + the cover's own sidecar.
+func verifyPublishing(store *db.Store, work *db.Work, libraryDir string, opts ExportOptions) (*Publishing, error) {
+	books := bundledBooks(work, opts)
+	ids := make([]int64, 0, len(books))
+	for _, b := range books {
+		ids = append(ids, b.ID)
+	}
+	rows, err := store.GetSourceProvenance("book", ids)
+	if err != nil {
+		return nil, err
+	}
+	pub := &Publishing{Public: true, VerifiedAt: time.Now().UTC().Format(time.RFC3339)}
+	var missing []string
+	clearedBook := map[int64]bool{}
+	for _, b := range books {
+		r, ok := rows[b.ID]
+		ps := PublishedSource{BookID: b.ID, Media: b.MediaType, Format: b.Format, Origin: b.Origin,
+			Kind: r.Kind, SourceURL: r.SourceURL, License: r.License, Cleared: r.Cleared, ClearedBy: r.ClearedBy, Note: r.Note}
+		switch {
+		case !ok:
+			missing = append(missing, fmt.Sprintf("book %d (%s %s %q) has no provenance declaration", b.ID, b.MediaType, b.Format, b.Filename))
+		case !r.Cleared:
+			missing = append(missing, fmt.Sprintf("book %d (%s %s %q) is declared (%s) but NOT cleared", b.ID, b.MediaType, b.Format, b.Filename, r.Kind))
+		default:
+			clearedBook[b.ID] = true
+		}
+		pub.Sources = append(pub.Sources, ps)
+	}
+	// Cover: what did the file's own sidecar say, and is that source cleared?
+	coverPath := ""
+	if libraryDir != "" {
+		coverPath = filepath.Join(libraryDir, "covers", fmt.Sprintf("work-%d.jpg", work.ID))
+	}
+	pc := PublishedCover{}
+	if coverPath != "" {
+		if _, err := os.Stat(coverPath); err == nil {
+			src, hasSidecar := library.ReadCoverSource(coverPath)
+			coverRows, _ := store.GetSourceProvenance("cover", []int64{work.ID})
+			cr, hasRow := coverRows[work.ID]
+			switch {
+			case hasRow && cr.Cleared:
+				pc = PublishedCover{Bundled: true, Source: src.Source, Ref: src.Ref, Cleared: true, ClearedBy: cr.ClearedBy, Reason: "cover has its own clearance: " + cr.Note}
+			case hasSidecar && (src.Source == "epub" || src.Source == "audio") && clearedBook[src.BookID]:
+				pc = PublishedCover{Bundled: true, Source: src.Source, Ref: src.Ref, Cleared: true, ClearedBy: rows[src.BookID].ClearedBy, Reason: "embedded art of cleared bundled book " + fmt.Sprint(src.BookID)}
+			case hasSidecar:
+				pc = PublishedCover{Bundled: false, Source: src.Source, Ref: src.Ref, Reason: "cover source " + src.Source + " is not a cleared bundled book and has no clearance of its own — omitted"}
+			default:
+				pc = PublishedCover{Bundled: false, Source: "unknown", Reason: "cover has no recorded source (predates provenance tracking) — omitted"}
+			}
+		} else {
+			pc = PublishedCover{Bundled: false, Reason: "work has no cover file"}
+		}
+	}
+	pub.Cover = pc
+	if len(missing) > 0 {
+		return nil, &ErrNotCleared{Missing: missing}
+	}
+	return pub, nil
 }
 
 // abookCoherenceProblems checks the distribution invariant INDEPENDENTLY of canon
@@ -121,6 +216,16 @@ func ExportWithDirs(store *db.Store, work *db.Work, outputPath, libraryDir strin
 // ExportV2 writes a v2 .abook container: manifest.json + a per-work book.db
 // carved from the monolith + cover, plus bundled audio when opts.IncludeAudio.
 func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opts ExportOptions) error {
+	// PUBLIC export: prove clearance BEFORE creating anything, so a refused
+	// export leaves no partial file behind (the verdict is reused below).
+	var publishing *Publishing
+	if opts.Public {
+		pubv, perr := verifyPublishing(store, work, libraryDir, opts)
+		if perr != nil {
+			return perr
+		}
+		publishing = pubv
+	}
 	if len(opts.OnlyBookIDs) > 0 {
 		work = filterWorkBooks(work, opts.OnlyBookIDs)
 	}
@@ -258,12 +363,19 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 		Checksums:        map[string]string{"book.db": "sha256:" + hex.EncodeToString(sumHash[:])},
 	}
 
+	if publishing != nil {
+		manifest.Publishing = publishing
+	}
 	// Cover. Covers live at {libraryDir}/covers/work-{id}.jpg.
 	coverBases := []string{}
-	if libraryDir != "" {
+	if publishing != nil && !publishing.Cover.Bundled {
+		coverBases = nil // decided above: not ours to publish
+	} else if libraryDir != "" {
 		coverBases = append(coverBases, filepath.Join(libraryDir, "covers"))
 	}
-	coverBases = append(coverBases, "/library/covers", "./library/covers")
+	if publishing == nil {
+		coverBases = append(coverBases, "/library/covers", "./library/covers")
+	}
 	for _, base := range coverBases {
 		coverPath := filepath.Join(base, fmt.Sprintf("work-%d.jpg", work.ID))
 		if data, err := os.ReadFile(coverPath); err == nil && len(data) > 0 {
@@ -291,6 +403,13 @@ func ExportV2(store *db.Store, work *db.Work, outputPath, libraryDir string, opt
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	// A PUBLIC export is self-contained: ATTRIBUTION.txt is generated from the
+	// verified publishing block (never hand-written into the zip afterwards).
+	if publishing != nil {
+		if err := writeToZip(w, "ATTRIBUTION.txt", []byte(attributionText(work, publishing))); err != nil {
+			return err
+		}
 	}
 	if err := writeToZip(w, "manifest.json", manifestJSON); err != nil {
 		return err
@@ -350,4 +469,42 @@ func filterWorkBooks(work *db.Work, only map[int64]bool) *db.Work {
 		}
 	}
 	return &w
+}
+
+// DryRunPublic answers "would a public export of this work succeed right now,
+// and what would it say about the cover?" without writing anything.
+func DryRunPublic(store *db.Store, work *db.Work, libraryDir string) (*Publishing, error) {
+	return verifyPublishing(store, work, libraryDir, ExportOptions{Public: true})
+}
+
+// attributionText renders the human-readable attribution for a public export
+// from the verified sources — the same facts the manifest's publishing block
+// carries, in prose a downloader can read.
+func attributionText(work *db.Work, pub *Publishing) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "ATTRIBUTION — %s\n", work.Title)
+	fmt.Fprintf(&b, "%s\n\n", strings.Repeat("=", len("ATTRIBUTION — ")+len(work.Title)))
+	fmt.Fprintf(&b, "WORK\n  Title:   %s\n  Author:  %s\n\n", work.Title, work.Author)
+	fmt.Fprintf(&b, "SOURCES (each verified and cleared for public redistribution by the person named)\n")
+	for _, s := range pub.Sources {
+		fmt.Fprintf(&b, "  - %s %s (book %d): kind=%s", s.Media, s.Format, s.BookID, s.Kind)
+		if s.SourceURL != "" {
+			fmt.Fprintf(&b, "  source=%s", s.SourceURL)
+		}
+		if s.License != "" {
+			fmt.Fprintf(&b, "  license=%s", s.License)
+		}
+		fmt.Fprintf(&b, "  cleared_by=%s", s.ClearedBy)
+		if s.Note != "" {
+			fmt.Fprintf(&b, "\n      note: %s", s.Note)
+		}
+		b.WriteString("\n")
+	}
+	if pub.Cover.Bundled {
+		fmt.Fprintf(&b, "\nCOVER\n  %s (%s) — cleared_by=%s\n", pub.Cover.Source, pub.Cover.Ref, pub.Cover.ClearedBy)
+	} else {
+		fmt.Fprintf(&b, "\nCOVER\n  none bundled — %s\n", pub.Cover.Reason)
+	}
+	fmt.Fprintf(&b, "\nVerified %s by Abookify's public-export gate (manifest.json → publishing).\n", pub.VerifiedAt)
+	return b.String()
 }
