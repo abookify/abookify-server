@@ -836,7 +836,7 @@ func TestMergeDegenerateTextChapters(t *testing.T) {
 		{Title: "part hdr", WordIdx: 900, Src: "part"},
 		{Title: "real 3", WordIdx: 905},
 	}
-	out := mergeDegenerateTextChapters(ranges, 1400)
+	out := mergeDegenerateTextChapters(ranges, make([]sttWord, 1400))
 	var titles []string
 	for _, r := range out {
 		titles = append(titles, r.Title)
@@ -853,5 +853,37 @@ func TestMergeDegenerateTextChapters(t *testing.T) {
 	// The leading stub's words must be absorbed by the first real chapter.
 	if out[0].WordIdx != 0 {
 		t.Errorf("leading stub words orphaned: first chapter starts at word %d, want 0", out[0].WordIdx)
+	}
+}
+
+// The detector's double-hit: "Chapter six of the Time Machine. This is a
+// LibriVox recording…" becomes its own 22-word chapter titled with the NEXT
+// chapter's number. It is the next chapter's header and must fold FORWARD
+// into it (the next chapter's start moves back to the announcement); a tiny
+// non-header stub still folds back into the previous chapter.
+func TestMergeDegenerateTextChapters_HeaderStubFoldsForward(t *testing.T) {
+	words := make([]sttWord, 1200)
+	for i := range words {
+		words[i] = sttWord{Word: "lorem", Start: float64(i) * 0.4, End: float64(i)*0.4 + 0.3}
+	}
+	for i, w := range []string{"Chapter", "six", "of", "The", "Time", "Machine.", "This", "is", "a", "LibriVox", "recording."} {
+		words[500+i].Word = w
+	}
+	ranges := []sttChapter{
+		{Title: "Chapter 5", WordIdx: 0, Start: 0},
+		{Title: "Chapter 5: Chapter Six of the Time Machine", WordIdx: 500, Start: 200}, // 22 words, 8.8 s
+		{Title: "Chapter 6", WordIdx: 522, Start: 208.8},
+		{Title: "Chapter 6: stub", WordIdx: 900, Start: 360}, // 10 plain words: tiny, not a header
+		{Title: "Chapter 7", WordIdx: 910, Start: 364},
+	}
+	out := mergeDegenerateTextChapters(ranges, words)
+	if len(out) != 3 {
+		t.Fatalf("got %d chapters, want 3: %+v", len(out), out)
+	}
+	if out[1].WordIdx != 500 || out[1].Start != 200 || out[1].Title != "Chapter 6" {
+		t.Errorf("header stub must fold FORWARD into Chapter 6 (start pulled back to the announcement): %+v", out[1])
+	}
+	if out[2].WordIdx != 910 {
+		t.Errorf("the plain tiny stub must fold BACK (Chapter 7 keeps its own start): %+v", out[2])
 	}
 }

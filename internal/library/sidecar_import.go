@@ -692,7 +692,7 @@ func ensureTranscriptBook(store *db.Store, workID, audioBookID int64, sc *sttSid
 	// sidecar chapters, future detectors): a text chapter spanning fewer than
 	// minTextChapterWords merges into its neighbor instead of shipping as a
 	// stub the reader renders as two words and nothing else.
-	ranges = mergeDegenerateTextChapters(ranges, len(sc.Words))
+	ranges = mergeDegenerateTextChapters(ranges, sc.Words)
 
 	// Build word-index ranges for each chapter. Prefer explicit word_idx
 	// from the sidecar (precise, no boundary words missed); fall back to
@@ -2045,30 +2045,86 @@ func reconcileSilenceChapterNumbers(chapters []sttChapter) []sttChapter {
 // (Src=="part") are exempt — they are header-only by design.
 const minTextChapterWords = 15
 
-// mergeDegenerateTextChapters drops sub-minimum chapters so their word span
-// folds into the PREVIOUS kept chapter (or, for a leading stub, into the
-// following chapter by pulling its start back — words are never orphaned).
-func mergeDegenerateTextChapters(ranges []sttChapter, totalWords int) []sttChapter {
+// A HEADER STUB is the detector's double-hit: the narrator announces
+// "Chapter six of The Time Machine. This is a LibriVox recording…", the
+// chain cuts a chapter at the announcement AND at the pause after the
+// credit, and the 20–50 words between become their own chapter — titled
+// with the NEXT chapter's number, 8–30 s long, essentially empty when a
+// reader lands on it (Time Machine 'Chapter 5: Chapter Six…' 22 words;
+// Sherlock 'Chapter 14: …this is a librivox recording'; a library sweep
+// found ~320 such rows). It is the next chapter's header, so it folds
+// FORWARD into the chapter it announces — folding it back would glue a
+// credit onto the previous chapter's last line.
+const (
+	headerStubMaxWords = 60
+	headerStubMaxSecs  = 30.0
+)
+
+var headerStubRe = regexp.MustCompile(`(?i)\b(?:chapter|stave|part|book|section|letter|volume)\s+(?:\d{1,3}|[ivxlc]{1,6}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)\b|librivox`)
+
+// isHeaderStub reports whether the range's opening words carry an
+// announcement ("chapter eleven", "stave two", a numeral) or a LibriVox
+// credit, and the range is short enough in words AND seconds to be one.
+func isHeaderStub(words []sttWord, r sttChapter, span int, dur float64) bool {
+	if span >= headerStubMaxWords || dur >= headerStubMaxSecs || r.WordIdx < 0 || r.WordIdx >= len(words) {
+		return false
+	}
+	n := span // the announcement may follow a few outro words ("…of The Time Machine by H. G. Wells. Chapter eleven.")
+	if n > 24 {
+		n = 24
+	}
+	var b strings.Builder
+	for _, w := range words[r.WordIdx : r.WordIdx+n] {
+		b.WriteString(w.Word)
+		b.WriteByte(' ')
+	}
+	return headerStubRe.MatchString(b.String())
+}
+
+// mergeDegenerateTextChapters drops sub-minimum chapters and header stubs so
+// no words are orphaned: a header stub (or a leading stub) folds FORWARD into
+// the chapter it introduces by pulling that chapter's start back; any other
+// stub folds into the PREVIOUS kept chapter.
+func mergeDegenerateTextChapters(ranges []sttChapter, words []sttWord) []sttChapter {
 	if len(ranges) <= 1 {
 		return ranges
 	}
+	totalWords := len(words)
 	span := func(i int) int {
 		if i == len(ranges)-1 {
 			return totalWords - ranges[i].WordIdx
 		}
 		return ranges[i+1].WordIdx - ranges[i].WordIdx
 	}
+	dur := func(i int) float64 {
+		if i == len(ranges)-1 {
+			if totalWords > 0 {
+				return words[totalWords-1].End - ranges[i].Start
+			}
+			return 0
+		}
+		return ranges[i+1].Start - ranges[i].Start
+	}
 	out := ranges[:0]
 	for i := range ranges {
-		if ranges[i].Src != "part" && span(i) < minTextChapterWords && len(ranges) > 1 {
-			if len(out) == 0 && i+1 < len(ranges) {
-				// Leading stub: absorb it into the next chapter.
-				ranges[i+1].WordIdx = ranges[i].WordIdx
-				ranges[i+1].Start = ranges[i].Start
-			}
-			continue // non-leading stubs fold into the previous kept chapter
+		if ranges[i].Src == "part" {
+			out = append(out, ranges[i])
+			continue
 		}
-		out = append(out, ranges[i])
+		sp := span(i)
+		tiny := sp < minTextChapterWords
+		header := i+1 < len(ranges) && isHeaderStub(words, ranges[i], sp, dur(i))
+		if !tiny && !header {
+			out = append(out, ranges[i])
+			continue
+		}
+		if i+1 < len(ranges) && (header || len(out) == 0) {
+			// Header / leading stub: absorb it into the next chapter.
+			ranges[i+1].WordIdx = ranges[i].WordIdx
+			ranges[i+1].Start = ranges[i].Start
+			continue
+		}
+		// Non-leading, non-header stub folds into the previous kept chapter.
 	}
 	if len(out) == 0 {
 		return ranges // never return nothing
