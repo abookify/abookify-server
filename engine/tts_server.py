@@ -119,11 +119,22 @@ def _synth_fastapi(text: str, voice: str) -> np.ndarray:
     return np.concatenate(out)
 
 
+# A chunk with nothing to say — a Gutenberg scene-break line of spaced dots
+# (". . . . . ."), a bare ornament — yields no audio from the model, and an
+# empty frame made the encoder fail the whole request (EINVAL 22; under
+# memory pressure it surfaced as ENOMEM and killed a 28-chapter job at 24/28,
+# Dracula XXIV, 2026-09-22). Rendered as a short silence it is exactly the
+# pause the line means, and the caller's chapter assembly carries on.
+NO_SPEECH_SILENCE_SECS = 0.6
+
+
 def synth(text: str, voice: str) -> np.ndarray:
-    """Returns int16 mono @ 24 kHz."""
-    if RENDER_MODE == "fastapi":
-        return _synth_fastapi(text, voice)
-    return _synth_raw(text, voice)
+    """Returns int16 mono @ 24 kHz; never empty."""
+    audio = _synth_fastapi(text, voice) if RENDER_MODE == "fastapi" else _synth_raw(text, voice)
+    if len(audio) == 0:
+        print(f"[tts] no speech in chunk ({len(text)} chars: {text[:40]!r}) — returning {NO_SPEECH_SILENCE_SECS}s silence")
+        return np.zeros(int(NO_SPEECH_SILENCE_SECS * SAMPLE_RATE), dtype=np.int16)
+    return audio
 
 
 def encode(audio: np.ndarray, fmt: str) -> tuple[bytes, str]:
