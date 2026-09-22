@@ -3068,6 +3068,16 @@ func (s *Store) UpdateChapterContent(bookID int64, index int, content, contentHT
 	return err
 }
 
+// UpdateChapterText is UpdateChapterContent plus the TITLE: an in-place
+// re-extraction whose words did not move can still have re-read the heading
+// (Sherlock's chapter I regained "A SCANDAL IN BOHEMIA" this way, 2026-09-22).
+// Ids, timings and alignments are untouched, exactly as before.
+func (s *Store) UpdateChapterText(bookID int64, index int, title, content, contentHTML string, wordCount int) error {
+	_, err := s.db.Exec(`UPDATE chapters SET title=?, content=?, content_html=?, word_count=? WHERE book_id=? AND index_num=?`,
+		title, content, contentHTML, wordCount, bookID, index)
+	return err
+}
+
 // ListChaptersWithContent is ListChapters plus the (large) content column —
 // for the re-extraction migration's word-stream comparison.
 func (s *Store) ListChaptersWithContent(bookID int64) ([]Chapter, error) {

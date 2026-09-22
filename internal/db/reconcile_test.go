@@ -217,3 +217,24 @@ func TestCleanupOrphanedRows_SweepsProvenanceScansAndTrust(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateChapterText_CarriesTitle(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.db.Exec(`INSERT INTO works (id, title) VALUES (1, 'w')`)
+	store.db.Exec(`INSERT INTO books (id, work_id, path, filename, format, media_type) VALUES (1, 1, '/x.epub', 'x', 'epub', 'text')`)
+	store.db.Exec(`INSERT INTO chapters (book_id, index_num, title, content, word_count, start_sec) VALUES (1, 0, 'I.', 'old', 1, 12.5)`)
+	if err := store.UpdateChapterText(1, 0, "I.\n\nA SCANDAL IN BOHEMIA", "new words", "<p>new words</p>", 2); err != nil {
+		t.Fatal(err)
+	}
+	var title, content string
+	var start float64
+	store.db.QueryRow(`SELECT title, content, start_sec FROM chapters WHERE book_id=1 AND index_num=0`).Scan(&title, &content, &start)
+	if title != "I.\n\nA SCANDAL IN BOHEMIA" || content != "new words" || start != 12.5 {
+		t.Errorf("got title %q content %q start %v", title, content, start)
+	}
+}

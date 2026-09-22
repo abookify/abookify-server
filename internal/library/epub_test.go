@@ -253,6 +253,12 @@ func TestExtractChapterHeadingPrefersChapterLine(t *testing.T) {
 	if got := extractChapterHeading(`<h1>A Preface Note</h1><p>x</p>`); got != "A Preface Note" {
 		t.Errorf("fallback to first heading broken: %q", got)
 	}
+	// Sherlock: the numbered heading carries its title on a second line, and
+	// a bare <h3>I.</h3> follows it — the first heading wins, title intact.
+	got := extractChapterHeading(`<h2>I.<br/>A SCANDAL IN BOHEMIA</h2><h3>I.</h3><p>To Sherlock Holmes she is always the woman.</p>`)
+	if !strings.HasPrefix(got, "I.") || !strings.Contains(got, "A SCANDAL IN BOHEMIA") {
+		t.Errorf("Sherlock chapter I heading lost its title: %q", got)
+	}
 }
 
 func titlesOf(cs []db.Chapter) []string {

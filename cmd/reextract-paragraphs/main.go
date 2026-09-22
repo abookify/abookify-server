@@ -177,7 +177,7 @@ func main() {
 		}
 		ok := true
 		for i := range fresh {
-			if err := store.UpdateChapterContent(b.ID, fresh[i].Index, fresh[i].Content, fresh[i].ContentHTML, len(strings.Fields(fresh[i].Content))); err != nil {
+			if err := store.UpdateChapterText(b.ID, fresh[i].Index, fresh[i].Title, fresh[i].Content, fresh[i].ContentHTML, len(strings.Fields(fresh[i].Content))); err != nil {
 				logLedger("book=%d\twork=%d\tERR_UPDATE\tch %d: %v", b.ID, b.WorkID, fresh[i].Index, err)
 				ok = false
 				break

@@ -1205,6 +1205,8 @@ func numberedParagraphStarts(rawHTML string) []headingStart {
 	return starts
 }
 
+var headingLineBreakRe = regexp.MustCompile(`[ \t]*\n[\s]*`)
+
 // extractChapterHeading prefers the first heading that NAMES a chapter
 // ("CHAPTER I", "Stave One", "IV.") over whatever heading merely comes first.
 // Gutenberg files put the book's own title in an <h2> right before the first
@@ -1212,8 +1214,15 @@ func numberedParagraphStarts(rawHTML string) []headingStart {
 // "D R A C U L A" while every later chapter got its "CHAPTER N" line.
 func extractChapterHeading(html string) string {
 	for _, m := range anyHeadingRe.FindAllStringSubmatch(html, -1) {
-		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(m[1], ""))
-		if text != "" && chapterHeadingTextRe.MatchString(text) {
+		// <br/> inside a heading is a line break in its text ("I." / "A
+		// SCANDAL IN BOHEMIA"); keep it so the sub-title survives, and judge
+		// the heading by its FIRST line — the whole text "I. A SCANDAL IN
+		// BOHEMIA" is not a numeral, and losing to a bare <h3>I.</h3> below it
+		// left Sherlock's chapter I titled "I." (server-web, 2026-09-22).
+		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(brRe.ReplaceAllString(m[1], "\n"), ""))
+		text = headingLineBreakRe.ReplaceAllString(text, "\n\n") // the store's two-line title shape
+		first := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
+		if first != "" && chapterHeadingTextRe.MatchString(first) {
 			return text
 		}
 	}
