@@ -516,6 +516,7 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 	for _, bk := range allBooks {
 		ids = append(ids, bk.ID)
 	}
+	testified := map[int64]bool{}
 	if conds, err := store.GetBookConditions(ids); err == nil {
 		for _, c := range conds {
 			if !included[c.BookID] {
@@ -524,6 +525,28 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 			if _, err := tx.Exec(`INSERT INTO book_conditions(book_id, state, reason, source) VALUES(?, ?, ?, ?)`,
 				c.BookID, c.State, c.Reason, c.Source); err != nil {
 				return fmt.Errorf("insert condition for book %d: %w", c.BookID, err)
+			}
+			testified[c.BookID] = true
+		}
+	}
+	// A narration nobody's generator vouched for (a LibriVox file) still has
+	// producer knowledge behind it when the damage scan decoded it end to end:
+	// no decode errors, not truncated, no zero runs. That scan IS the evidence
+	// "complete" means elsewhere (the library audit's unreadable/zero-length
+	// check), so the export testifies from it rather than shipping our own
+	// curated sample as "Not verified". A file never scanned stays unknown.
+	if scans, err := store.GetSourceScans(ids); err == nil {
+		for _, bk := range work.AudioFiles {
+			if testified[bk.ID] {
+				continue
+			}
+			sc, ok := scans[bk.ID]
+			if !ok || !sc.Scanned || sc.DecodeErrors != 0 || sc.Truncated || sc.ZeroBytes != 0 {
+				continue
+			}
+			if _, err := tx.Exec(`INSERT INTO book_conditions(book_id, state, reason, source) VALUES(?, ?, ?, ?)`,
+				bk.ID, "complete", "decoded end to end by the source scan: 0 decode errors, not truncated, no zero runs", "source_scan"); err != nil {
+				return fmt.Errorf("insert scan condition for book %d: %w", bk.ID, err)
 			}
 		}
 	}

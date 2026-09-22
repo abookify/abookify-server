@@ -196,3 +196,60 @@ func TestImport_CarriesTextTrustTestimony(t *testing.T) {
 		t.Errorf("sweep verdict not carried: %+v", tt3)
 	}
 }
+
+// A human narration has no generator to vouch for it, but the damage scan
+// that decoded it end to end is producer knowledge: the export testifies
+// "complete" from a clean scan, and never from no scan.
+func TestImport_CarriesScanBackedCondition(t *testing.T) {
+	dir := t.TempDir()
+	store, w := seedNarration(t, dir, "narrator_recording", "")
+	var audioID int64
+	for _, b := range w.AudioFiles {
+		audioID = b.ID
+	}
+	// No scan → nothing testified.
+	abook := filepath.Join(dir, "unscanned.abook")
+	if err := ExportV2(store, w, abook, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest, _ := db.Open(filepath.Join(dir, "dest.db"))
+	res, err := ImportInto(dest, abook, filepath.Join(dir, "lib"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, _ := dest.GetWork(res.WorkID)
+	var ids []int64
+	for _, b := range got.AudioFiles {
+		ids = append(ids, b.ID)
+	}
+	if conds, _ := dest.GetBookConditions(ids); len(conds) != 0 {
+		t.Fatalf("unscanned narration must arrive unknown, got %+v", conds)
+	}
+	// Clean scan → complete/source_scan.
+	if err := store.SaveSourceScan(db.SourceScanRow{BookID: audioID, Scanned: true, DecodeErrors: 0, Truncated: false}); err != nil {
+		t.Fatal(err)
+	}
+	abook2 := filepath.Join(dir, "scanned.abook")
+	if err := ExportV2(store, w, abook2, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest2, _ := db.Open(filepath.Join(dir, "dest2.db"))
+	res2, err := ImportInto(dest2, abook2, filepath.Join(dir, "lib2"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got2, _ := dest2.GetWork(res2.WorkID)
+	ids = ids[:0]
+	for _, b := range got2.AudioFiles {
+		ids = append(ids, b.ID)
+	}
+	conds, _ := dest2.GetBookConditions(ids)
+	if len(conds) != 1 {
+		t.Fatalf("want 1 scan-backed condition, got %d", len(conds))
+	}
+	for _, c := range conds {
+		if c.State != "complete" || c.Source != "source_scan" {
+			t.Errorf("condition = %+v, want complete/source_scan", c)
+		}
+	}
+}
