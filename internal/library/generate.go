@@ -569,7 +569,13 @@ func (g *Generator) synthesizeEditionChapter(job *JobStatus, textBookID int64, v
 		segTexts = append(segTexts, seg.Text)
 	}
 	contentKey := TTSContentKey(strings.Join(segTexts, "\n\n"), voice, titlePause, paraPause)
-	if !CasHasChapter(mp3Path, contentKey) && !CasLinkChapter(g.generatedDir, contentKey, mp3Path) {
+	// reused: the audio at mp3Path already carries this exact content key —
+	// the file was finished by an earlier run (a crash, a re-queue, a second
+	// generate after an unrelated text change). Its alignment, if it exists,
+	// describes exactly these bytes and is kept below; re-running Whisper on
+	// it cost the Dracula re-queue two hours for nothing (2026-09-22).
+	reused := CasHasChapter(mp3Path, contentKey)
+	if !reused && !CasLinkChapter(g.generatedDir, contentKey, mp3Path) {
 		// Not in the store: synthesize into the job's WORKING DIR (under
 		// the generator dir — never scanned, never served) and promote
 		// atomically on completion, so a crash costs only this chapter.
@@ -653,7 +659,14 @@ func (g *Generator) synthesizeEditionChapter(job *JobStatus, textBookID int64, v
 				Confidence:  1.0,
 			})
 
-			// Run Whisper alignment to get word-level timestamps
+			// Run Whisper alignment to get word-level timestamps — unless the
+			// chapter was reused AND its timings already exist for this row.
+			if reused {
+				if ts, err := g.store.GetSyncData(job.WorkID, b.ID, audioIdx); err == nil && ts != "" && ts != "[]" {
+					log.Printf("tts: chapter %d reused with its alignment (%d bytes of timings) — not re-transcribed", chMeta.Index, len(ts))
+					break
+				}
+			}
 			if g.stt() != nil {
 				job.CurrentStep = fmt.Sprintf("Aligning %s", label)
 				g.updateJob(job)
