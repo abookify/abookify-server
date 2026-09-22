@@ -98,7 +98,7 @@ fi
 # --- 3. copy engine code -------------------------------------------------------
 echo "--- staging engine code"
 mkdir -p "$BUNDLE/engine"
-cp "$HERE"/stt_server.py "$HERE"/tts_server.py "$HERE"/_common.py "$HERE"/launch.py "$BUNDLE/engine/"
+cp "$HERE"/stt_server.py "$HERE"/tts_server.py "$HERE"/_common.py "$HERE"/launch.py "$HERE"/kfa_normalizer.py "$HERE"/kfa_chunking.py "$BUNDLE/engine/"
 echo "$VARIANT" > "$BUNDLE/VARIANT"   # stamp so the install/first-run flow knows what it built
 
 # --- 4. launcher wrapper -------------------------------------------------------

@@ -1,0 +1,11 @@
+seg	chunk	words	dur_a	dur_b	lead_a	lead_b	trail_a	trail_b	speech_a	speech_b	gaps_a	gaps_b	gap_secs_a	gap_secs_b	rms_a	rms_b	text
+0	0	2	1.5699	1.7500	0.0500	0.2300	0.1799	0.1900	1.3400	1.3300	0	0	0	0	0.0542	0.0513	Marley’S Ghost.
+1	0	58	17.1917	15.9750	0.0500	0.2800	0.5017	0.7150	16.6400	14.9800	4	6	1.2000	1.5700	0.0424	0.0402	Marley was dead: to begin with. There is no doubt whatever a
+2	0	79	22.1543	20.6750	0.0500	0.3200	0.3943	0.8150	21.7100	19.5400	7	8	1.9500	1.9900	0.0413	0.0384	Mind! I don’t mean to say that I know, of my own knowledge, 
+3	0	83	23.4506	22.2000	0.0500	0.3000	0.3906	0.8100	23.0100	21.0900	8	9	2.1900	2.3600	0.0398	0.0378	Scrooge knew he was dead? Of course he did. How could it be 
+4	0	104	29.5787	30.7250	0.1000	0.3100	0.3787	0.7650	29.1000	29.6500	13	11	3.1200	3.3500	0.0400	0.0393	The mention of Marley’s funeral brings me back to the point 
+5	0	52	16.3092	15.8250	0.0500	0.2800	0.2292	0.7650	16.0300	14.7800	6	6	1.7100	1.4600	0.0406	0.0381	Scrooge never painted out Old Marley’s name. There it stood,
+6	0	117	38.0581	35.2250	0.0500	0.3300	0.2481	0.7150	37.7600	34.1800	14	13	4.5800	4.2300	0.0403	0.0382	Oh! But he was a tight-fisted hand at the grindstone, Scroog
+7	0	79	24.4903	22.5250	0.0500	0.3400	0.7703	0.8050	23.6700	21.3800	11	8	2.4400	2.0300	0.0410	0.0391	External heat and cold had little influence on Scrooge. No w
+8	0	109	27.7370	28.6500	0.0800	0.3200	0.3570	0.8500	27.3000	27.4800	11	10	2.9700	3.1600	0.0400	0.0394	Nobody ever stopped him in the street to say, with gladsome 
+9	0	39	11.1657	11.3750	0.0800	0.2900	0.7657	0.7650	10.3200	10.3200	5	6	1.2400	1.3200	0.0406	0.0402	But what did Scrooge care! It was the very thing he liked. T

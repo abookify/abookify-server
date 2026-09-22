@@ -40,6 +40,7 @@ for url in http://127.0.0.1:5200/health http://127.0.0.1:8880/health; do
   [ "$ok" = 1 ] || echo " TIMED OUT (model still downloading? check engine log)"
 done
 echo "--- STT /health:"; curl -fsS http://127.0.0.1:5200/health; echo
+echo "--- TTS /health (render must be \"fastapi\" — the measured-same-as-Docker policy, board 17):"; curl -fsS http://127.0.0.1:8880/health; echo
 echo "--- TTS /v1/models:"; curl -fsS http://127.0.0.1:8880/v1/models; echo
 
 echo ""; echo "=== STT benchmark: $(basename "$AUDIO") ==="

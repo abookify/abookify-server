@@ -11,3 +11,4 @@ flask==3.0.3
 kokoro==0.9.4                  # hexgrad Kokoro-82M pipeline (needs torch — installed first by build.sh)
 soundfile==0.12.1
 espeakng-loader==0.2.4         # ships espeak-ng shared lib as a wheel (misaki OOV fallback) -> stays hermetic
+inflect==7.5.0                 # kokoro-fastapi text normalizer port (kfa_normalizer.py) — chunk-boundary sameness with the Docker TTS (board 17)

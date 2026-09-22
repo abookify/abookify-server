@@ -37,6 +37,16 @@ app = Flask(__name__)
 
 SAMPLE_RATE = 24000  # Kokoro emits 24 kHz mono float32
 
+# Render policy (board 17). "fastapi" = the kokoro-fastapi pipeline: normalize,
+# split into ~175–250-token sentence groups, trim each group's boundary silence
+# to 50 ms + punctuation tail — measured identical to the Docker TTS service,
+# so a GPU render is the same audio as the approved CPU render. "raw" = the
+# pre-2026-09-21 behaviour (whole text to KPipeline, untrimmed) — kept ONLY as
+# the control for the sameness harness (engine/tools/tts_sameness.py).
+RENDER_MODE = os.environ.get("ABOOKIFY_TTS_RENDER", "fastapi").lower()
+if RENDER_MODE == "fastapi":
+    import kfa_chunking  # noqa: E402  (espeak wheel plumbing happens on import)
+
 
 def detect_device():
     dev = os.environ.get("ABOOKIFY_TTS_DEVICE")
@@ -65,13 +75,55 @@ def pipeline_for(voice: str) -> KPipeline:
     return _pipelines[lang]
 
 
-def synth(text: str, voice: str) -> np.ndarray:
+def _synth_raw(text: str, voice: str) -> np.ndarray:
+    """Control path: whole text to KPipeline, boundary silence untouched (int16)."""
     pipe = pipeline_for(voice)
-    chunks = [audio for _, _, audio in pipe(text, voice=voice)]
+    chunks = [np.asarray(audio, dtype=np.float32) for _, _, audio in pipe(text, voice=voice)]
     if not chunks:
-        return np.zeros(0, dtype=np.float32)
-    arr = np.concatenate([np.asarray(c, dtype=np.float32) for c in chunks])
-    return arr
+        return np.zeros(0, dtype=np.int16)
+    return kfa_to_int16(np.concatenate(chunks))
+
+
+def kfa_to_int16(audio: np.ndarray) -> np.ndarray:
+    return np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+
+
+def _synth_fastapi(text: str, voice: str) -> np.ndarray:
+    """kokoro-fastapi's pipeline: smart_split → model per group → trim per group.
+
+    Mirrors TTSService.generate_audio_stream + AudioService.trim_audio with
+    output_format=None: every speech chunk is trimmed with is_last_chunk=False
+    (the service's real "last" call carries no audio), [pause:Ns] tags become
+    int16 zeros, and the pieces are concatenated as-is.
+    """
+    pipe = pipeline_for(voice)
+    lang = voice[0] if voice else "a"
+    out = []
+    for chunk_text, pause_s in kfa_chunking.smart_split(text, lang_code=lang):
+        if pause_s is not None:
+            out.append(np.zeros(int(pause_s * SAMPLE_RATE), dtype=np.int16))
+            continue
+        if not chunk_text.strip():
+            continue
+        # One model pass per group (≤450 tokens < KPipeline's 510 cut, so the
+        # pipeline yields a single result; iterate anyway for the rare overflow).
+        for _, _, audio in pipe(chunk_text, voice=voice):
+            if audio is None:
+                continue
+            a = kfa_to_int16(np.asarray(audio, dtype=np.float32))
+            a = kfa_chunking.trim_chunk(a, chunk_text, speed=1.0, is_last_chunk=False)
+            if len(a):
+                out.append(a)
+    if not out:
+        return np.zeros(0, dtype=np.int16)
+    return np.concatenate(out)
+
+
+def synth(text: str, voice: str) -> np.ndarray:
+    """Returns int16 mono @ 24 kHz."""
+    if RENDER_MODE == "fastapi":
+        return _synth_fastapi(text, voice)
+    return _synth_raw(text, voice)
 
 
 def encode(audio: np.ndarray, fmt: str) -> tuple[bytes, str]:
@@ -90,9 +142,11 @@ def encode(audio: np.ndarray, fmt: str) -> tuple[bytes, str]:
     stream = out.add_stream(codec, rate=SAMPLE_RATE)
     stream.layout = "mono"
 
-    # int16 PCM frame
-    pcm = np.clip(audio, -1.0, 1.0)
-    pcm16 = (pcm * 32767.0).astype(np.int16).reshape(1, -1)
+    # int16 PCM frame (synth already returns int16; accept float32 for callers that don't)
+    if audio.dtype == np.int16:
+        pcm16 = audio.reshape(1, -1)
+    else:
+        pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).reshape(1, -1)
     frame = av.AudioFrame.from_ndarray(pcm16, format="s16", layout="mono")
     frame.rate = SAMPLE_RATE
     for packet in stream.encode(frame):
@@ -148,7 +202,7 @@ def models():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "model": "kokoro", "device": DEVICE})
+    return jsonify({"status": "ok", "model": "kokoro", "device": DEVICE, "render": RENDER_MODE})
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
