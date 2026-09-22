@@ -5814,9 +5814,12 @@
       const hasAudio = work && work.has_audio;
       const chapters = chapterCache[bookId].chapters;
 
-      // Total duration of the audio book (for the % complete summary).
+      // Total duration of ONE narration — the displayed edition — for the
+      // "N total · Q% through" summary. Summing every audio file flattened two
+      // editions together (29h 54m on a 16h Dracula, 24h 11m on a 13h Pride
+      // and Prejudice) while the transport beside it said the real length.
       // Falls back to last chapter's end_sec if audio_files have no duration.
-      const totalSec = (work?.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0)
+      const totalSec = (work ? displayEditionBooks(work, 'audio') : []).reduce((a, f) => a + (f.duration_secs || 0), 0)
         || chapters.reduce((m, c) => Math.max(m, c.end_sec || 0), 0);
 
       // Count real chapters (not parts) for the "Chapter N of M" summary.
