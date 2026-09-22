@@ -30,6 +30,27 @@ func TestCheck_WordsAPersonCanAct(t *testing.T) {
 	}
 }
 
+func TestCheck_RefusalNumbersDoNotContradict(t *testing.T) {
+	// Live case (Plato, 9.2 GB, on a disk with 9.7 GB free): refused because of
+	// the reserve, but "needs 9.2 GB and only 9.7 GB is free" told the person
+	// there was room. The stated need must include the reserve.
+	free := Check(t.TempDir(), 0, "narrate this book").Free
+	if free <= Reserve+2<<30 {
+		t.Skip("test host too small to stage a below-reserve refusal")
+	}
+	need := free - Reserve/2 // fits the disk, not the reserve
+	v := Check(t.TempDir(), need, "narrate this book")
+	if !v.Refuse {
+		t.Fatalf("a write that would eat into the reserve must refuse: %+v", v)
+	}
+	if !strings.Contains(v.Message, "about "+Human(need+Reserve)+" free") {
+		t.Errorf("stated need must include the reserve: %q", v.Message)
+	}
+	if v.Need != need {
+		t.Errorf("need_bytes stays the job's own cost: %d != %d", v.Need, need)
+	}
+}
+
 func TestHuman(t *testing.T) {
 	cases := map[int64]string{1<<30 + 214748365: "1.2 GB", 640 << 20: "640 MB", 3 << 10: "3 KB", 12: "12 bytes"}
 	for n, want := range cases {

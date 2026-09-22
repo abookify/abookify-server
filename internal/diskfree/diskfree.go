@@ -42,8 +42,10 @@ func Check(path string, need int64, doing string) Verdict {
 	}
 	if need > 0 && v.Free-need < Reserve {
 		v.Refuse = true
-		v.Message = fmt.Sprintf("There isn't enough room on this computer to %s. It needs about %s and only %s is free. Free up some space and try again.",
-			doing, Human(need), Human(v.Free))
+		// The ask includes the reserve, so the two numbers never contradict
+		// each other: "needs 9.2 GB, only 9.7 GB free" reads as room to spare.
+		v.Message = fmt.Sprintf("There isn't enough room on this computer to %s. It needs about %s free and there's only %s. Free up some space and try again.",
+			doing, Human(need+Reserve), Human(v.Free))
 		return v
 	}
 	if v.Free < LowWater {
