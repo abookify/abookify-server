@@ -392,6 +392,9 @@ func cleanExtractedChapters(chapters []db.Chapter, bookTitle string) []db.Chapte
 // that line — it is the running title, not the chapter's text.
 const frontMatterMaxWords = 150
 
+// prefaceMaxWords: above this a "preface" unit is really merged chapters.
+const prefaceMaxWords = 1500
+
 var colophonWordsRe = regexp.MustCompile(`(?i)\b(copyright|all rights reserved|published by|publishers?|printed in|first published|isbn)\b`)
 
 func normalizeTitleKey(s string) string {
@@ -527,7 +530,10 @@ func prefaceFromLead(ch db.Chapter) (db.Chapter, bool) {
 	}
 	// "Introduction" is also a contents-list entry; what follows a real
 	// preface marker is prose, not more chapter lines (Oz's contents page).
-	if len(strings.Fields(after)) < 20 || looksLikeContentsList(after) {
+	// And a preface is short: thousands of words after the marker means the
+	// splitter merged chapters into this unit (P&P's 1894 edition: preface +
+	// chapters I–III in one lump) — leave such a unit exactly as it is.
+	if n := len(strings.Fields(after)); n < 20 || n > prefaceMaxWords || looksLikeContentsList(after) {
 		return ch, false
 	}
 	marker := strings.TrimSpace(ch.Content[loc[0]:loc[1]])
@@ -1205,7 +1211,14 @@ func numberedParagraphStarts(rawHTML string) []headingStart {
 	return starts
 }
 
-var headingLineBreakRe = regexp.MustCompile(`[ \t]*\n[\s]*`)
+// A heading's own line break stays a single newline (the shape the store
+// already holds for "II.\nTHE FALLING STAR."); only runs of blank lines
+// collapse to one blank line.
+var (
+	headingBrRe        = regexp.MustCompile(`(?i)\s*<br\s*/?>\s*`)
+	headingLineBreakRe = regexp.MustCompile(`[ \t]*\n[ \t]*`)
+	headingBlankRunRe  = regexp.MustCompile(`\n{3,}`)
+)
 
 // extractChapterHeading prefers the first heading that NAMES a chapter
 // ("CHAPTER I", "Stave One", "IV.") over whatever heading merely comes first.
@@ -1219,8 +1232,11 @@ func extractChapterHeading(html string) string {
 		// the heading by its FIRST line — the whole text "I. A SCANDAL IN
 		// BOHEMIA" is not a numeral, and losing to a bare <h3>I.</h3> below it
 		// left Sherlock's chapter I titled "I." (server-web, 2026-09-22).
-		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(brRe.ReplaceAllString(m[1], "\n"), ""))
-		text = headingLineBreakRe.ReplaceAllString(text, "\n\n") // the store's two-line title shape
+		// A <br/> beside a source newline is ONE break, so the stored shapes
+		// stay what they were: "II.\nTHE FALLING STAR." (Alice, WotW) and
+		// "CHAPTER II\n\nJONATHAN…" (Dracula's two blank-line breaks).
+		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(headingBrRe.ReplaceAllString(m[1], "\n"), ""))
+		text = headingBlankRunRe.ReplaceAllString(headingLineBreakRe.ReplaceAllString(text, "\n"), "\n\n")
 		first := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
 		if first != "" && chapterHeadingTextRe.MatchString(first) {
 			return text

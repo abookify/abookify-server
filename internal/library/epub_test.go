@@ -256,8 +256,14 @@ func TestExtractChapterHeadingPrefersChapterLine(t *testing.T) {
 	// Sherlock: the numbered heading carries its title on a second line, and
 	// a bare <h3>I.</h3> follows it — the first heading wins, title intact.
 	got := extractChapterHeading(`<h2>I.<br/>A SCANDAL IN BOHEMIA</h2><h3>I.</h3><p>To Sherlock Holmes she is always the woman.</p>`)
-	if !strings.HasPrefix(got, "I.") || !strings.Contains(got, "A SCANDAL IN BOHEMIA") {
-		t.Errorf("Sherlock chapter I heading lost its title: %q", got)
+	if got != "I.\nA SCANDAL IN BOHEMIA" {
+		t.Errorf("Sherlock chapter I heading: %q, want the two lines joined by one newline", got)
+	}
+	// A huge "preface" is merged chapters, not a preface: left alone.
+	lump := "PRIDE and PREJUDICE\n\nPREFACE.\n\n" + strings.Repeat("Walt Whitman somewhere has a fine and just distinction between loving by allowance and loving with personal love. ", 200)
+	ch := db.Chapter{Title: "PRIDE. and PREJUDICE", Content: lump, WordCount: len(strings.Fields(lump))}
+	if _, ok := prefaceFromLead(ch); ok {
+		t.Errorf("a %d-word unit must not become a Preface chapter", ch.WordCount)
 	}
 }
 
