@@ -62,6 +62,17 @@ first ebook word 25–55 s after the spoken "Stave N" (Carol) — the timing
 audit's 30 s tolerance calls that DRIFT; it is a constant per-file offset,
 not a growing one. Structural false positive, stated on the report, left.
 
+## Sweep 4 (2026-09-22, found by verifying the GPU switch with a REAL generate, not a green container)
+| Shape | Reached by | Status | Owner / artifact |
+|---|---|---|---|
+| the PER-CHAPTER REGENERATE route (the web UI's per-chapter regen button) | nothing — every journey and the coexistence test drive `generate-audio`; regenerate ran a legacy path (flat 500-word chunks, no pauses, no CAS, a voice-less `tts-book-<id>/` dir) and registered the result as a NEW one-chapter audio source on the work. Found the moment a real regenerate was used as the switch's proof | **CLOSED 2026-09-22** (b5afea6): one shared `synthesizeEditionChapter`; `TestRegenerateChapter_StaysInsideItsEdition` pins row count, edition label and dir | mine — the test is the artifact |
+| WHICH TTS ENGINE rendered a chapter (Docker kokoro-fastapi CPU vs hermetic engine GPU) | nothing measured it for a month; the August "6.8 s shorter" was judged by a gap and explained by a cause that was not the cause | **CLOSED** (board 17): `engine/tools/tts_sameness.py` + self-controls + `check_chunking.py` fixture | mine — results archived under `engine/tools/results/` |
+| the ASSEMBLED chapter vs its chunks (MP3 packaging at 178 seams) | nothing — sameness was measured on PCM; the live file still came out 0.54 % shorter because kokoro-fastapi's MP3 writer has no gapless info (~63 ms padding per chunk surfaced as silence for every CPU-era chapter) | MEASURED, accepted: the engine's MP3 is gapless-correct, the paragraph-pause setting now means what it says | mine — noted in `engine/tools/results/2026-09-21-board17/README.md`; the pause setting is the knob if the ear disagrees |
+| EPUBs whose paragraph element is `<div>` (Vintage Gulag, Recorded Books C&P: 96/96 and 45/45 chapters) | no reader fixture had one — the sanitizer dropped `<div>` silently, `content_html` became one run of `<span>`s, the reader showed a chapter as one block (board 11) while the plain-text path had paragraphs all along | **CLOSED 2026-09-22**: `<div>` → `<p>` with wrapper folding (`TestSanitizeHTMLTreatsDivAsParagraph`); both books re-derived in place (word streams identical, ledger `rederive-2026-09-22`) | mine — a div-paragraph EPUB in the reader fixture set would pin it for server-web's journeys |
+
+Lesson for the register: a switch verified by "the container started" would have
+missed three of these four. The generate was the instrument.
+
 ## Notes
 - 8199 work 2 (Time Machine, human+transcript+epub) sits in the fixture
   UNEXERCISED — the gate runs work 1 only. Free coverage if a journey

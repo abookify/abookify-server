@@ -157,3 +157,27 @@ to begin with.</p><p>There is no doubt<br/>whatever about that.</p></body></html
 		t.Errorf("intra-paragraph wrap should be healed to a space: %q", paras[0])
 	}
 }
+
+// Some publisher EPUBs use <div> as the paragraph element (Vintage's Gulag
+// Archipelago, Recorded Books' Crime and Punishment). The whitelist dropped
+// <div> silently, so content_html became one run of <span>s and the reader
+// rendered the whole chapter as one block (board 11). <div> is now a <p>, and
+// the wrapper nesting that leaves is folded to one level.
+func TestSanitizeHTMLTreatsDivAsParagraph(t *testing.T) {
+	raw := `<body><div class="body"><div class="para">Once <span>we</span> have taken up the word.</div>
+<div class="para">A writer is no detached judge.</div><div class="empty"> </div></div></body>`
+	got := sanitizeHTML(raw)
+	if n := strings.Count(got, "<p>"); n != 2 {
+		t.Fatalf("want 2 paragraphs, got %d in %q", n, got)
+	}
+	if strings.Contains(got, "<p><p>") || strings.Contains(got, "</p></p>") || strings.Contains(got, "<p></p>") {
+		t.Errorf("wrapper nesting not folded: %q", got)
+	}
+	if !strings.Contains(got, "<p>Once <span>we</span> have taken up the word.</p>") {
+		t.Errorf("paragraph text/inline markup lost: %q", got)
+	}
+	// Real <p> documents are untouched by the rewrite.
+	if got := sanitizeHTML(`<p>One.</p><p>Two.</p>`); got != `<p>One.</p><p>Two.</p>` {
+		t.Errorf("plain <p> document changed: %q", got)
+	}
+}

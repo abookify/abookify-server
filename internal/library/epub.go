@@ -591,6 +591,17 @@ var brRe = regexp.MustCompile(`(?i)<br\s*/?\s*>`)
 // blockquote, ul, ol, li, br, sup, sub, span (for karaoke word wrapping later).
 var safeTagRe = regexp.MustCompile(`(?i)<(/?)(h[1-6]|p|em|strong|i|b|blockquote|ul|ol|li|br|hr|sup|sub|span)(\s[^>]*)?>`)
 
+// divTagRe: <div …> / </div>, rewritten to <p> / </p> by sanitizeHTML.
+var divTagRe = regexp.MustCompile(`(?i)^<(/?)div(\s[^>]*)?>$`)
+
+// Wrapper <div>s (a chapter body div around paragraph divs) become nested
+// or empty <p>s after the rewrite; these fold them back to one level.
+var (
+	emptyParaRe     = regexp.MustCompile(`(?i)<p>\s*</p>`)
+	openOpenParaRe  = regexp.MustCompile(`(?i)<p>\s*<p>`)
+	closeCloseParRe = regexp.MustCompile(`(?i)</p>\s*</p>`)
+)
+
 // sanitizeHTML strips unsafe tags from EPUB XHTML while keeping structural
 // markup (headings, paragraphs, emphasis, lists). Removes all attributes
 // except on span (where we'll later need data- attrs for karaoke anchoring).
@@ -628,6 +639,18 @@ func sanitizeHTML(raw string) string {
 			continue
 		}
 		tag := s[i : i+end+1]
+		// <div> is the PARAGRAPH element in some publisher EPUBs (Vintage's
+		// Gulag Archipelago, Recorded Books' Crime and Punishment: every
+		// paragraph a <div>, no <p> anywhere). Dropping it silently, as the
+		// whitelist did, left content_html a single run of <span>s and the
+		// reader showed the whole chapter as one block (board 11) — while the
+		// plain-text path had always treated </div> as a paragraph break.
+		// Emit it as <p>; wrapper nesting is collapsed below.
+		if m := divTagRe.FindStringSubmatch(tag); m != nil {
+			out.WriteString("<" + m[1] + "p>")
+			i += end + 1
+			continue
+		}
 		if safeTagRe.MatchString(tag) {
 			// Emit the tag but strip attributes (except on self-closing br).
 			m := safeTagRe.FindStringSubmatch(tag)
@@ -649,7 +672,17 @@ func sanitizeHTML(raw string) string {
 	result := strings.TrimSpace(out.String())
 	// Collapse runs of whitespace (but preserve single newlines for readability).
 	result = whitespaceRe.ReplaceAllString(result, " ")
-	return result
+	// Fold the <p> nesting that wrapper <div>s leave behind (see divTagRe).
+	for {
+		next := emptyParaRe.ReplaceAllString(result, "")
+		next = openOpenParaRe.ReplaceAllString(next, "<p>")
+		next = closeCloseParRe.ReplaceAllString(next, "</p>")
+		if next == result {
+			break
+		}
+		result = next
+	}
+	return strings.TrimSpace(result)
 }
 
 func htmlToText(raw string) string {
