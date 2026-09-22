@@ -878,6 +878,9 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		// live in GET /api/conditions/legend so web + mobile render them verbatim.
 		Condition       string `json:"condition,omitempty"`
 		ConditionReason string `json:"condition_reason,omitempty"`
+		// ConditionReasonCode is the producer's raw code; condition_reason is the
+		// sentence (server-owned words, rendered verbatim by web + mobile).
+		ConditionReasonCode string `json:"condition_reason_code,omitempty"`
 		// ListenStartBookID: where a FIRST press of play lands (library.ListenStart) —
 		// the first prose file of the displayed edition, past title page / contents /
 		// preface. Used only when the work has no saved position.
@@ -913,7 +916,8 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		out[i].NeedsTextConversion = unreadable[wk.ID]
 		if c, ok := conditions[wk.ID]; ok {
 			out[i].Condition = c.Condition
-			out[i].ConditionReason = c.Reason
+			out[i].ConditionReason = humanConditionReason(c.Reason)
+			out[i].ConditionReasonCode = c.Reason
 		}
 		if ls := library.ListenStart(&wk); ls != nil {
 			out[i].ListenStartBookID = ls.ID
@@ -950,7 +954,7 @@ var conditionLegend = map[string]map[string]string{
 // handleConditionsLegend: GET /api/conditions/legend — the server-owned words +
 // visual level for each production-condition state (task 12). Static.
 func (s *Server) handleConditionsLegend(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"conditions": conditionLegend})
+	writeJSON(w, http.StatusOK, map[string]any{"conditions": conditionLegend, "reasons": conditionReasonWords})
 }
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
@@ -985,8 +989,9 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		// Condition (task 12): the same rolled-up production standing the list
 		// carries, on the payload mobile reads for a single work. Words live in
 		// GET /api/conditions/legend. Empty only if the rollup itself failed.
-		Condition       string `json:"condition,omitempty"`
-		ConditionReason string `json:"condition_reason,omitempty"`
+		Condition           string `json:"condition,omitempty"`
+		ConditionReason     string `json:"condition_reason,omitempty"`
+		ConditionReasonCode string `json:"condition_reason_code,omitempty"`
 		// See handleListWorks: where a first press of play lands.
 		ListenStartBookID int64 `json:"listen_start_book_id,omitempty"`
 	}
@@ -997,7 +1002,8 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 	if conditions, err := s.store.WorkConditionsRollup(); err == nil {
 		if c, ok := conditions[id]; ok {
 			resp.Condition = c.Condition
-			resp.ConditionReason = c.Reason
+			resp.ConditionReason = humanConditionReason(c.Reason)
+			resp.ConditionReasonCode = c.Reason
 		}
 	}
 	if dt := library.ResolveDisplayText(work); dt != nil {
