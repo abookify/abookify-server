@@ -5166,13 +5166,14 @@
             ${renderConditionDetail(work)}
             <div class="detail-progline work-progress" id="work-progress-${work.id}" style="display:none;"></div>
             <div class="detail-cta">
-              ${work.has_audio ? `<button class="detail-btn primary" onclick="resumeOrPlay(${work.id})">&#9654; Resume listening</button>` : ''}
+              ${work.has_audio ? `<button class="detail-btn primary" id="detail-listen-btn-${work.id}" onclick="resumeOrPlay(${work.id})">&#9654; Start listening</button>` : ''}
               ${(work.has_text && !work.has_audio) ? `<button class="detail-btn primary" onclick="generateAudio(${work.id})">Generate audio (TTS)</button>` : ''}
             </div>
           </div>
         </div>
         ${workBodyHtml(work, audioFiles, textFiles)}
       `;
+      labelListenButton(work);
       // Swap the library grid out for the detail view.
       document.getElementById('library-head').style.display = 'none';
       document.getElementById('works-list').style.display = 'none';
@@ -7220,6 +7221,20 @@
     // Fetch the work's saved playback position. Returns { bookId, fileIdx,
     // posSec } resolved against the work's audio_files, or nulls if there
     // is no saved position (or no audio).
+    // The detail CTA says "Start listening" until this book actually has a saved
+    // position; "Resume" on a book nobody has played yet reads as a stale state
+    // (stranger-walk finding, 2026-09-21).
+    async function labelListenButton(work) {
+      const btn = document.getElementById(`detail-listen-btn-${work.id}`);
+      if (!btn) return;
+      try {
+        const res = await fetch(`/api/works/${work.id}/position`);
+        if (!res.ok) return;
+        const pos = await res.json();
+        if (pos && pos.book_id && (pos.position_secs || 0) > 1) btn.innerHTML = '&#9654; Resume listening';
+      } catch {}
+    }
+
     async function fetchResumePosition(work) {
       let bookId = null, fileIdx = 0, posSec = 0;
       try {
