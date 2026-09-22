@@ -2571,6 +2571,14 @@ func (s *Store) CleanupOrphanedRows() (int64, error) {
 		`DELETE FROM playback_events WHERE work_id NOT IN (SELECT id FROM works)`,
 		`DELETE FROM characters WHERE work_id NOT IN (SELECT id FROM works) OR book_id NOT IN (SELECT id FROM books)`,
 		`DELETE FROM character_mentions WHERE character_id NOT IN (SELECT id FROM characters)`,
+		// A cleared declaration with no source behind it is exactly what the
+		// publish gate must never be able to read — 194 of them appeared the
+		// night 14 Kokoro editions were removed for regeneration (2026-09-22;
+		// the store reconciler found them).
+		`DELETE FROM source_provenance WHERE scope = 'book' AND ref_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM source_provenance WHERE scope = 'cover' AND ref_id NOT IN (SELECT id FROM works)`,
+		`DELETE FROM source_scans WHERE book_id NOT IN (SELECT id FROM books)`,
+		`DELETE FROM text_trust WHERE work_id NOT IN (SELECT id FROM works)`,
 	}
 	var total int64
 	for _, q := range stmts {

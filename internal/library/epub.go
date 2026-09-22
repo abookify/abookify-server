@@ -502,6 +502,10 @@ func looksLikeContentsList(content string) bool {
 	return chapterish >= 3 && chapterish*2 >= total
 }
 
+// apparatusMarkerRe: a line that opens the front-matter apparatus that may
+// FOLLOW a preface in the same unit — the preface ends there.
+var apparatusMarkerRe = regexp.MustCompile(`(?im)^\s*(contents|table of contents|illustrations|list of illustrations)\.?\s*$`)
+
 // prefaceMarkerRe: a line that opens the author's own prefatory text.
 var prefaceMarkerRe = regexp.MustCompile(`(?im)^\s*(preface|foreword|introduction|prologue|author'?s note|a note on the text)\.?\s*$`)
 
@@ -515,6 +519,12 @@ func prefaceFromLead(ch db.Chapter) (db.Chapter, bool) {
 		return ch, false
 	}
 	after := strings.TrimSpace(ch.Content[loc[1]:])
+	// The preface ends where the apparatus resumes: Carol's runs straight
+	// into CONTENTS and ILLUSTRATIONS lists (with the ",," table-cell debris
+	// of a PG layout), and the narration read them all (2026-09-22).
+	if cut := apparatusMarkerRe.FindStringIndex(after); cut != nil {
+		after = strings.TrimSpace(after[:cut[0]])
+	}
 	// "Introduction" is also a contents-list entry; what follows a real
 	// preface marker is prose, not more chapter lines (Oz's contents page).
 	if len(strings.Fields(after)) < 20 || looksLikeContentsList(after) {

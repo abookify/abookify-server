@@ -269,7 +269,7 @@ func titlesOf(cs []db.Chapter) []string {
 // not move for this).
 func TestFoldFrontMatterKeepsPrefaceAsChapter(t *testing.T) {
 	lead := "Cover of 1843 First Edition\n\nTitle Page of 1843 First Edition\n\nA CHRISTMAS CAROL\n\nIN PROSE\n\nBEING\n\nA Ghost Story of Christmas\n\nBY\n\nCHARLES DICKENS\n\nWITH ILLUSTRATIONS BY JOHN LEECH\n\nPREFACE\n\n" +
-		"I HAVE endeavoured in this Ghostly little book, to raise the Ghost of an Idea, which shall not put my readers out of humour with themselves, with each other, with the season, or with me. May it haunt their houses pleasantly, and no one wish to lay it. Their faithful Friend and Servant, C. D. December, 1843."
+		"I HAVE endeavoured in this Ghostly little book, to raise the Ghost of an Idea, which shall not put my readers out of humour with themselves, with each other, with the season, or with me. May it haunt their houses pleasantly, and no one wish to lay it. Their faithful Friend and Servant, C. D. December, 1843.\n\nCONTENTS\n\nSTAVE I MARLEY’S GHOST\n\nSTAVE II THE FIRST OF THE THREE SPIRITS\n\nILLUSTRATIONS\n\nArtist.\n\nMarley’s Ghost\n\n,,\n\nMr. Fezziwig’s Ball\n\n,,"
 	stave := strings.Repeat("Marley was dead: to begin with. There is no doubt whatever about that. ", 30)
 	in := []db.Chapter{
 		{Title: "A CHRISTMAS CAROL", Content: lead, ContentHTML: "<p>Cover of 1843 First Edition</p><h1>A CHRISTMAS CAROL</h1><h2>PREFACE</h2><p>I HAVE endeavoured…</p>"},
@@ -284,6 +284,12 @@ func TestFoldFrontMatterKeepsPrefaceAsChapter(t *testing.T) {
 	}
 	if !strings.HasPrefix(got[0].Content, "I HAVE endeavoured") || strings.Contains(got[0].Content, "JOHN LEECH") {
 		t.Errorf("preface content wrong: %q", got[0].Content[:60])
+	}
+	if strings.Contains(got[0].Content, "CONTENTS") || strings.Contains(got[0].Content, "Fezziwig") || strings.Contains(got[0].Content, ",,") {
+		t.Errorf("preface must end where CONTENTS/ILLUSTRATIONS begin: %q", got[0].Content[len(got[0].Content)-80:])
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got[0].Content), "December, 1843.") {
+		t.Errorf("preface tail wrong: %q", got[0].Content[len(got[0].Content)-40:])
 	}
 	if !strings.HasPrefix(got[0].ContentHTML, "<h2>PREFACE</h2>") {
 		t.Errorf("preface html should start at the marker: %q", got[0].ContentHTML[:40])

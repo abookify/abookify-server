@@ -173,3 +173,47 @@ func treeSnapshot(t *testing.T, root string) string {
 	})
 	return out
 }
+
+// The boot sweep must take what the reconciler reports as rows_without_rows
+// for the tables it owns — a cleared provenance declaration whose book is
+// gone is a gate hazard, not debris.
+func TestCleanupOrphanedRows_SweepsProvenanceScansAndTrust(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := store.db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO works (id, title) VALUES (1, 'kept')`)
+	exec(`INSERT INTO books (id, work_id, path, filename, format, media_type) VALUES (1, 1, '/x/a.mp3', 'a', 'mp3', 'audio')`)
+	exec(`INSERT INTO source_provenance (scope, ref_id, kind, source_url, license, cleared) VALUES ('book', 1, 'librivox', '', '', 1), ('book', 999, 'kokoro', '', '', 1), ('cover', 1, 'x', '', '', 1), ('cover', 777, 'x', '', '', 1)`)
+	exec(`INSERT INTO source_scans (book_id) VALUES (1), (998)`)
+	exec(`INSERT INTO text_trust (work_id) VALUES (1), (555)`)
+	n, err := store.CleanupOrphanedRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 {
+		t.Errorf("want 4 rows swept (book 999, cover 777, scan 998, trust 555), got %d", n)
+	}
+	var left int
+	store.db.QueryRow(`SELECT count(*) FROM source_provenance`).Scan(&left)
+	if left != 2 {
+		t.Errorf("provenance rows left = %d, want 2 (the live book + the live cover)", left)
+	}
+	rep, err := store.Reconcile(ReconcileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range rep.Findings {
+		if f.Direction == "rows_without_rows" {
+			t.Errorf("reconciler still sees %s after the sweep", f.Class)
+		}
+	}
+}
