@@ -408,6 +408,9 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 	if err := copySync(bdb, store, newWorkID, bookRemap); err != nil {
 		return nil, err
 	}
+	if err := copyConditions(bdb, store, bookRemap, skipContent); err != nil {
+		return nil, err
+	}
 	if err := copyBookmarks(bdb, store, newWorkID, bookRemap, skipContent); err != nil {
 		return nil, err
 	}
@@ -707,4 +710,39 @@ func editionSlug(s string) string {
 		}
 	}
 	return strings.TrimRight(string(out), "-")
+}
+
+// copyConditions restores the producer's testimony that rode in the bundle
+// (book_conditions, carved by ExportV2 since 2026-09-22). This CARRIES a
+// verdict the producing code path wrote at export time; it infers nothing.
+// Older bundles have no such table and simply arrive "unknown".
+func copyConditions(bdb *sql.DB, store *db.Store, remap map[int64]int64, skip map[int64]bool) error {
+	var n int
+	if err := bdb.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='book_conditions'`).Scan(&n); err != nil || n == 0 {
+		return nil
+	}
+	rows, err := bdb.Query(`SELECT book_id, state, reason, source FROM book_conditions`)
+	if err != nil {
+		return fmt.Errorf("read book_conditions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c db.BookCondition
+		var oldBook int64
+		if err := rows.Scan(&oldBook, &c.State, &c.Reason, &c.Source); err != nil {
+			return err
+		}
+		if skip[oldBook] {
+			continue
+		}
+		newID, ok := remap[oldBook]
+		if !ok || (c.State != "complete" && c.State != "degraded") {
+			continue
+		}
+		c.BookID = newID
+		if err := store.SetBookCondition(c); err != nil {
+			return fmt.Errorf("restore condition for book %d: %w", newID, err)
+		}
+	}
+	return rows.Err()
 }

@@ -30,6 +30,11 @@ const (
 	TrustMinor       = "minor"       // checked, under 1% of words suspect
 	TrustSignificant = "significant" // checked, 1% or more suspect
 	TrustUnchecked   = "unchecked"   // no confidence data — question not askable
+	// TrustSynthesized: the narration was GENERATED from this text (TTS), so the
+	// text matches the audio by construction — there is nothing to check. Our
+	// own showcase samples arrived "Text not checked" (stranger walk, 2026-09-21);
+	// a warning on a book we made ourselves trains people to ignore warnings.
+	TrustSynthesized = "synthesized"
 )
 
 // trustSignificantPct is where "minor" becomes "significant" — and, with the
@@ -339,4 +344,23 @@ func attributeToChapters(store *db.Store, w *db.Work, words []sttWord) []TrustCh
 		out = out[:20]
 	}
 	return out
+}
+
+// SynthesizedTextTrust is the verdict for a work whose displayed narration is
+// text-to-speech: the audio was made from the text, so every narrated word is
+// the book's own. Nothing is inferred about a human recording.
+func SynthesizedTextTrust(workID int64) TextTrust {
+	return TextTrust{WorkID: workID, State: TrustSynthesized,
+		Headline: "Narration was generated from this text",
+		Detail:   "This book's audio was produced from its own text by Abookify, so the words you hear are the words on the page. There is no separate recording to check against."}
+}
+
+// IsTTSNarrated reports whether the work's displayed audio edition was
+// generated (origin tts_*), i.e. its text trust is by construction.
+func IsTTSNarrated(work *db.Work) bool {
+	if work == nil {
+		return false
+	}
+	da := ResolveDisplayAudio(work)
+	return da != nil && strings.HasPrefix(da.Origin, "tts")
 }

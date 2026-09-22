@@ -488,6 +488,12 @@ func (s *Server) handleTextTrust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row, _ := s.store.GetTextTrust(id)
+	if row == nil {
+		if wk, _ := s.store.GetWork(id); wk != nil && library.IsTTSNarrated(wk) {
+			writeJSON(w, http.StatusOK, library.SynthesizedTextTrust(id))
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, library.BuildTextTrust(id, row))
 }
 
@@ -528,6 +534,19 @@ func (s *Server) handleTextTrustSummary(w http.ResponseWriter, r *http.Request) 
 	for id := range rows {
 		row := rows[id]
 		out = append(out, library.BuildTextTrust(id, &row))
+	}
+	// Works with no verdict whose narration is generated from their own text
+	// are "synthesized", not "unchecked" — the question does not arise.
+	if works, err := s.store.ListWorks(); err == nil {
+		for i := range works {
+			wk := &works[i]
+			if _, checked := rows[wk.ID]; checked {
+				continue
+			}
+			if library.IsTTSNarrated(wk) {
+				out = append(out, library.SynthesizedTextTrust(wk.ID))
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SuspectPercent > out[j].SuspectPercent })
 	writeJSON(w, http.StatusOK, out)

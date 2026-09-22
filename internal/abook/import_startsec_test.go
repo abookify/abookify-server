@@ -88,3 +88,49 @@ func TestImport_PreservesStartSecAndTimelineOrder(t *testing.T) {
 		}
 	}
 }
+
+// The producer's testimony rides the bundle: a TTS edition the generator marked
+// "complete" arrives "complete" on a fresh install, not "unknown".
+func TestImport_CarriesBookConditions(t *testing.T) {
+	dir := t.TempDir()
+	store, w := seedNarration(t, dir, "tts_kokoro", "af_heart")
+	var audioID int64
+	for _, b := range w.AudioFiles {
+		audioID = b.ID
+	}
+	if err := store.SetBookCondition(db.BookCondition{BookID: audioID, State: "complete", Source: "tts_generate"}); err != nil {
+		t.Fatal(err)
+	}
+	abook := filepath.Join(dir, "cond.abook")
+	if err := ExportV2(store, w, abook, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest, err := db.Open(filepath.Join(dir, "dest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ImportInto(dest, abook, filepath.Join(dir, "lib"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, err := dest.GetWork(res.WorkID)
+	if err != nil || got == nil {
+		t.Fatalf("get work: %v", err)
+	}
+	var ids []int64
+	for _, b := range got.AudioFiles {
+		ids = append(ids, b.ID)
+	}
+	conds, err := dest.GetBookConditions(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conds) != 1 {
+		t.Fatalf("want 1 restored condition, got %d", len(conds))
+	}
+	for _, c := range conds {
+		if c.State != "complete" || c.Source != "tts_generate" {
+			t.Errorf("condition = %+v, want complete/tts_generate", c)
+		}
+	}
+}

@@ -130,6 +130,16 @@ CREATE TABLE bookmarks (
 	color         TEXT NOT NULL DEFAULT '',
 	created_at    TEXT NOT NULL DEFAULT ''
 );
+
+-- Production testimony (task 12): what the code path that MADE each book said
+-- about it, carried so an importer sees the producer's verdict rather than
+-- "unknown". Carved 2026-09-22; older bundles lack it.
+CREATE TABLE book_conditions (
+	book_id  INTEGER PRIMARY KEY,
+	state    TEXT NOT NULL,
+	reason   TEXT NOT NULL DEFAULT '',
+	source   TEXT NOT NULL DEFAULT ''
+);
 `
 
 // WorkSummary is the denormalized listing/manifest summary for a work.
@@ -480,6 +490,25 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 			bm.StartWord, bm.EndWord, bm.TextSnippet, bm.Note, bm.Color, bm.CreatedAt,
 		); err != nil {
 			return fmt.Errorf("insert bookmark %d: %w", bm.ID, err)
+		}
+	}
+
+	// book_conditions: the producer's own testimony for every included book
+	// (a TTS edition the generator finished says "complete"; a sidecar import
+	// that hit an extent guard says "degraded"). Absence stays absence.
+	ids := make([]int64, 0, len(allBooks))
+	for _, bk := range allBooks {
+		ids = append(ids, bk.ID)
+	}
+	if conds, err := store.GetBookConditions(ids); err == nil {
+		for _, c := range conds {
+			if !included[c.BookID] {
+				continue
+			}
+			if _, err := tx.Exec(`INSERT INTO book_conditions(book_id, state, reason, source) VALUES(?, ?, ?, ?)`,
+				c.BookID, c.State, c.Reason, c.Source); err != nil {
+				return fmt.Errorf("insert condition for book %d: %w", c.BookID, err)
+			}
 		}
 	}
 

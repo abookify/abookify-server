@@ -877,6 +877,10 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		// live in GET /api/conditions/legend so web + mobile render them verbatim.
 		Condition       string `json:"condition,omitempty"`
 		ConditionReason string `json:"condition_reason,omitempty"`
+		// ListenStartBookID: where a FIRST press of play lands (library.ListenStart) —
+		// the first prose file of the displayed edition, past title page / contents /
+		// preface. Used only when the work has no saved position.
+		ListenStartBookID int64 `json:"listen_start_book_id,omitempty"`
 	}
 	out := make([]workWithAlign, len(works))
 	for i, wk := range works {
@@ -909,6 +913,9 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 		if c, ok := conditions[wk.ID]; ok {
 			out[i].Condition = c.Condition
 			out[i].ConditionReason = c.Reason
+		}
+		if ls := library.ListenStart(&wk); ls != nil {
+			out[i].ListenStartBookID = ls.ID
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -979,8 +986,13 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 		// GET /api/conditions/legend. Empty only if the rollup itself failed.
 		Condition       string `json:"condition,omitempty"`
 		ConditionReason string `json:"condition_reason,omitempty"`
+		// See handleListWorks: where a first press of play lands.
+		ListenStartBookID int64 `json:"listen_start_book_id,omitempty"`
 	}
 	resp := workWithDisplay{Work: work}
+	if ls := library.ListenStart(work); ls != nil {
+		resp.ListenStartBookID = ls.ID
+	}
 	if conditions, err := s.store.WorkConditionsRollup(); err == nil {
 		if c, ok := conditions[id]; ok {
 			resp.Condition = c.Condition

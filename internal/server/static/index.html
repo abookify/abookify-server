@@ -4074,7 +4074,7 @@
         return { cls: 'tt-unchecked', text: 'Text not checked',
                  title: (tt && tt.headline) || 'Not checked against the audio' };
       }
-      if (tt.state === 'verified' || tt.state === 'minor') return null; // below 1% → no banner
+      if (tt.state === 'verified' || tt.state === 'minor' || tt.state === 'synthesized') return null; // below 1% / by construction → no banner
       const counts = `${(tt.suspect_words || 0).toLocaleString()} of ${(tt.total_words || 0).toLocaleString()} words`;
       const pctText = tt.total_words ? ` (${Number(tt.suspect_percent).toFixed(2)}%)` : '';
       // 1%+ → lead with the RAW counts so scale is judgeable.
@@ -4097,7 +4097,7 @@
         const p = textTrustPillFor(tt);
         if (!p) {
           if (subtle && tt) {
-            const title = tt.state === 'verified' ? (tt.headline || 'Text matches the audio')
+            const title = (tt.state === 'verified' || tt.state === 'synthesized') ? (tt.headline || 'Text matches the audio')
                                                    : (tt.headline || 'A few passages — details');
             slot.className = 'media-pill tt-slot tt-subtle';
             slot.style.display = '';
@@ -4106,7 +4106,7 @@
             slot.setAttribute('title', title);
             slot.setAttribute('aria-label', title);
             slot.onclick = (e) => { e.stopPropagation(); openAbookSummary(id); };
-            slot.textContent = tt.state === 'verified' ? 'Text ✓' : 'Text · details';
+            slot.textContent = (tt.state === 'verified' || tt.state === 'synthesized') ? 'Text ✓' : 'Text · details';
           } else {
             slot.className = 'tt-slot';
             slot.style.display = 'none';
@@ -7250,7 +7250,10 @@
       } catch {}
       const files = work.audio_files || [];
       if (!bookId || !files.some(f => f.id === bookId)) {
-        bookId = files[0]?.id || null;
+        // No saved position: land the FIRST press of play on prose, not the
+        // title page — the server picks the file (listen_start_book_id).
+        const ls = work.listen_start_book_id;
+        bookId = (ls && files.some(f => f.id === ls)) ? ls : (files[0]?.id || null);
         fileIdx = 0;
         posSec = 0;
       }
