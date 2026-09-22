@@ -173,11 +173,18 @@ func isAllCaps(s string) bool {
 
 var wordBoundary = regexp.MustCompile(`\b\w`)
 
+// An apostrophe is a word boundary to \b, so `\b\w` capitalised the letter
+// after it too: "MARLEY'S GHOST." read "Marley'S Ghost." (seen in the Carol
+// Stave One heading, 2026-09-21). Only the contraction/possessive suffixes are
+// folded back — "O'BRIEN" must stay "O'Brien". NOTE: this text enters the TTS
+// content key, so every chapter whose heading carries one of these suffixes
+// re-synthesizes at its next generate (measured at landing: see the handoff).
+var apostropheSuffix = regexp.MustCompile(`(?i)['’](s|t|ll|re|ve|d|m)\b`)
+
 func toTitleCase(s string) string {
 	lower := strings.ToLower(s)
-	return wordBoundary.ReplaceAllStringFunc(lower, func(m string) string {
-		return strings.ToUpper(m)
-	})
+	t := wordBoundary.ReplaceAllStringFunc(lower, strings.ToUpper)
+	return apostropheSuffix.ReplaceAllStringFunc(t, strings.ToLower)
 }
 
 func ensureTrailingPunctuation(line string) string {

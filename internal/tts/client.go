@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -23,6 +24,12 @@ type Client struct {
 	// streaming the audio body). 30m is generous headroom without masking a
 	// truly hung service.
 	PerRequestTimeout time.Duration
+	// Token is sent as `Authorization: Bearer …` on every request. The hermetic
+	// engine REQUIRES one whenever it is bound to anything but loopback (its
+	// never-unauthenticated-on-the-network rule), which is exactly the case
+	// when a Docker server reaches an engine on its host. Defaults from
+	// ABOOKIFY_TTS_TOKEN; empty = no header (kokoro-fastapi, loopback engine).
+	Token string
 }
 
 func NewClient(baseURL string) *Client {
@@ -32,15 +39,27 @@ func NewClient(baseURL string) *Client {
 		// context so slow responses on a single call don't poison the client.
 		httpClient:        &http.Client{},
 		PerRequestTimeout: 30 * time.Minute,
+		Token:             os.Getenv("ABOOKIFY_TTS_TOKEN"),
 	}
 }
 
 // BaseURL returns the configured service URL (for diagnostics / sidecar metadata).
 func (c *Client) BaseURL() string { return c.baseURL }
 
+func (c *Client) auth(req *http.Request) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+}
+
 // Health checks if the TTS service is available.
 func (c *Client) Health() error {
-	resp, err := c.httpClient.Get(c.baseURL + "/v1/models")
+	req, err := http.NewRequest("GET", c.baseURL+"/v1/models", nil)
+	if err != nil {
+		return fmt.Errorf("tts request build failed: %w", err)
+	}
+	c.auth(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("tts service unreachable: %w", err)
 	}
@@ -80,6 +99,7 @@ func (c *Client) Synthesize(text string, voice string) ([]byte, error) {
 		return nil, fmt.Errorf("tts request build failed: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.auth(req)
 
 	// Heartbeat logger — quiet unless the call runs long.
 	start := time.Now()

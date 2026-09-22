@@ -21,7 +21,16 @@ services:
       - ABOOKIFY_LIBRARY_HOST_PATH=${ABOOKIFY_LIBRARY_HOST_PATH:-./testdata/library}
       - ABOOKIFY_DB_PATH=/app/data/abookify.db
       - ABOOKIFY_PORT=7654
-      - ABOOKIFY_TTS_URL=http://kokoro:8880
+      # TTS engine. Default = the CPU kokoro container. A GPU host can point
+      # this at the hermetic engine running on the HOST instead (board 17:
+      # measured the same audio, ~19x faster) by setting in .env:
+      #   ABOOKIFY_TTS_URL=http://host.docker.internal:8881
+      #   ABOOKIFY_TTS_TOKEN=<the engine's ABOOKIFY_ENGINE_TOKEN>
+      # The engine refuses to bind off-loopback without a bearer token, and the
+      # container can only reach the host off-loopback, so the token is not
+      # optional there. Revert = remove the two lines + `make server`.
+      - ABOOKIFY_TTS_URL=${ABOOKIFY_TTS_URL:-http://kokoro:8880}
+      - ABOOKIFY_TTS_TOKEN=${ABOOKIFY_TTS_TOKEN:-}
       - ABOOKIFY_STT_URL=http://whisper:5200
       - ABOOKIFY_GENERATED_PATH=/generated
       - NULLBORE_BASE_DOMAIN=abookify.nullbore.com
@@ -34,6 +43,10 @@ services:
       # later container recreates keep the bypass without re-supplying the env.
       # See docs/dev-auth.md.
       - ABOOKIFY_DEV_AUTH_TOKEN=${ABOOKIFY_DEV_AUTH_TOKEN:-}
+    # Lets the container reach services on its host (the hermetic engine's
+    # GPU TTS on a GPU host — see ABOOKIFY_TTS_URL above). Harmless elsewhere.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       kokoro:
         condition: service_started

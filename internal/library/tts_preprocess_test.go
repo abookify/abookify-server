@@ -65,3 +65,27 @@ func TestPreprocessSegmentsNoTitleDuplication(t *testing.T) {
 		}
 	}
 }
+
+// `\b\w` treats an apostrophe as a boundary, so all-caps headings came out
+// "Marley'S Ghost." — the second line a Carol listener hears. Contraction and
+// possessive suffixes fold back to lower; a real capital after an apostrophe
+// (O'Brien) is kept. Both apostrophe shapes.
+func TestToTitleCaseApostrophes(t *testing.T) {
+	cases := map[string]string{
+		"MARLEY'S GHOST.":      "Marley's Ghost.",
+		"MARLEY’S GHOST.":      "Marley’s Ghost.",
+		"DON'T LOOK BACK":      "Don't Look Back",
+		"WE'LL MEET AGAIN":     "We'll Meet Again",
+		"THEY'RE HERE":         "They're Here",
+		"I'VE SEEN IT":         "I've Seen It",
+		"SHE'D KNOW":           "She'd Know",
+		"I'M HERE":             "I'm Here",
+		"O'BRIEN'S RETURN":     "O'Brien's Return",
+		"STAVE ONE. THE FIRST": "Stave One. The First",
+	}
+	for in, want := range cases {
+		if got := toTitleCase(in); got != want {
+			t.Errorf("toTitleCase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
