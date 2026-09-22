@@ -161,13 +161,37 @@ function screencap(file) {
 // player's own state, however, is always available from `dumpsys media_session`
 // (no idle needed, works mid-playback) — this is the source of truth for
 // "is it playing" and "did the clock advance".
+// `position` in the dump is the RAW value stamped at the last player EVENT (a
+// play/pause flip, a buffering cycle) — not a live clock. While PLAYING the
+// system extrapolates it exactly as the lock screen does: position + (now −
+// updated) × speed, with `updated` in elapsedRealtime ms. We read the device's
+// uptime in the same shell so `now` is on the same clock. Without this the raw
+// value can sit at 0 for the first 6+ s of a re-anchored stream (seen 2026-09-21
+// under host load 16) and "seconds played" reads as 0.
 function mediaState() {
   let out = '';
-  try { out = adb('shell dumpsys media_session'); } catch { return null; }
+  try { out = adb('shell "dumpsys media_session; echo __UPTIME__; cat /proc/uptime"'); } catch { return null; }
   // The app's media3 session line: state=PlaybackState {state=PLAYING(3), position=12345, ...}
-  const m = out.match(/state=PlaybackState \{state=([A-Z]+)\((\d)\), position=(-?\d+), buffered position=(-?\d+), speed=([-0-9.]+)/);
+  const m = out.match(/state=PlaybackState \{state=([A-Z]+)\((\d)\), position=(-?\d+), buffered position=(-?\d+), speed=([-0-9.]+), updated=(\d+)/);
   if (!m) return null;
-  return { state: m[1], pos: +m[3] / 1000, buf: +m[4] / 1000, speed: +m[5] };
+  const up = out.match(/__UPTIME__\s+([0-9.]+)/);
+  const nowMs = up ? +up[1] * 1000 : null;
+  const raw = +m[3] / 1000, speed = +m[5], updated = +m[6];
+  const live = m[1] === 'PLAYING' && nowMs != null && nowMs >= updated ? raw + ((nowMs - updated) / 1000) * speed : raw;
+  return { state: m[1], pos: live, rawPos: raw, buf: +m[4] / 1000, speed };
+}
+// The session's advertised transport actions (PlaybackStateCompat bitmask) and its
+// metadata description ("Title, Artist, Album"), read from the app's own block of
+// `dumpsys media_session` — the same surface a car head unit / the lock screen see.
+const ACTION_SKIP_TO_PREVIOUS = 16, ACTION_SKIP_TO_NEXT = 32;
+function mediaSessionInfo() {
+  let out = '';
+  try { out = adb('shell dumpsys media_session'); } catch { return null; }
+  const at = out.indexOf(PKG);
+  const block = at >= 0 ? out.slice(at) : out;
+  const a = block.match(/actions=(\d+)/);
+  const d = block.match(/metadata: size=\d+, description=([^\n]*)/);
+  return { actions: a ? +a[1] : null, description: d ? d[1].trim() : null };
 }
 // Send a media transport key and confirm the player reached the target state.
 // 126 = KEYCODE_MEDIA_PLAY, 127 = KEYCODE_MEDIA_PAUSE (explicit, not the 85
@@ -978,6 +1002,7 @@ async function connect() {
   // E2E_SKIP_CHAPTERS=1 skips; E2E_CHAPTER_N=<1-based row> pins the TOC target.
   if (process.env.E2E_SKIP_CHAPTERS === '1') {
     skip('chapter_seek', 'E2E_SKIP_CHAPTERS=1'); skip('next_chapter', 'E2E_SKIP_CHAPTERS=1'); skip('prev_chapter', 'E2E_SKIP_CHAPTERS=1');
+    skip('media_session_chapter', 'E2E_SKIP_CHAPTERS=1'); skip('remote_next_chapter', 'E2E_SKIP_CHAPTERS=1'); skip('remote_prev_chapter', 'E2E_SKIP_CHAPTERS=1');
   } else try {
     const list = apiJson('/api/works') || [];
     const works = Array.isArray(list) ? list : (list.works || []);
@@ -988,6 +1013,7 @@ async function connect() {
     if (!w || timed.length < 2) {
       skip('chapter_seek', 'work has no chapter timeline (fewer than 2 timed chapters)');
       skip('next_chapter', 'no chapter timeline'); skip('prev_chapter', 'no chapter timeline');
+      skip('media_session_chapter', 'no chapter timeline'); skip('remote_next_chapter', 'no chapter timeline'); skip('remote_prev_chapter', 'no chapter timeline');
     } else {
       const npXml = await openNowPlayingPaused();
       if (!npXml) throw new Error('could not reach the full player (no labeled "Chapters" control after 4 tries)');
@@ -1064,12 +1090,14 @@ async function connect() {
       const after = timed.filter((c) => c.start_sec > target.start_sec + 0.5).sort((a, b) => a.start_sec - b.start_sec)[0];
       if (!after) {
         skip('next_chapter', `"${title}" is the last chapter`); skip('prev_chapter', 'no next chapter to come back from');
+        skip('media_session_chapter', 'last chapter'); skip('remote_next_chapter', 'last chapter'); skip('remote_prev_chapter', 'last chapter');
       } else {
         let xml = r1.xml;
         const isTrack = !!findLabel(xml, 'Next track') && !findLabel(xml, 'Next chapter');
         if (isTrack) {
           report('next_chapter', false, '⏭ is labeled "Next track" on a chaptered work — it skips a FILE, not a chapter (PJ\'s Selfish Gene bug)');
           shot('next_chapter'); skip('prev_chapter', '⏭ not chapter-aware');
+          skip('media_session_chapter', '⏭ not chapter-aware'); skip('remote_next_chapter', '⏭ not chapter-aware'); skip('remote_prev_chapter', '⏭ not chapter-aware');
         } else {
           if (!tapLabel(xml, 'Next chapter')) throw new Error('no "Next chapter" control on the full player');
           const r2 = await landAfterJump(SETTLE);
@@ -1084,12 +1112,50 @@ async function connect() {
           const L3 = landed(r3, after);
           report('prev_chapter', L3.ok, `⏮ ${r2.p && typeof r2.p.pos === 'number' ? (r2.p.pos - after.start_sec).toFixed(1) : '?'}s into "${(after.title || '').trim()}" → restart it (${where(after)}) → ${L3.line}`);
           if (!L3.ok) shot('prev_chapter');
+
+          // (d) remote_next_chapter / remote_prev_chapter / media_session_chapter
+          // (board #33): the HARDWARE / lock-screen / car "next" — the surface PJ
+          // actually met the bug on. KEYCODE_MEDIA_NEXT (87) → the media session →
+          // expo-audio's seekToNext (our patch, patches/expo-audio+1.1.1.patch) →
+          // a JS `remoteCommand` → skipNext → the next CHAPTER. Unpatched, the
+          // session advertises no SKIP_TO_NEXT and the key is a NO-OP (the 09-15
+          // measurement), so this is RED on the stock build. Asserts: the session
+          // advertises SKIP_TO_NEXT + SKIP_TO_PREVIOUS and its metadata title is
+          // the CHAPTER (what a head unit displays); the key lands the chapter
+          // after `after` by the same anchor assertion; MEDIA_PREVIOUS (88) a few
+          // seconds in restarts it.
+          const after2 = timed.filter((c) => c.start_sec > after.start_sec + 0.5).sort((a, b) => a.start_sec - b.start_sec)[0];
+          {
+            const info = mediaSessionInfo() || {};
+            const hasNext = info.actions != null && (info.actions & ACTION_SKIP_TO_NEXT) !== 0;
+            const hasPrev = info.actions != null && (info.actions & ACTION_SKIP_TO_PREVIOUS) !== 0;
+            const wantTitle = ((after.title || '').trim() || `Chapter ${chapters.indexOf(after) + 1}`);
+            const titleOk = !!info.description && info.description.startsWith(wantTitle.slice(0, 40));
+            report('media_session_chapter', hasNext && hasPrev && titleOk,
+              `session actions=${info.actions} skipNext=${hasNext} skipPrev=${hasPrev}; metadata "${info.description}" (want the chapter "${wantTitle}")`);
+            if (!(hasNext && hasPrev && titleOk)) shot('media_session_chapter');
+          }
+          if (!after2) {
+            skip('remote_next_chapter', `"${(after.title || '').trim()}" is the last chapter`); skip('remote_prev_chapter', 'no next chapter');
+          } else {
+            adb('shell input keyevent 87'); // KEYCODE_MEDIA_NEXT
+            const r4 = await landAfterJump(SETTLE);
+            const L4 = landed(r4, after2);
+            report('remote_next_chapter', L4.ok, `MEDIA_NEXT key from "${(after.title || '').trim()}" → expected "${(after2.title || '').trim()}" (${where(after2)}) → ${L4.line}`);
+            if (!L4.ok) shot('remote_next_chapter');
+            adb('shell input keyevent 88'); // KEYCODE_MEDIA_PREVIOUS
+            const r5 = await landAfterJump(SETTLE);
+            const L5 = landed(r5, after2);
+            report('remote_prev_chapter', L5.ok, `MEDIA_PREVIOUS key ${r4.p && typeof r4.p.pos === 'number' ? (r4.p.pos - after2.start_sec).toFixed(1) : '?'}s into "${(after2.title || '').trim()}" → restart it → ${L5.line}`);
+            if (!L5.ok) shot('remote_prev_chapter');
+          }
         }
       }
     }
   } catch (e) {
     report('chapter_seek', false, e.message); shot('chapter_seek');
     skip('next_chapter', 'chapter_seek errored'); skip('prev_chapter', 'chapter_seek errored');
+    skip('media_session_chapter', 'chapter_seek errored'); skip('remote_next_chapter', 'chapter_seek errored'); skip('remote_prev_chapter', 'chapter_seek errored');
   }
 
   // ---- signout_signin — later.
