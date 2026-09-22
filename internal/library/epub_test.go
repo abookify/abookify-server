@@ -1,6 +1,7 @@
 package library
 
 import (
+	"github.com/pj/abookify/internal/db"
 	"strings"
 	"testing"
 )
@@ -179,5 +180,143 @@ func TestSanitizeHTMLTreatsDivAsParagraph(t *testing.T) {
 	// Real <p> documents are untouched by the rewrite.
 	if got := sanitizeHTML(`<p>One.</p><p>Two.</p>`); got != `<p>One.</p><p>Two.</p>` {
 		t.Errorf("plain <p> document changed: %q", got)
+	}
+}
+
+// A stranger's first press of play landed on a colophon (2026-09-22): every
+// Gutenberg EPUB leads with a title page, a contents list and sometimes a
+// dedication or note, each of which had become a chapter of its own. The
+// leading stubs fold: colophon and contents dropped, the note carried into
+// chapter I, and chapter I titled by its own heading rather than the book's
+// running title stamped above it.
+func TestFoldFrontMatterDraculaShape(t *testing.T) {
+	note := strings.Repeat("How these papers have been placed in sequence will be made manifest in the reading of them. ", 4)
+	body := strings.Repeat("Left Munich at 8:35 P. M., on 1st May, arriving at Vienna early next morning. ", 40)
+	in := []db.Chapter{
+		{Title: "D R A C U L A", Content: "D R A C U L A\n\nby\n\nBram Stoker\n\nNEW YORK\n\nGROSSET & DUNLAP\n\nPublishers\n\nCopyright, 1897, in the United States of America"},
+		{Title: "Contents", Content: "TO\n\nMY DEAR FRIEND\n\nHOMMY-BEG\n\nContents\n\nCHAPTER I. Jonathan Harker’s Journal\n\nCHAPTER II. Jonathan Harker’s Journal"},
+		{Title: "Chapter 3", Content: note, ContentHTML: "<p>" + note + "</p>"},
+		{Title: "CHAPTER I\n\nJONATHAN HARKER’S JOURNAL", Content: "D R A C U L A\n\nCHAPTER I\n\nJONATHAN HARKER’S JOURNAL\n\n" + body, ContentHTML: "<h2>D R A C U L A</h2><h2>CHAPTER I</h2><p>" + body + "</p>"},
+		{Title: "CHAPTER II\n\nJONATHAN HARKER’S JOURNAL—continued", Content: "CHAPTER II\n\n" + body},
+	}
+	for i := range in {
+		in[i].WordCount = len(strings.Fields(in[i].Content))
+	}
+	got := foldFrontMatter(in, "Dracula")
+	if len(got) != 2 {
+		t.Fatalf("want 2 chapters (I, II), got %d: %v", len(got), titlesOf(got))
+	}
+	if !strings.HasPrefix(got[0].Content, "How these papers") {
+		t.Errorf("the note was not folded into chapter I: %q", got[0].Content[:60])
+	}
+	if strings.Contains(got[0].Content, "GROSSET") || strings.Contains(got[0].Content, "HOMMY-BEG") {
+		t.Errorf("colophon or contents leaked into chapter I")
+	}
+	if strings.Contains(got[0].Content, "\nD R A C U L A\n") || strings.HasPrefix(got[0].ContentHTML, "<h2>D R A C U L A") {
+		t.Errorf("running book title not stripped from chapter I: %q / %q", got[0].Content[:80], got[0].ContentHTML[:40])
+	}
+	if !strings.HasPrefix(got[0].ContentHTML, "<p>How these papers") {
+		t.Errorf("html prefix wrong: %q", got[0].ContentHTML[:60])
+	}
+	if got[1].Title != in[4].Title {
+		t.Errorf("chapter II changed: %q", got[1].Title)
+	}
+}
+
+// The Selfish Gene's lead section is a page of review quotes: large, no
+// heading, titled "Front matter" by the splitter. That is not a stub and
+// stays a chapter; a book that is all short chapters stays exactly as it was.
+func TestFoldFrontMatterLeavesRealSectionsAlone(t *testing.T) {
+	blurbs := strings.Repeat("A brilliant book, said a reviewer. ", 60)
+	body := strings.Repeat("Intelligent life on a planet comes of age. ", 60)
+	in := []db.Chapter{
+		{Title: "Front matter", Content: blurbs, WordCount: len(strings.Fields(blurbs))},
+		{Title: "1. Why are people?", Content: body, WordCount: len(strings.Fields(body))},
+	}
+	if got := foldFrontMatter(in, "The Selfish Gene"); len(got) != 2 || got[0].Title != "Front matter" {
+		t.Errorf("large lead section must survive: %v", titlesOf(got))
+	}
+	short := []db.Chapter{
+		{Title: "I", Content: "One short poem.", WordCount: 3},
+		{Title: "II", Content: "Another short poem.", WordCount: 3},
+	}
+	if got := foldFrontMatter(short, "Poems"); len(got) != 2 {
+		t.Errorf("all-short book must be untouched: %v", titlesOf(got))
+	}
+}
+
+func TestExtractChapterHeadingPrefersChapterLine(t *testing.T) {
+	h := `<div class="chapter"><h2>D R A C U L A</h2><hr/></div><div class="chapter"><h2><a id="chap01"/>CHAPTER I<br/><br/><small>JONATHAN HARKER’S JOURNAL</small></h2><p>3 May.</p>`
+	if got := extractChapterHeading(h); !strings.HasPrefix(got, "CHAPTER I") {
+		t.Errorf("want the CHAPTER I heading, got %q", got)
+	}
+	if got := extractChapterHeading(`<h1>A Preface Note</h1><p>x</p>`); got != "A Preface Note" {
+		t.Errorf("fallback to first heading broken: %q", got)
+	}
+}
+
+func titlesOf(cs []db.Chapter) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = strings.ReplaceAll(c.Title, "\n", " / ")
+	}
+	return out
+}
+
+// Carol's leading unit is a title page that runs into Dickens's own preface.
+// The preface is his words and stays — as its own chapter, not folded into
+// Stave One (whose text, and therefore whose content key and narration, must
+// not move for this).
+func TestFoldFrontMatterKeepsPrefaceAsChapter(t *testing.T) {
+	lead := "Cover of 1843 First Edition\n\nTitle Page of 1843 First Edition\n\nA CHRISTMAS CAROL\n\nIN PROSE\n\nBEING\n\nA Ghost Story of Christmas\n\nBY\n\nCHARLES DICKENS\n\nWITH ILLUSTRATIONS BY JOHN LEECH\n\nPREFACE\n\n" +
+		"I HAVE endeavoured in this Ghostly little book, to raise the Ghost of an Idea, which shall not put my readers out of humour with themselves, with each other, with the season, or with me. May it haunt their houses pleasantly, and no one wish to lay it. Their faithful Friend and Servant, C. D. December, 1843."
+	stave := strings.Repeat("Marley was dead: to begin with. There is no doubt whatever about that. ", 30)
+	in := []db.Chapter{
+		{Title: "A CHRISTMAS CAROL", Content: lead, ContentHTML: "<p>Cover of 1843 First Edition</p><h1>A CHRISTMAS CAROL</h1><h2>PREFACE</h2><p>I HAVE endeavoured…</p>"},
+		{Title: "STAVE ONE.", Content: "STAVE ONE.\n\nMARLEY’S GHOST.\n\n" + stave},
+	}
+	for i := range in {
+		in[i].WordCount = len(strings.Fields(in[i].Content))
+	}
+	got := foldFrontMatter(in, "A Christmas Carol in Prose; Being a Ghost Story of Christmas")
+	if len(got) != 2 || got[0].Title != "Preface" || got[1].Title != "STAVE ONE." {
+		t.Fatalf("want [Preface, STAVE ONE.], got %v", titlesOf(got))
+	}
+	if !strings.HasPrefix(got[0].Content, "I HAVE endeavoured") || strings.Contains(got[0].Content, "JOHN LEECH") {
+		t.Errorf("preface content wrong: %q", got[0].Content[:60])
+	}
+	if !strings.HasPrefix(got[0].ContentHTML, "<h2>PREFACE</h2>") {
+		t.Errorf("preface html should start at the marker: %q", got[0].ContentHTML[:40])
+	}
+	if got[1].Content != in[1].Content {
+		t.Errorf("Stave One's text must not move")
+	}
+}
+
+// Oz leads with a title page, a contents list whose entries include the word
+// "Introduction", and then Baum's real Introduction. The list is dropped, the
+// Introduction is kept as its own chapter, and neither becomes a preface by
+// mistake.
+func TestFoldFrontMatterContentsListIsNotAPreface(t *testing.T) {
+	contents := "The Wonderful Wizard of Oz\n\nby L. Frank Baum\n\nContents\n\nIntroduction\n\nChapter I. The Cyclone\n\nChapter II. The Council with the Munchkins\n\nChapter III. How Dorothy Saved the Scarecrow\n\nChapter IV. The Road Through the Forest\n\nChapter V. The Rescue of the Tin Woodman\n\nChapter VI. The Cowardly Lion\n\nChapter VII. The Journey to the Great Oz\n\nChapter VIII. The Deadly Poppy Field\n\nChapter IX. The Queen of the Field Mice"
+	intro := "Introduction\n\n" + strings.Repeat("Folklore, legends, myths and fairy tales have followed childhood through the ages. ", 12)
+	body := strings.Repeat("Dorothy lived in the midst of the great Kansas prairies, with Uncle Henry. ", 40)
+	in := []db.Chapter{
+		{Title: "The Wonderful Wizard of Oz", Content: contents},
+		{Title: "Introduction", Content: intro},
+		{Title: "Chapter I\n\nThe Cyclone", Content: "Chapter I\n\nThe Cyclone\n\n" + body},
+	}
+	for i := range in {
+		in[i].WordCount = len(strings.Fields(in[i].Content))
+	}
+	got := foldFrontMatter(in, "The Wonderful Wizard of Oz")
+	if len(got) != 2 || got[0].Title != "Introduction" || !strings.HasPrefix(got[1].Title, "Chapter I") {
+		t.Fatalf("want [Introduction, Chapter I], got %v", titlesOf(got))
+	}
+	if strings.Contains(got[0].Content, "Cyclone") || strings.Contains(got[1].Content, "Munchkins\n") {
+		t.Errorf("contents list leaked: %q / %q", got[0].Content[:50], got[1].Content[:50])
+	}
+	if !looksLikeContentsList(contents) || looksLikeContentsList(intro) {
+		t.Errorf("contents-list detector wrong")
 	}
 }

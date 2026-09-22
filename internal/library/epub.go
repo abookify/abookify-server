@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/pj/abookify/internal/db"
 )
@@ -157,7 +158,7 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 		if err != nil {
 			return nil, err
 		}
-		return cleanExtractedChapters(perFile), nil
+		return cleanExtractedChapters(perFile, epubTitle(pkg)), nil
 	}
 
 	for _, seg := range segments {
@@ -214,10 +215,10 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 	// merely because it exists. Both are cheap to compute on an epub.
 	if perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID); err == nil &&
 		len(perFile) > len(chapters) {
-		return cleanExtractedChapters(perFile), nil
+		return cleanExtractedChapters(perFile, epubTitle(pkg)), nil
 	}
 
-	return cleanExtractedChapters(chapters), nil
+	return cleanExtractedChapters(chapters, epubTitle(pkg)), nil
 }
 
 // Project Gutenberg wraps every ebook in a licence header and footer, fenced by
@@ -346,9 +347,8 @@ var htmlApparatusTagRe = regexp.MustCompile(`(?is)<(p|h[1-6]|div|b|i|em|strong|s
 // pass. Splitting it out keeps the apparatus strip unconditional — the
 // running-head pass skips books with too few chapters, but front matter needs
 // cleaning regardless of length.
-func cleanExtractedChapters(chapters []db.Chapter) []db.Chapter {
+func cleanExtractedChapters(chapters []db.Chapter, bookTitle string) []db.Chapter {
 	cleaned := make([]db.Chapter, 0, len(chapters))
-	idx := 0
 	for _, ch := range chapters {
 		ch.Content = strings.TrimSpace(stripGutenbergApparatus(ch.Content))
 		if ch.Content == "" {
@@ -356,11 +356,250 @@ func cleanExtractedChapters(chapters []db.Chapter) []db.Chapter {
 		}
 		ch.ContentHTML = stripGutenbergApparatusHTML(ch.ContentHTML)
 		ch.WordCount = len(strings.Fields(ch.Content))
-		ch.Index = idx
-		idx++
 		cleaned = append(cleaned, ch)
 	}
+	cleaned = foldFrontMatter(cleaned, bookTitle)
+	for i := range cleaned {
+		cleaned[i].Index = i
+	}
 	return stripRunningHeaders(cleaned)
+}
+
+// Front matter (2026-09-22). A stranger's first press of play on our own
+// Dracula sample landed on twenty-six seconds of karaoke over "NEW YORK
+// GROSSET & DUNLAP, Copyright 1897", then a 28-second stub titled "Chapter 3"
+// (the "How these papers have been placed in sequence" note, which had no
+// heading of its own), then a chapter I titled with the book's own name. Every
+// Gutenberg EPUB in the library carries the same shape: a title page, a
+// contents list, sometimes a dedication or a note, all BEFORE the first real
+// chapter, each emitted as a chapter of its own and each narrated by TTS.
+//
+// Policy, applied to the LEADING chapters only (everything before the first
+// substantive one), the same fold-forward rule the transcript splitter uses
+// for narrator header stubs:
+//   - a colophon (title page / copyright page: tiny, titled with the book's
+//     name or carrying publisher/copyright wording)  → DROPPED
+//   - a boilerplate-titled unit (Contents, licence)   → DROPPED
+//   - any other tiny unit (dedication, epigraph, a note) → FOLDED FORWARD as
+//     the opening paragraphs of the first real chapter — its words are book
+//     text and stay readable and narrated; it just isn't a chapter
+//
+// A large lead section ("Front matter" blurbs in The Selfish Gene) is left
+// alone: this is about stubs, not about deciding what a preface is.
+//
+// Separately, a chapter whose FIRST LINE is the book's own name (the PG
+// pattern <h2>D R A C U L A</h2> immediately before <h2>CHAPTER I</h2>) loses
+// that line — it is the running title, not the chapter's text.
+const frontMatterMaxWords = 150
+
+var colophonWordsRe = regexp.MustCompile(`(?i)\b(copyright|all rights reserved|published by|publishers?|printed in|first published|isbn)\b`)
+
+func normalizeTitleKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// isBookTitle reports whether a heading/line IS the book's title — spaced
+// caps ("D R A C U L A"), punctuation and case ignored; a short-form title
+// that the full title starts with ("Frankenstein;" vs "Frankenstein; or, the
+// Modern Prometheus") counts too.
+func isBookTitle(s, bookTitle string) bool {
+	k, bk := normalizeTitleKey(s), normalizeTitleKey(bookTitle)
+	if k == "" || bk == "" {
+		return false
+	}
+	return k == bk || (len(k) >= 6 && strings.HasPrefix(bk, k))
+}
+
+// colophonTitledMaxWords: a LEADING unit titled with the book's own name is a
+// title page even when it carries a contents list (Peter Pan: 156 words). A
+// real first chapter that happens to share the book's name runs far longer.
+const colophonTitledMaxWords = 400
+
+func isColophonChapter(ch db.Chapter, bookTitle string) bool {
+	if isBookTitle(ch.Title, bookTitle) && ch.WordCount < colophonTitledMaxWords {
+		return true
+	}
+	return ch.WordCount < frontMatterMaxWords && colophonWordsRe.MatchString(ch.Content)
+}
+
+func foldFrontMatter(chapters []db.Chapter, bookTitle string) []db.Chapter {
+	// Running title lines and book-named chapters first, while each chapter's
+	// first line is still its own (the fold below prepends text to chapter I).
+	chapters = stripLeadingBookTitleLines(chapters, bookTitle)
+	// Where does the book proper start? The first chapter that is neither
+	// tiny nor boilerplate-titled. Everything before it is front matter.
+	first := -1
+	for i, ch := range chapters {
+		if ch.WordCount >= frontMatterMaxWords && !isBoilerplateTitle(ch.Title) && !isColophonChapter(ch, bookTitle) {
+			first = i
+			break
+		}
+	}
+	if first <= 0 {
+		// Nothing leads the first real chapter (or no chapter is substantive —
+		// a tiny book stays exactly as extracted).
+		return chapters
+	}
+	var kept []db.Chapter // prefatory units that stay chapters of their own
+	var prefixText, prefixHTML []string
+	for _, ch := range chapters[:first] {
+		// A title page that runs straight into the author's own preface
+		// (Dickens: "A CHRISTMAS CAROL … BY CHARLES DICKENS / PREFACE / I HAVE
+		// endeavoured…") keeps the preface as a chapter named for it and
+		// drops the page above the marker.
+		if pre, ok := prefaceFromLead(ch); ok {
+			kept = append(kept, pre)
+			continue
+		}
+		switch {
+		case isColophonChapter(ch, bookTitle):
+			continue
+		case isBoilerplateTitle(ch.Title), looksLikeContentsList(ch.Content):
+			continue
+		default:
+			prefixText = append(prefixText, ch.Content)
+			if ch.ContentHTML != "" {
+				prefixHTML = append(prefixHTML, ch.ContentHTML)
+			}
+		}
+	}
+	out := make([]db.Chapter, 0, len(chapters)-first+len(kept))
+	out = append(out, kept...)
+	body := chapters[first]
+	if len(prefixText) > 0 {
+		body.Content = strings.Join(prefixText, "\n\n") + "\n\n" + body.Content
+		if body.ContentHTML != "" || len(prefixHTML) > 0 {
+			body.ContentHTML = strings.Join(prefixHTML, "") + body.ContentHTML
+		}
+		body.WordCount = len(strings.Fields(body.Content))
+	}
+	out = append(out, body)
+	out = append(out, chapters[first+1:]...)
+	return out
+}
+
+// looksLikeContentsList: most non-blank lines name chapters ("Chapter I. The
+// Cyclone", "II. THE FALLING STAR.") — a table of contents whatever its
+// heading says, never text to fold into a chapter.
+func looksLikeContentsList(content string) bool {
+	total, chapterish := 0, 0
+	for _, l := range strings.Split(content, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		total++
+		if chapterHeadingTextRe.MatchString(l) && len(strings.Fields(l)) <= 12 {
+			chapterish++
+		}
+	}
+	return chapterish >= 3 && chapterish*2 >= total
+}
+
+// prefaceMarkerRe: a line that opens the author's own prefatory text.
+var prefaceMarkerRe = regexp.MustCompile(`(?im)^\s*(preface|foreword|introduction|prologue|author'?s note|a note on the text)\.?\s*$`)
+
+// prefaceFromLead splits a leading unit at its preface marker: the marker
+// line becomes the chapter's title and everything from it on its content;
+// what precedes (title page, illustration captions) is dropped. Only fires
+// when real text follows the marker.
+func prefaceFromLead(ch db.Chapter) (db.Chapter, bool) {
+	loc := prefaceMarkerRe.FindStringIndex(ch.Content)
+	if loc == nil {
+		return ch, false
+	}
+	after := strings.TrimSpace(ch.Content[loc[1]:])
+	// "Introduction" is also a contents-list entry; what follows a real
+	// preface marker is prose, not more chapter lines (Oz's contents page).
+	if len(strings.Fields(after)) < 20 || looksLikeContentsList(after) {
+		return ch, false
+	}
+	marker := strings.TrimSpace(ch.Content[loc[0]:loc[1]])
+	title := marker
+	if isAllCaps(title) {
+		title = toTitleCase(title)
+	}
+	out := ch
+	out.Title = strings.TrimSuffix(title, ".")
+	out.Content = after
+	out.WordCount = len(strings.Fields(after))
+	// HTML: keep from the marker's heading/paragraph onward when it can be found.
+	if idx := strings.Index(strings.ToUpper(out.ContentHTML), strings.ToUpper(marker)); idx >= 0 {
+		start := strings.LastIndex(out.ContentHTML[:idx], "<")
+		if start < 0 {
+			start = idx
+		}
+		out.ContentHTML = out.ContentHTML[start:]
+	}
+	return out, true
+}
+
+var leadingHeadingRe = regexp.MustCompile(`(?is)^\s*<h[1-6][^>]*>(.*?)</h[1-6]>\s*`)
+
+// stripLeadingBookTitleLines removes a first line that is the book's own name
+// from any chapter whose title is not — the running title stamped above the
+// real chapter heading.
+func stripLeadingBookTitleLines(chapters []db.Chapter, bookTitle string) []db.Chapter {
+	for i := range chapters {
+		ch := &chapters[i]
+		line, rest, found := strings.Cut(ch.Content, "\n")
+		if found && isBookTitle(line, bookTitle) && strings.TrimSpace(rest) != "" {
+			ch.Content = strings.TrimLeft(rest, "\n")
+			ch.WordCount = len(strings.Fields(ch.Content))
+			if m := leadingHeadingRe.FindStringSubmatch(ch.ContentHTML); m != nil &&
+				isBookTitle(htmlTagRe.ReplaceAllString(m[1], ""), bookTitle) {
+				ch.ContentHTML = strings.TrimSpace(ch.ContentHTML[len(m[0]):])
+			}
+		}
+		// Still named after the book (the spine-file path took the running
+		// title, or the TOC did)? Its own opening line names the chapter.
+		if isBookTitle(ch.Title, bookTitle) {
+			if t := chapterTitleFromContent(ch.Content); t != "" {
+				ch.Title = t
+			}
+		}
+	}
+	return chapters
+}
+
+// chapterTitleFromContent reads a chapter heading off the first lines of the
+// plain text: a chapter-like line ("CHAPTER I") plus, when the next non-blank
+// line is a short all-caps or title-case sub-heading, that line too — the
+// same two-line shape the heading splitter produces ("CHAPTER II\n\nJONATHAN
+// HARKER'S JOURNAL—continued").
+func chapterTitleFromContent(content string) string {
+	lines := strings.Split(content, "\n")
+	var picked []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			if len(picked) > 0 && len(picked) < 2 {
+				continue
+			}
+			if len(picked) >= 2 {
+				break
+			}
+			continue
+		}
+		if len(picked) == 0 {
+			if !chapterHeadingTextRe.MatchString(l) || len(strings.Fields(l)) > 8 {
+				return ""
+			}
+			picked = append(picked, l)
+			continue
+		}
+		if len(strings.Fields(l)) <= 8 && !strings.HasSuffix(l, ".") && (isAllCaps(l) || l == toTitleCase(l)) {
+			picked = append(picked, l)
+		}
+		break
+	}
+	return strings.Join(picked, "\n\n")
 }
 
 // Running-header/footer removal. Calibre and many publishers stamp a page
@@ -510,7 +749,7 @@ func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]mani
 		}
 		title := tocTitles[stripFragment(item.Href)]
 		if title == "" {
-			title = extractFirstHeading(rawHTML)
+			title = extractChapterHeading(rawHTML)
 		}
 		if isHeadingOnly(text, title) {
 			continue // heading-only split document — see isHeadingOnly
@@ -847,7 +1086,7 @@ func splitHTMLByHeadings(rawHTML string) []htmlSegment {
 		h := rawHTML[s.pos:end]
 		title := s.title
 		if title == "" {
-			title = extractFirstHeading(h)
+			title = extractChapterHeading(h)
 		}
 		segs = append(segs, htmlSegment{title: title, html: h})
 	}
@@ -954,6 +1193,29 @@ func numberedParagraphStarts(rawHTML string) []headingStart {
 		starts = append(starts, headingStart{pos: c.pos, title: c.title})
 	}
 	return starts
+}
+
+// extractChapterHeading prefers the first heading that NAMES a chapter
+// ("CHAPTER I", "Stave One", "IV.") over whatever heading merely comes first.
+// Gutenberg files put the book's own title in an <h2> right before the first
+// chapter's heading, so "first heading" titled Dracula's chapter I
+// "D R A C U L A" while every later chapter got its "CHAPTER N" line.
+func extractChapterHeading(html string) string {
+	for _, m := range anyHeadingRe.FindAllStringSubmatch(html, -1) {
+		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(m[1], ""))
+		if text != "" && chapterHeadingTextRe.MatchString(text) {
+			return text
+		}
+	}
+	return extractFirstHeading(html)
+}
+
+// epubTitle is the package's own dc:title (what the colophon repeats).
+func epubTitle(pkg opfPackage) string {
+	if len(pkg.Metadata.Title) > 0 {
+		return strings.TrimSpace(pkg.Metadata.Title[0])
+	}
+	return ""
 }
 
 func extractFirstHeading(html string) string {

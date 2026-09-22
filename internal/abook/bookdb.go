@@ -140,6 +140,22 @@ CREATE TABLE book_conditions (
 	reason   TEXT NOT NULL DEFAULT '',
 	source   TEXT NOT NULL DEFAULT ''
 );
+
+-- Text-trust testimony: the producer's verdict on whether the narration in
+-- THIS bundle says the words of THIS text. For a bundle whose every audio
+-- book was generated from the text (a Kokoro edition) the answer is known at
+-- export time — by construction, zero suspect words — and an artifact we
+-- made ourselves must not arrive reading "Text not checked". Otherwise the
+-- work's stored sweep verdict rides along. Carved 2026-09-22.
+CREATE TABLE text_trust (
+	work_id        INTEGER PRIMARY KEY,
+	checked_at     TEXT NOT NULL DEFAULT '',
+	has_confidence INTEGER NOT NULL DEFAULT 0,
+	suspect_words  INTEGER NOT NULL DEFAULT 0,
+	total_words    INTEGER NOT NULL DEFAULT 0,
+	worst_at_sec   REAL NOT NULL DEFAULT 0,
+	method         TEXT NOT NULL DEFAULT ''
+);
 `
 
 // WorkSummary is the denormalized listing/manifest summary for a work.
@@ -512,7 +528,55 @@ func buildBookDB(store *db.Store, work *db.Work, sum WorkSummary, dbPath string,
 		}
 	}
 
+	// text_trust: what the producer knows about narration-vs-text at the
+	// moment it makes the artifact (see the schema note).
+	if row, method := textTrustForBundle(store, work); row != nil {
+		if _, err := tx.Exec(`INSERT INTO text_trust(work_id, checked_at, has_confidence, suspect_words, total_words, worst_at_sec, method) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			work.ID, row.CheckedAt, b2i(row.HasConfidence), row.SuspectWords, row.TotalWords, row.WorstAtSec, method); err != nil {
+			return fmt.Errorf("insert text_trust: %w", err)
+		}
+	}
+
 	return tx.Commit()
+}
+
+// textTrustForBundle decides the text-trust row a bundle carries. Every
+// included audio book generated from the text → a by-construction verdict
+// (0 suspect of the included text's words, stamped now). Any human narration
+// included → the work's stored sweep verdict, if one exists (it was computed
+// against that narration); none → nothing (absence stays "unknown").
+func textTrustForBundle(store *db.Store, work *db.Work) (*db.TextTrustRow, string) {
+	if len(work.AudioFiles) == 0 {
+		return nil, ""
+	}
+	allGenerated := true
+	for _, a := range work.AudioFiles {
+		if a.Origin != "tts_kokoro" {
+			allGenerated = false
+			break
+		}
+	}
+	if allGenerated {
+		total := 0
+		for _, t := range work.TextFiles {
+			if t.MediaType != "text" || strings.HasPrefix(t.Path, "generated://") {
+				continue
+			}
+			if chs, err := store.ListChapters(t.ID); err == nil {
+				for _, c := range chs {
+					total += c.WordCount
+				}
+			}
+		}
+		return &db.TextTrustRow{
+			WorkID: work.ID, CheckedAt: time.Now().UTC().Format("2006-01-02 15:04:05"),
+			HasConfidence: true, SuspectWords: 0, TotalWords: total,
+		}, "tts_construction"
+	}
+	if row, err := store.GetTextTrust(work.ID); err == nil && row != nil {
+		return row, "sweep"
+	}
+	return nil, ""
 }
 
 func b2i(b bool) int {

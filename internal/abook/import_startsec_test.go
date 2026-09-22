@@ -134,3 +134,65 @@ func TestImport_CarriesBookConditions(t *testing.T) {
 		}
 	}
 }
+
+// Our own samples arrived "Text not checked" (the stranger walk, 2026-09-22).
+// The producer knows: a bundle whose audio was all generated from its text
+// testifies to that at export — zero suspect words, by construction — and the
+// importer carries the verdict. A bundle with a human narration carries the
+// work's sweep verdict instead, and never invents one.
+func TestImport_CarriesTextTrustTestimony(t *testing.T) {
+	dir := t.TempDir()
+	store, w := seedNarration(t, dir, "tts_kokoro", "af_heart")
+	abook := filepath.Join(dir, "tts.abook")
+	if err := ExportV2(store, w, abook, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest, err := db.Open(filepath.Join(dir, "dest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ImportInto(dest, abook, filepath.Join(dir, "lib"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	tt, err := dest.GetTextTrust(res.WorkID)
+	if err != nil || tt == nil {
+		t.Fatalf("a Kokoro-only bundle must arrive with a text-trust verdict (err %v)", err)
+	}
+	if tt.SuspectWords != 0 || tt.TotalWords == 0 || !tt.HasConfidence {
+		t.Errorf("by-construction verdict wrong: %+v", tt)
+	}
+
+	// Human narration, no sweep run: nothing is invented.
+	dir2 := t.TempDir()
+	store2, w2 := seedNarration(t, dir2, "narrator_recording", "")
+	abook2 := filepath.Join(dir2, "human.abook")
+	if err := ExportV2(store2, w2, abook2, dir2, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest2, _ := db.Open(filepath.Join(dir2, "dest.db"))
+	res2, err := ImportInto(dest2, abook2, filepath.Join(dir2, "lib"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if tt2, _ := dest2.GetTextTrust(res2.WorkID); tt2 != nil {
+		t.Errorf("human bundle without a sweep must not carry a verdict, got %+v", tt2)
+	}
+
+	// Human narration WITH a sweep verdict: it rides along as recorded.
+	if err := store2.SaveTextTrust(db.TextTrustRow{WorkID: w2.ID, CheckedAt: "2026-09-01 00:00:00", HasConfidence: true, SuspectWords: 7, TotalWords: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	abook3 := filepath.Join(dir2, "human-swept.abook")
+	if err := ExportV2(store2, w2, abook3, dir2, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	dest3, _ := db.Open(filepath.Join(dir2, "dest3.db"))
+	res3, err := ImportInto(dest3, abook3, filepath.Join(dir2, "lib3"), ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if tt3, _ := dest3.GetTextTrust(res3.WorkID); tt3 == nil || tt3.SuspectWords != 7 || tt3.TotalWords != 1000 {
+		t.Errorf("sweep verdict not carried: %+v", tt3)
+	}
+}

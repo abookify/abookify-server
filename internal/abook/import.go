@@ -408,6 +408,9 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 	if err := copySync(bdb, store, newWorkID, bookRemap); err != nil {
 		return nil, err
 	}
+	if err := copyTextTrust(bdb, store, newWorkID); err != nil {
+		return nil, fmt.Errorf("restore text_trust: %w", err)
+	}
 	if err := copyConditions(bdb, store, bookRemap, skipContent); err != nil {
 		return nil, err
 	}
@@ -716,6 +719,33 @@ func editionSlug(s string) string {
 // (book_conditions, carved by ExportV2 since 2026-09-22). This CARRIES a
 // verdict the producing code path wrote at export time; it infers nothing.
 // Older bundles have no such table and simply arrive "unknown".
+// copyTextTrust restores the producer's narration-vs-text verdict carried in
+// the bundle (text_trust, carved by ExportV2 since 2026-09-22). It CARRIES a
+// verdict; it infers nothing. Older bundles lack the table and arrive
+// "unchecked". A verdict already on the work (a sweep run here) is kept.
+func copyTextTrust(bdb *sql.DB, store *db.Store, workID int64) error {
+	var n int
+	if err := bdb.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='text_trust'`).Scan(&n); err != nil || n == 0 {
+		return nil
+	}
+	if existing, err := store.GetTextTrust(workID); err == nil && existing != nil {
+		return nil
+	}
+	var row db.TextTrustRow
+	var conf int
+	err := bdb.QueryRow(`SELECT checked_at, has_confidence, suspect_words, total_words, worst_at_sec FROM text_trust LIMIT 1`).
+		Scan(&row.CheckedAt, &conf, &row.SuspectWords, &row.TotalWords, &row.WorstAtSec)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	row.WorkID = workID
+	row.HasConfidence = conf != 0
+	return store.SaveTextTrust(row)
+}
+
 func copyConditions(bdb *sql.DB, store *db.Store, remap map[int64]int64, skip map[int64]bool) error {
 	var n int
 	if err := bdb.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='book_conditions'`).Scan(&n); err != nil || n == 0 {
