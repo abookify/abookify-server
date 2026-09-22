@@ -351,8 +351,8 @@ func attributeToChapters(store *db.Store, w *db.Work, words []sttWord) []TrustCh
 // the book's own. Nothing is inferred about a human recording.
 func SynthesizedTextTrust(workID int64) TextTrust {
 	return TextTrust{WorkID: workID, State: TrustSynthesized,
-		Headline: "Narration was generated from this text",
-		Detail:   "This book's audio was produced from its own text by Abookify, so the words you hear are the words on the page. There is no separate recording to check against."}
+		Headline: "Narrated from this text",
+		Detail:   "Abookify read this book aloud from these exact words, so what you hear is what is on the page. There was never a separate recording to check against — the match is true by construction, not by inspection."}
 }
 
 // IsTTSNarrated reports whether the work's displayed audio edition was

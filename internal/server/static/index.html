@@ -2761,12 +2761,16 @@
           // ONE edition's files, so the "X of Y listened" total isn't the sum of
           // two narrations flattened together (that made a multi-edition work read
           // as half-finished when it wasn't).
-          const audioFiles = displayEditionBooks(w, 'audio');
-          const total = audioFiles.reduce((s, f) => s + (f.duration_secs || 0), 0);
-          if (total <= 0) return;
           const res = await fetch(`/api/works/${w.id}/position`);
           if (!res.ok) return;
           const pos = await res.json();
+          // The edition the saved position actually belongs to (pos.book_id) —
+          // NOT the displayed edition. After a second narration is added and
+          // becomes the default, the listener's minutes are still in the one
+          // they heard; drawing them on the other timeline invents progress.
+          const audioFiles = (pos && pos.book_id) ? editionFilesOf(w, pos.book_id) : displayEditionBooks(w, 'audio');
+          const total = audioFiles.reduce((s, f) => s + (f.duration_secs || 0), 0);
+          if (total <= 0) return;
           // Sum the durations of fully-completed earlier files + the
           // partial position in the current file. file_index is 0-based
           // pointing at the file currently being played.
@@ -3149,6 +3153,20 @@
     function editionAuthority(b) {
       return ({ author_recording: 6, narrator_recording: 5, publisher_epub: 5, publisher_mobi: 4, librivox: 4, whisper_transcript: 2, tts_kokoro: 3 }[b.origin] ?? 1);
     }
+    // The files of ONE narration — the edition that contains `bookId` — in
+    // timeline order. The transport total and the "listened of" line must sum
+    // the edition being heard, never two narrations flattened together (the
+    // stranger walk saw "29h 17m" on a 13h book and "1h 3m of 15h 58m" after
+    // four minutes: the AI edition's position drawn on the human timeline).
+    function editionFilesOf(work, bookId) {
+      const src = (work?.audio_files || []).filter(b => b.visibility !== 'internal');
+      const me = src.find(b => b.id === bookId);
+      if (!me) return src;
+      const key = me.origin || editionKeyOf(me);
+      return src.filter(b => (b.origin || editionKeyOf(b)) === key)
+                .sort((a, b) => (a.start_sec || 0) - (b.start_sec || 0) || a.id - b.id);
+    }
+
     function displayEditionBooks(work, media) {
       const src = (media === 'audio' ? (work.audio_files || []) : (work.text_files || []))
         .filter(b => b.visibility !== 'internal');
@@ -4097,8 +4115,13 @@
         const p = textTrustPillFor(tt);
         if (!p) {
           if (subtle && tt) {
-            const title = (tt.state === 'verified' || tt.state === 'synthesized') ? (tt.headline || 'Text matches the audio')
-                                                   : (tt.headline || 'A few passages — details');
+            // Three states, three truths: "Text checked" = a human recording that passed
+            // the sweep; "Narrated from this text" = generated from these exact words,
+            // true by construction (a stronger claim, its own words); anything else = a
+            // few passages to look at.
+            const title = tt.state === 'synthesized' ? (tt.headline || 'Narrated from this text')
+                        : tt.state === 'verified'    ? (tt.headline || 'Text matches the audio')
+                                                     : (tt.headline || 'A few passages — details');
             slot.className = 'media-pill tt-slot tt-subtle';
             slot.style.display = '';
             slot.setAttribute('role', 'button');
@@ -4106,7 +4129,8 @@
             slot.setAttribute('title', title);
             slot.setAttribute('aria-label', title);
             slot.onclick = (e) => { e.stopPropagation(); openAbookSummary(id); };
-            slot.textContent = (tt.state === 'verified' || tt.state === 'synthesized') ? 'Text ✓' : 'Text · details';
+            slot.textContent = tt.state === 'synthesized' ? 'Narrated from this text ✓'
+                             : tt.state === 'verified'    ? 'Text checked ✓' : 'Text · details';
           } else {
             slot.className = 'tt-slot';
             slot.style.display = 'none';
@@ -7327,7 +7351,10 @@
       if (currentWorkId == null) return 0;
       const work = allWorks.find(w => w.id === currentWorkId);
       if (!work) return 0;
-      return (work.audio_files || []).reduce((a, f) => a + (f.duration_secs || 0), 0);
+      // Only the edition being played — a second narration must not inflate
+      // the clock (13h 19m stays 13h 19m when a 15h 58m human reading is added).
+      const files = currentPlayingId ? editionFilesOf(work, currentPlayingId) : (work.audio_files || []);
+      return files.reduce((a, f) => a + (f.duration_secs || 0), 0);
     }
 
     // Scrubber: timeupdate → move fill + thumb. Everything below uses

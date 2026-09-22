@@ -488,11 +488,12 @@ func (s *Server) handleTextTrust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row, _ := s.store.GetTextTrust(id)
-	if row == nil {
-		if wk, _ := s.store.GetWork(id); wk != nil && library.IsTTSNarrated(wk) {
-			writeJSON(w, http.StatusOK, library.SynthesizedTextTrust(id))
-			return
-		}
+	// The DISPLAYED narration decides: generated from the text → "narrated from
+	// this text", a stronger claim than any sweep verdict (a by-construction row
+	// carved by export would otherwise read as merely "verified").
+	if wk, _ := s.store.GetWork(id); wk != nil && library.IsTTSNarrated(wk) {
+		writeJSON(w, http.StatusOK, library.SynthesizedTextTrust(id))
+		return
 	}
 	writeJSON(w, http.StatusOK, library.BuildTextTrust(id, row))
 }
@@ -530,23 +531,27 @@ func (s *Server) handleTextTrustSummary(w http.ResponseWriter, r *http.Request) 
 		writeServerError(w, r, err)
 		return
 	}
-	out := make([]library.TextTrust, 0, len(rows))
+	// The displayed narration decides the state: generated from the text →
+	// "narrated from this text" (by construction, whether or not a row exists);
+	// otherwise the sweep verdict; otherwise unchecked (absent from the array).
+	tts := map[int64]bool{}
+	if works, err := s.store.ListWorks(); err == nil {
+		for i := range works {
+			if library.IsTTSNarrated(&works[i]) {
+				tts[works[i].ID] = true
+			}
+		}
+	}
+	out := make([]library.TextTrust, 0, len(rows)+len(tts))
 	for id := range rows {
+		if tts[id] {
+			continue
+		}
 		row := rows[id]
 		out = append(out, library.BuildTextTrust(id, &row))
 	}
-	// Works with no verdict whose narration is generated from their own text
-	// are "synthesized", not "unchecked" — the question does not arise.
-	if works, err := s.store.ListWorks(); err == nil {
-		for i := range works {
-			wk := &works[i]
-			if _, checked := rows[wk.ID]; checked {
-				continue
-			}
-			if library.IsTTSNarrated(wk) {
-				out = append(out, library.SynthesizedTextTrust(wk.ID))
-			}
-		}
+	for id := range tts {
+		out = append(out, library.SynthesizedTextTrust(id))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SuspectPercent > out[j].SuspectPercent })
 	writeJSON(w, http.StatusOK, out)
