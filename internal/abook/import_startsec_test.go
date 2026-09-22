@@ -1,0 +1,90 @@
+package abook
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/pj/abookify/internal/db"
+)
+
+// A multi-file narration keeps each file's place on the book's timeline across
+// export → import, and the imported rows come back in timeline order even when
+// the source library created them scattered. Without this a fresh install
+// lists a human narration's chapters in the exporter's id order (stranger walk,
+// 2026-09-21: "11-Lucy Westenra's Diary" first).
+func TestImport_PreservesStartSecAndTimelineOrder(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(filepath.Join(dir, "src.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workID, err := store.CreateWork("Ordered Book", "Ada Author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Insert in scattered order (11, 04, 01) like a scanned library would.
+	files := []struct {
+		name  string
+		start float64
+	}{{"book_11.mp3", 2000}, {"book_04.mp3", 600}, {"book_01.mp3", 0}}
+	for _, f := range files {
+		p := filepath.Join(dir, f.name)
+		if err := os.WriteFile(p, []byte("ID3 fake "+f.name), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertBook(db.Book{WorkID: workID, Path: p, Filename: f.name, Format: "mp3", MediaType: "audio",
+			Title: f.name, Duration: 300, Origin: "narrator_recording"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetBookStartSec(bookID(t, store, p), f.start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := store.GetWork(workID)
+	if err != nil || w == nil {
+		t.Fatalf("get work: %v", err)
+	}
+	abook := filepath.Join(dir, "ordered.abook")
+	if err := ExportV2(store, w, abook, dir, ExportOptions{IncludeAudio: true}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	dest, err := db.Open(filepath.Join(dir, "dest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib := filepath.Join(dir, "lib")
+	res, err := ImportInto(dest, abook, lib, ImportOptions{})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, err := dest.GetWork(res.WorkID)
+	if err != nil || got == nil {
+		t.Fatalf("get imported work: %v", err)
+	}
+	var audio []db.Book
+	for _, b := range got.AudioFiles {
+		audio = append(audio, b)
+	}
+	if len(audio) != 3 {
+		t.Fatalf("want 3 audio files, got %d", len(audio))
+	}
+	// Sort by id (insertion order) and expect the timeline order 01, 04, 11.
+	for i := 1; i < len(audio); i++ {
+		if audio[i].ID < audio[i-1].ID {
+			audio[i], audio[i-1] = audio[i-1], audio[i]
+			i = 0
+		}
+	}
+	wantOrder := []string{"book_01.mp3", "book_04.mp3", "book_11.mp3"}
+	wantStart := []float64{0, 600, 2000}
+	for i, b := range audio {
+		if b.Filename != wantOrder[i] {
+			t.Errorf("id order[%d] = %s, want %s", i, b.Filename, wantOrder[i])
+		}
+		if b.StartSec != wantStart[i] {
+			t.Errorf("%s start_sec = %v, want %v (dropped on import)", b.Filename, b.StartSec, wantStart[i])
+		}
+	}
+}

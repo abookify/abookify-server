@@ -271,7 +271,8 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 	rows, err := bdb.Query(`
 		SELECT id, filename, format, media_type, title, author, album,
 		       duration, start_sec, origin, visibility, edition, asset_path
-		FROM books`)
+		FROM books
+		ORDER BY media_type, start_sec, filename, id`)
 	if err != nil {
 		return nil, fmt.Errorf("read books: %w", err)
 	}
@@ -369,6 +370,18 @@ func ingestBookDB(store *db.Store, dbPath, outDir, libraryDir string, manifest *
 		newID, err := bookIDByPath(store, path)
 		if err != nil {
 			return nil, err
+		}
+		// UpsertBook does not persist start_sec (the scanner never knows it), but
+		// a bundle does: it is each file's place on the book's timeline, and the
+		// web detail orders audio rows by it. Without this a multi-file human
+		// narration imported on a fresh install lists its chapters in the
+		// exporter's id order — "11-Lucy Westenra's Diary" first (stranger walk,
+		// 2026-09-21). Rows are also inserted in timeline order above so ids
+		// follow playback even where a bundle carries no start_sec.
+		if b.startSec > 0 {
+			if err := store.SetBookStartSec(newID, b.startSec); err != nil {
+				return nil, fmt.Errorf("set start_sec on book %d: %w", newID, err)
+			}
 		}
 		bookRemap[b.oldID] = newID
 		addedBooks = append(addedBooks, newID)
