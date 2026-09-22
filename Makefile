@@ -103,8 +103,16 @@ up:
 # are never referenced, so this can't reconcile whisper onto CPU — safe to run
 # while transcription is mid-run on the GPU. Keeps the CUDA overlay in COMPOSE
 # regardless. Use this (not `make up`) for a server-only deploy.
+# NO --build: the container runs `go run` off the bind-mounted source, so a
+# code deploy only needs a RECREATE (the go run recompiles at start). Every
+# `--build` deploy was caching another ~GB image layer — 40 GB of BuildKit
+# cache filled /home on 2026-09-22. Rebuild the image only when the Dockerfile,
+# go.mod, or the apt layer changes: `make server-build`.
 server:
-	$(COMPOSE) up -d --build --no-deps server
+	$(COMPOSE) up -d --no-deps --force-recreate server
+
+server-build:
+	$(COMPOSE) build server && $(COMPOSE) up -d --no-deps --force-recreate server
 
 # Recreate ONLY the whisper container WITH the CUDA overlay — the correct way to
 # restore GPU after a bare `docker compose up` stripped it (that footgun keeps

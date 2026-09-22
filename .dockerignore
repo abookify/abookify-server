@@ -31,3 +31,15 @@ node_modules/
 # VCS / local
 .git/
 .gitignore
+
+# Disk-full of 2026-09-22 (the second): the context still carried ~430 MB the
+# image never needs — e2e fixture bundles, the desktop dist, stray CLI
+# binaries — and every `--build` deploy cached another copy. Keep the context
+# to source only.
+testing/e2e/fixtures/
+**/*.abook
+dist/
+reimport-realign
+stt-cli
+tts-cli
+*-cli
