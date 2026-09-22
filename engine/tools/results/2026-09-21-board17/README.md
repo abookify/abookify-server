@@ -15,3 +15,14 @@ chunks it (`stave-one-chunks.json` from `TestDumpTTSChunks`).
 
 Reproduce: `engine/tools/tts_sameness.py --chunks stave-one-chunks.json --ref … --cand … --out …`
 (assembled WAVs are written to --out; not archived here).
+
+## Live switch (2026-09-22)
+
+| what | value |
+|---|---|
+| Carol Stave One regenerated on tank's live server via the GPU engine (edition path, 178 parts) | TTS 53 s for 34 min of audio; job 422 s incl. Whisper alignment |
+| live file vs August CPU render | 2037.576 s vs 2048.688 s (−0.54 %) |
+| one chunk, WAV samples (speech) | CPU 110,795 · GPU 110,797 |
+| one chunk, MP3 decoded samples | CPU 112,320 · GPU 110,796 — kokoro-fastapi's MP3 writer has no gapless info, so ~63 ms of encoder padding per chunk surfaces as silence; ×178 seams = the 11 s |
+
+`pad-*.wav/mp3` are the one-sentence probes ("Marley was dead: to begin with. There is no doubt whatever about that.", bm_fable).
