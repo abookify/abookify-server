@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/pj/abookify/internal/diskfree"
 	"io"
 	"net"
 	"net/http"
@@ -89,6 +90,14 @@ func fetchAllowlistedAbook(rawURL string) (path string, status int, err error) {
 		return "", http.StatusBadGateway, fmt.Errorf("sample download failed (HTTP %d)", resp.StatusCode)
 	}
 
+	// Disk pre-flight before the first byte lands: the download goes to the
+	// temp dir, then extracts into the library — the sample's size is known
+	// from the response, so refuse now rather than mid-file.
+	if resp.ContentLength > 0 {
+		if v := diskfree.Check(os.TempDir(), resp.ContentLength, "add this sample"); v.Refuse {
+			return "", http.StatusInsufficientStorage, fmt.Errorf("%s", v.Message)
+		}
+	}
 	tmp, err := os.CreateTemp("", "abook-url-*.abook")
 	if err != nil {
 		return "", http.StatusInternalServerError, fmt.Errorf("temp file: %v", err)

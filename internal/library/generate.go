@@ -437,6 +437,18 @@ func (g *Generator) runTTS(job *JobStatus, bookID int64, voice, edition string) 
 		g.updateJob(job)
 		return
 	}
+	// Room check at START, not only at enqueue: a queued job can run hours
+	// later, after other jobs have used the disk. Failing here, in a sentence
+	// a person can act on, beats writing until the disk runs out and leaving
+	// a chapter that plays for eight minutes and then goes silent.
+	if words, err := g.store.BookWordCount(bookID); err == nil {
+		if v := NarrationSpace(g.generatedDir, words); v.Refuse {
+			job.Status = "failed"
+			job.Error = v.Message
+			g.updateJob(job)
+			return
+		}
+	}
 
 	chapters, err := g.store.ListChapters(bookID)
 	if err != nil {

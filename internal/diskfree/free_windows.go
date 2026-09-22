@@ -1,18 +1,15 @@
 //go:build windows
 
-package server
+package diskfree
 
 import (
 	"syscall"
 	"unsafe"
 )
 
-// fsFreeBytes returns the bytes available to the caller on the volume
-// containing path, or 0 if it can't be determined. Windows variant via
-// kernel32!GetDiskFreeSpaceExW (stdlib only — no x/sys dependency), so the
-// desktop bundle cross-compiles for windows/amd64. Mirrors the Unix statfs
-// path in diskfree_unix.go.
-func fsFreeBytes(path string) int64 {
+// Free returns the bytes available to the caller on the volume containing
+// path via kernel32!GetDiskFreeSpaceExW (stdlib only — no x/sys dependency).
+func Free(path string) int64 {
 	p, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return 0

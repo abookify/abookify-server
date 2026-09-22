@@ -357,6 +357,7 @@
     .detail-info h1 { font-family: var(--serif); font-weight: 600; font-size: 1.9rem; letter-spacing: -0.01em; line-height: 1.1; color: var(--text); }
     .detail-by { margin-top: 6px; color: var(--muted); font-size: 0.9rem; }
     .detail-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+    .disk-low-line { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: #FFF4DB; color: #7A4B00; border: 1px solid #F0D28A; font-size: 0.9rem; }
     .detail-progline { margin-top: 14px; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
     .detail-cta { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
     .detail-btn {
@@ -2435,6 +2436,17 @@
     async function hydrateFirstRunSetup() {
       try {
         const r = await fetch('/api/setup');
+        // Low-space line (server-owned words): shown wherever the library is,
+        // not only on first run, so a person hears about it before a job refuses.
+        try {
+          const peek = await r.clone().json();
+          const d = peek && peek.disk;
+          let line = document.getElementById('disk-low-line');
+          if (d && (d.low || d.refuse) && d.message) {
+            if (!line) { line = document.createElement('div'); line.id = 'disk-low-line'; line.className = 'disk-low-line'; document.getElementById('library-head').prepend(line); }
+            line.textContent = '⚠ ' + d.message;
+          } else if (line) line.remove();
+        } catch {}
         if (!r.ok) return;
         const s = await r.json();
         const nudge = document.getElementById('fr-nudge');

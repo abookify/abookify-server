@@ -29,6 +29,7 @@ import (
 	"github.com/pj/abookify/internal/abook"
 	"github.com/pj/abookify/internal/applog"
 	"github.com/pj/abookify/internal/db"
+	"github.com/pj/abookify/internal/diskfree"
 	"github.com/pj/abookify/internal/library"
 	"github.com/pj/abookify/internal/llm"
 )
@@ -1548,6 +1549,13 @@ func (s *Server) handleGenerateAudio(w http.ResponseWriter, r *http.Request) {
 	if edition == "" {
 		edition = "Kokoro · " + voiceLabel(req.Voice)
 	}
+	// Disk pre-flight in the person's words (507 = Insufficient Storage).
+	if words, err := s.store.BookWordCount(textBookID); err == nil {
+		if v := library.NarrationSpace(s.GeneratedDir, words); v.Refuse {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": v.Message, "need_bytes": v.Need, "free_bytes": v.Free})
+			return
+		}
+	}
 	jobID, started := s.Generator.GenerateAudioFromText(workID, textBookID, req.Voice, edition)
 	if !started {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "job already running", "job_id": jobID})
@@ -2694,6 +2702,16 @@ func (s *Server) handleExportAbook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Disk pre-flight: the export is written to the temp dir first, and costs
+	// about the audio it bundles.
+	var exportNeed int64
+	for _, b := range work.AudioFiles {
+		exportNeed += b.SizeBytes
+	}
+	if v := diskfree.Check(os.TempDir(), exportNeed+(50<<20), "export this book"); v.Refuse {
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": v.Message, "need_bytes": v.Need, "free_bytes": v.Free})
+		return
+	}
 	// Create temp file for the export
 	tmpFile, err := os.CreateTemp("", "abook-export-*.abook")
 	if err != nil {
@@ -2962,6 +2980,10 @@ func (s *Server) handleImportAbook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
+		if v := diskfree.Check(s.LibraryDir, header.Size, "add this book"); v.Refuse {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": v.Message, "need_bytes": v.Need, "free_bytes": v.Free})
+			return
+		}
 
 		if !strings.HasSuffix(strings.ToLower(header.Filename), ".abook") {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file must have .abook extension"})

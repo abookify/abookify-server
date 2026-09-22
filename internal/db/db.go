@@ -1877,6 +1877,14 @@ func (s *Store) HasChaptersMissingHTML(bookID int64) bool {
 	return count > 0
 }
 
+// BookWordCount sums the chapters' word counts — the input to a narration's
+// disk-cost estimate before the job is allowed to start.
+func (s *Store) BookWordCount(bookID int64) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(word_count), 0) FROM chapters WHERE book_id = ?`, bookID).Scan(&n)
+	return n, err
+}
+
 func (s *Store) ChapterCount(bookID int64) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM chapters WHERE book_id = ?`, bookID).Scan(&count)

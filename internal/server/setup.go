@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/pj/abookify/internal/diskfree"
 	"net/http"
 	"os"
 	"time"
@@ -96,6 +97,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			"provider":   llmProvider,
 		},
 		// The welcome screen shows when neither speech engine is usable.
+		"disk":        diskfree.Check(s.LibraryDir, 0, ""),
 		"needs_setup": !(tts.Ready || stt.Ready),
 	}
 	// data_dir/models_dir are local filesystem paths (they can reveal the home
