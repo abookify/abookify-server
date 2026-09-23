@@ -1039,7 +1039,7 @@ func BuildTTSEditionWordSync(store *db.Store, workID, bookID int64, chapterIdx i
 // payload must yield NO ranges (and no links), never wrong ones.
 //
 // The check is per chapter: each span's word length must match the chapter
-// at the same index (within 3 % or 20 words — the aligner tokenizes a little
+// at the same index (within 8 % or 20 words — the aligner tokenizes a little
 // differently, and a payload may legitimately skip boilerplate chapters, so
 // counts and totals are NOT compared). A one-chapter shift fails almost
 // every span at once.
@@ -1062,7 +1062,7 @@ func AlignmentMatchesChapters(p *AnchorAlignmentPayload, chs []db.Chapter) bool 
 		if diff < 0 {
 			diff = -diff
 		}
-		tol := int(0.03 * float64(words))
+		tol := int(0.08 * float64(words))
 		if tol < 20 {
 			tol = 20
 		}

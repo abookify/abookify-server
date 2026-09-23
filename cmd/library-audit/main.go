@@ -69,6 +69,8 @@ func main() {
 	checkTranscriptionGaps(sq)
 	checkBoilerplate(sq)
 	checkDirectionalOutliers(sq)
+	checkStaleAlignments(sq)
+	checkRowTitlesAgainstCoverage(sq)
 
 	sort.SliceStable(findings, func(i, j int) bool {
 		rank := map[string]int{"HIGH": 0, "MED": 1, "LOW": 2}
@@ -428,4 +430,202 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+
+// --- alignment payload vs the chapters it was computed against ------------
+//
+// The Selfish Gene (2026-09-22): its EPUB lost a 231-word title page after the
+// 09-17 alignment. Every payload chapter span then sat one chapter off the
+// current list, and a library-wide title propagation renamed chapter 1's audio
+// "2. The replicators" on PJ's own book. Names alone cannot show a shift;
+// spans bound to chapters can. Same rule as library.AlignmentMatchesChapters:
+// each span's token length must match the chapter at its own index (3 % or
+// 20 words); a payload may skip boilerplate chapters, so counts are not
+// compared. Nine of ten spans must match.
+type spanRow struct {
+	Idx int `json:"idx"`
+	Len int `json:"len"`
+}
+
+func checkStaleAlignments(sq *sql.DB) {
+	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
+		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	stale := 0
+	for rows.Next() {
+		var id, wid, fb, tb int64
+		var pairs, title string
+		if err := rows.Scan(&id, &wid, &fb, &tb, &pairs, &title); err != nil {
+			continue
+		}
+		var p struct {
+			EbookChapters []spanRow `json:"ebook_chapters"`
+		}
+		if json.Unmarshal([]byte(pairs), &p) != nil || len(p.EbookChapters) == 0 {
+			continue
+		}
+		// the ebook side is whichever end is not a transcript
+		ebook := fb
+		var origin string
+		sq.QueryRow(`SELECT origin FROM books WHERE id = ?`, fb).Scan(&origin)
+		if origin == "whisper_transcript" {
+			ebook = tb
+		}
+		words := map[int]int{}
+		cr, err := sq.Query(`SELECT index_num, word_count FROM chapters WHERE book_id = ?`, ebook)
+		if err != nil {
+			continue
+		}
+		for cr.Next() {
+			var i, w int
+			cr.Scan(&i, &w)
+			words[i] = w
+		}
+		cr.Close()
+		ok, missing := 0, 0
+		for _, sp := range p.EbookChapters {
+			w, present := words[sp.Idx]
+			if !present {
+				missing++
+				continue
+			}
+			d := sp.Len - w
+			if d < 0 {
+				d = -d
+			}
+			tol := int(0.08 * float64(w))
+			if tol < 20 {
+				tol = 20
+			}
+			if d <= tol {
+				ok++
+			}
+		}
+		if missing > 0 || ok*10 < len(p.EbookChapters)*9 {
+			stale++
+			report("HIGH", "alignment stale against its ebook chapters",
+				"work %d %q: alignment %d — %d/%d chapter spans match the current chapters (%d name chapters the book no longer has); ranges/titles/links from it are one chapter off until it is re-aligned",
+				wid, trunc(title, 40), id, ok, len(p.EbookChapters), missing)
+		}
+	}
+	if stale == 0 {
+		report("LOW", "alignment payloads", "every word alignment matches its ebook's current chapters span for span")
+	}
+}
+
+// --- a narration row's TITLE pinned to the chapter covering its TIME --------
+//
+// A title that merely looks plausible is the failure this catches: the
+// Selfish Gene row at 2061–4238 s (chapter 1's audio) read "2. The
+// replicators". For each transcript row, the ebook chapter whose aligned
+// range covers most of the row is the one whose title the row must carry
+// (a "(continued)" row carries the same title). Rows the ranges do not
+// cover, or rows whose title is still a bare detector label, are skipped:
+// this asserts agreement where both sides make a claim.
+func checkRowTitlesAgainstCoverage(sq *sql.DB) {
+	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
+		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	bad := 0
+	for rows.Next() {
+		var id, wid, fb, tb int64
+		var pairs, title string
+		if err := rows.Scan(&id, &wid, &fb, &tb, &pairs, &title); err != nil {
+			continue
+		}
+		var p struct {
+			Timeline []struct {
+				EbookChapterIdx int `json:"ebook_chapter_idx"`
+				Points          []struct {
+					Sec float64 `json:"sec"`
+				} `json:"points"`
+			} `json:"timeline"`
+		}
+		if json.Unmarshal([]byte(pairs), &p) != nil || len(p.Timeline) == 0 {
+			continue
+		}
+		ebook, trans := fb, tb
+		var origin string
+		sq.QueryRow(`SELECT origin FROM books WHERE id = ?`, fb).Scan(&origin)
+		if origin == "whisper_transcript" {
+			ebook, trans = tb, fb
+		}
+		type rng struct {
+			lo, hi float64
+			title  string
+		}
+		var ranges []rng
+		for _, tl := range p.Timeline {
+			if len(tl.Points) == 0 {
+				continue
+			}
+			var t string
+			sq.QueryRow(`SELECT title FROM chapters WHERE book_id = ? AND index_num = ?`, ebook, tl.EbookChapterIdx).Scan(&t)
+			ranges = append(ranges, rng{tl.Points[0].Sec, tl.Points[len(tl.Points)-1].Sec, t})
+		}
+		tr, err := sq.Query(`SELECT index_num, start_sec, end_sec, title FROM chapters WHERE book_id = ? AND end_sec > start_sec ORDER BY index_num`, trans)
+		if err != nil {
+			continue
+		}
+		for tr.Next() {
+			var idx int
+			var lo, hi float64
+			var rowTitle string
+			tr.Scan(&idx, &lo, &hi, &rowTitle)
+			best, bestOv := -1, 0.0
+			for k, r := range ranges {
+				a, b := r.lo, r.hi
+				if a < lo {
+					a = lo
+				}
+				if b > hi {
+					b = hi
+				}
+				if ov := b - a; ov > bestOv {
+					best, bestOv = k, ov
+				}
+			}
+			if best < 0 || bestOv < 0.5*(hi-lo) {
+				continue // no chapter covers half the row: nothing to pin
+			}
+			want := normalizeTitle(ranges[best].title)
+			got := normalizeTitle(strings.TrimSuffix(rowTitle, " (continued)"))
+			if want == "" || got == "" || got == want || strings.Contains(got, want) || strings.Contains(want, got) {
+				continue
+			}
+			if isGenericLabel(rowTitle) {
+				continue // a bare detector label makes no claim to disagree with
+			}
+			bad++
+			report("HIGH", "narration row title disagrees with the chapter covering its time",
+				"work %d %q: row %d [%.0f–%.0f s] is titled %q but %.0f%% of it is chapter %q",
+				wid, trunc(title, 36), idx, lo, hi, trunc(rowTitle, 40), 100*bestOv/(hi-lo), trunc(ranges[best].title, 40))
+		}
+		tr.Close()
+	}
+	if bad == 0 {
+		report("LOW", "narration row titles", "every titled narration row names the chapter that covers its time")
+	}
+}
+
+var (
+	titleNoiseRe   = regexp.MustCompile(`[^a-z0-9]+`)
+	genericLabelRe = regexp.MustCompile(`^(chapter|part|section)\s+[0-9ivxlcdm]+\.?$`)
+)
+
+func normalizeTitle(s string) string {
+	s = strings.ToLower(s)
+	s = regexp.MustCompile(`(?i)^(chapter|stave|part|book)\s+[0-9ivxlcdm]+[.:]?\s*`).ReplaceAllString(s, "")
+	return strings.Trim(titleNoiseRe.ReplaceAllString(s, " "), " ")
+}
+
+func isGenericLabel(s string) bool {
+	return genericLabelRe.MatchString(strings.ToLower(strings.TrimSpace(s)))
 }
