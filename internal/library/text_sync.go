@@ -1033,23 +1033,44 @@ func BuildTTSEditionWordSync(store *db.Store, workID, bookID int64, chapterIdx i
 // AlignmentMatchesChapters reports whether an alignment payload was computed
 // against the book's CURRENT chapter list. The Selfish Gene (2026-09-22):
 // the EPUB lost a 231-word title page after its 09-17 alignment; the
-// payload's 16 chapter spans were then read against 15 chapters, every
-// aligned range shifted one chapter, and a library-wide title propagation
+// payload's chapter spans were then read against the shifted list, every
+// aligned range sat one chapter off, and a library-wide title propagation
 // renamed chapter 1's audio "2. The replicators" on PJ's own book. A stale
 // payload must yield NO ranges (and no links), never wrong ones.
+//
+// The check is per chapter: each span's word length must match the chapter
+// at the same index (within 3 % or 20 words — the aligner tokenizes a little
+// differently, and a payload may legitimately skip boilerplate chapters, so
+// counts and totals are NOT compared). A one-chapter shift fails almost
+// every span at once.
 func AlignmentMatchesChapters(p *AnchorAlignmentPayload, chs []db.Chapter) bool {
-	if len(p.EbookChapters) != len(chs) {
-		return false
+	if len(p.EbookChapters) == 0 {
+		return true // nothing to compare against
 	}
-	words := chapterWordSum(chs)
-	if p.EbookWords == 0 || words == 0 {
-		return true // older payloads carried no total; nothing to compare
+	byIdx := map[int]int{}
+	for _, c := range chs {
+		byIdx[c.Index] = c.WordCount
 	}
-	diff := p.EbookWords - words
-	if diff < 0 {
-		diff = -diff
+	checked, ok := 0, 0
+	for _, sp := range p.EbookChapters {
+		words, present := byIdx[sp.Index]
+		if !present {
+			return false // the payload names a chapter the book no longer has
+		}
+		checked++
+		diff := sp.Len - words
+		if diff < 0 {
+			diff = -diff
+		}
+		tol := int(0.03 * float64(words))
+		if tol < 20 {
+			tol = 20
+		}
+		if diff <= tol {
+			ok++
+		}
 	}
-	return float64(diff) <= 0.005*float64(words)
+	return checked == 0 || ok*10 >= checked*9
 }
 
 func chapterWordSum(chs []db.Chapter) int {
