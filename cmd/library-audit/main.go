@@ -71,6 +71,8 @@ func main() {
 	checkDirectionalOutliers(sq)
 	checkStaleAlignments(sq)
 	checkRowTitlesAgainstCoverage(sq)
+	checkLateFirstRow(sq)
+	checkNarrationTextTitles(sq)
 
 	sort.SliceStable(findings, func(i, j int) bool {
 		rank := map[string]int{"HIGH": 0, "MED": 1, "LOW": 2}
@@ -432,7 +434,6 @@ func trunc(s string, n int) string {
 	return s[:n] + "…"
 }
 
-
 // --- alignment payload vs the chapters it was computed against ------------
 //
 // The Selfish Gene (2026-09-22): its EPUB lost a 231-word title page after the
@@ -628,4 +629,26 @@ func normalizeTitle(s string) string {
 
 func isGenericLabel(s string) bool {
 	return genericLabelRe.MatchString(strings.ToLower(strings.TrimSpace(s)))
+}
+
+// chapterRangeStarts: the first aligned second of each ebook chapter in a
+// payload's baked timeline (what the reader's chapter follow renders from).
+func chapterRangeStarts(pairs string) []float64 {
+	var p struct {
+		Timeline []struct {
+			Points []struct {
+				Sec float64 `json:"sec"`
+			} `json:"points"`
+		} `json:"timeline"`
+	}
+	if json.Unmarshal([]byte(pairs), &p) != nil {
+		return nil
+	}
+	var out []float64
+	for _, tl := range p.Timeline {
+		if len(tl.Points) > 0 {
+			out = append(out, tl.Points[0].Sec)
+		}
+	}
+	return out
 }
