@@ -534,7 +534,7 @@ func checkRowTitlesAgainstCoverage(sq *sql.DB) {
 		return
 	}
 	defer rows.Close()
-	bad := 0
+	bad, timelines := 0, 0
 	for rows.Next() {
 		var id, wid, fb, tb int64
 		var pairs, title string
@@ -543,15 +543,16 @@ func checkRowTitlesAgainstCoverage(sq *sql.DB) {
 		}
 		var p struct {
 			Timeline []struct {
-				EbookChapterIdx int `json:"ebook_chapter_idx"`
+				EbookChapterIdx int `json:"ci"`
 				Points          []struct {
-					Sec float64 `json:"sec"`
+					Sec float64 `json:"s"`
 				} `json:"points"`
 			} `json:"timeline"`
 		}
 		if json.Unmarshal([]byte(pairs), &p) != nil || len(p.Timeline) == 0 {
 			continue
 		}
+		timelines++
 		ebook, trans := fb, tb
 		var origin string
 		sq.QueryRow(`SELECT origin FROM books WHERE id = ?`, fb).Scan(&origin)
@@ -611,8 +612,10 @@ func checkRowTitlesAgainstCoverage(sq *sql.DB) {
 		}
 		tr.Close()
 	}
-	if bad == 0 {
-		report("LOW", "narration row titles", "every titled narration row names the chapter that covers its time")
+	if timelines == 0 {
+		report("HIGH", "narration row titles", "no alignment payload yielded a chapter timeline — the check could not run (payload shape changed?)")
+	} else if bad == 0 {
+		report("LOW", "narration row titles", "every titled narration row names the chapter that covers its time (%d alignment timelines read)", timelines)
 	}
 }
 
@@ -637,7 +640,7 @@ func chapterRangeStarts(pairs string) []float64 {
 	var p struct {
 		Timeline []struct {
 			Points []struct {
-				Sec float64 `json:"sec"`
+				Sec float64 `json:"s"`
 			} `json:"points"`
 		} `json:"timeline"`
 	}
