@@ -1078,6 +1078,45 @@ async function connect() {
         report('toc_named', ok, `sheet "Chapters (${shown})" vs API ${timed.length} timed; visible rows: ${rows.slice(0, 4).map((t) => `"${t}"`).join(', ')}${rows.length > 4 ? ', …' : ''}${lumps.length ? ` — ${lumps.length} file-lump row(s)` : ''}`);
         if (!ok) shot('toc_named');
       }
+      // ---- toc_pinned (board #37 — the lesson): a title pinned to an INDEPENDENTLY
+      // KNOWN time. Every other landing assertion here reads its expected title AND
+      // start from the same API row, so it PASSES when a title sweep shifts every
+      // name by one (2026-09-22: "2. The replicators" sat on chapter 1's audio and
+      // chapter_seek stayed green). E2E_PINS="<bookSec>=<title prefix>;…" are starts
+      // recorded from a human-verified state (PJ's walk / the narrator's
+      // announcement), NOT fetched — the sheet's own "starts at h:mm:ss" label for
+      // the row within ±20 s of each pin must carry the pinned title. Reads the
+      // phone's sheet only; never the API. SKIPPED when no pins are given.
+      if (process.env.E2E_PINS) {
+        const rowsOnSheet = () => nodes(dump()).filter((n) => /starts at/i.test(n.desc)).map((n) => {
+          const d = n.desc.replace(/^Now playing: /, '');
+          const m = d.match(/^(.*), starts at (\d+):(\d\d)(?::(\d\d))?$/);
+          if (!m) return null;
+          const secs = m[4] != null ? (+m[1 + 1] * 3600 + +m[3] * 60 + +m[4]) : (+m[2] * 60 + +m[3]);
+          return { title: m[1].trim(), start: secs };
+        }).filter(Boolean);
+        const pins = process.env.E2E_PINS.split(';').map((x) => x.trim()).filter(Boolean).map((x) => { const i = x.indexOf('='); return { at: +x.slice(0, i), title: x.slice(i + 1).trim() }; });
+        const seen = new Map();
+        // Collect rows across a few slow drags so long lists are fully read.
+        for (let i = 0; i < 6; i++) {
+          for (const r of rowsOnSheet()) seen.set(`${r.start}|${r.title}`, r);
+          adb('shell input swipe 540 1700 540 700 900'); await sleep(900);
+        }
+        const rows = [...seen.values()];
+        const results = pins.map((p) => {
+          const near = rows.filter((r) => Math.abs(r.start - p.at) <= 20).sort((a, b) => Math.abs(a.start - p.at) - Math.abs(b.start - p.at));
+          const got = near[0];
+          const ok = !!got && got.title.toLowerCase().startsWith(p.title.toLowerCase());
+          return { ok, line: `${p.at}s → want "${p.title}…" got ${got ? `"${got.title}" @${got.start}s` : 'NO ROW within ±20s'}` };
+        });
+        const ok = results.length > 0 && results.every((r) => r.ok);
+        report('toc_pinned', ok, `${results.filter((r) => r.ok).length}/${results.length} pins hold on the sheet (${rows.length} rows read): ${results.map((r) => r.line).join(' · ')}`);
+        if (!ok) shot('toc_pinned');
+        // Scroll back to the top so the row tap below starts from a known place.
+        for (let i = 0; i < 6; i++) { adb('shell input swipe 540 700 540 1700 600'); await sleep(500); }
+      } else {
+        skip('toc_pinned', 'no E2E_PINS given');
+      }
       if (!(await tapTocRow(title))) throw new Error(`TOC row "${title}" not found in the sheet after scrolling`);
       const r1 = await landAfterJump(SETTLE);
       const L1 = landed(r1, target);
