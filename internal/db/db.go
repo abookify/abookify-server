@@ -3244,3 +3244,8 @@ func (s *Store) DeleteSyncDataForBook(bookID int64) error {
 	_, err := s.db.Exec(`DELETE FROM sync_data WHERE audio_book_id = ?`, bookID)
 	return err
 }
+
+// NewStoreFromDB wraps an already-open handle (a read-only "file:…?mode=ro"
+// URI, for reporters and harnesses that must never write). Open() runs the
+// migrations and cannot be read-only; this runs nothing.
+func NewStoreFromDB(sqlDB *sql.DB) *Store { return &Store{db: sqlDB} }

@@ -183,3 +183,27 @@ func TestDominantChapter_PrefersCoverageOverFirstSecond(t *testing.T) {
 		t.Errorf("pre-chapter window should link to the first chapter, got %d", got)
 	}
 }
+
+// A payload computed against a chapter list that has since changed (one
+// fewer chapter, fewer words) must not drive titles or links.
+func TestAlignmentMatchesChapters_StaleIsRefused(t *testing.T) {
+	p := &AnchorAlignmentPayload{EbookWords: 118766}
+	for i := 0; i < 16; i++ {
+		p.EbookChapters = append(p.EbookChapters, ChapterSpan{})
+	}
+	var chs []db.Chapter
+	for i := 0; i < 15; i++ {
+		chs = append(chs, db.Chapter{Index: i, WordCount: 7835})
+	}
+	if AlignmentMatchesChapters(p, chs) {
+		t.Fatal("16-chapter payload vs 15 chapters must be stale")
+	}
+	p.EbookChapters = p.EbookChapters[:15]
+	if AlignmentMatchesChapters(p, chs) {
+		t.Fatal("118,766 payload words vs 117,525 chapter words (1 %) must be stale")
+	}
+	p.EbookWords = 117525
+	if !AlignmentMatchesChapters(p, chs) {
+		t.Fatal("matching count and words must pass")
+	}
+}

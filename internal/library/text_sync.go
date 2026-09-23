@@ -3,6 +3,7 @@ package library
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 
 	"github.com/pj/abookify/internal/db"
@@ -571,6 +572,12 @@ func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64,
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
 		return nil, nil
 	}
+	if chs, err := store.ListChapters(bookID); err == nil && !AlignmentMatchesChapters(&p, chs) {
+		log.Printf("align: alignment %d for book %d is STALE (payload %d chapters / %d words vs book %d / %d) — chapter ranges withheld; re-align",
+			best.ID, bookID, len(p.EbookChapters), p.EbookWords, len(chs), chapterWordSum(chs))
+		return nil, nil
+	}
+
 	ranges := map[int][2]float64{}
 	// Prefer the already-baked per-chapter timeline (what /word-sync renders from).
 	for _, tl := range p.Timeline {
@@ -1021,4 +1028,34 @@ func BuildTTSEditionWordSync(store *db.Store, workID, bookID int64, chapterIdx i
 		out[i] = SyncWord{W: w.W, S: w.S + offset, E: w.E + offset}
 	}
 	return out, nil
+}
+
+// AlignmentMatchesChapters reports whether an alignment payload was computed
+// against the book's CURRENT chapter list. The Selfish Gene (2026-09-22):
+// the EPUB lost a 231-word title page after its 09-17 alignment; the
+// payload's 16 chapter spans were then read against 15 chapters, every
+// aligned range shifted one chapter, and a library-wide title propagation
+// renamed chapter 1's audio "2. The replicators" on PJ's own book. A stale
+// payload must yield NO ranges (and no links), never wrong ones.
+func AlignmentMatchesChapters(p *AnchorAlignmentPayload, chs []db.Chapter) bool {
+	if len(p.EbookChapters) != len(chs) {
+		return false
+	}
+	words := chapterWordSum(chs)
+	if p.EbookWords == 0 || words == 0 {
+		return true // older payloads carried no total; nothing to compare
+	}
+	diff := p.EbookWords - words
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff) <= 0.005*float64(words)
+}
+
+func chapterWordSum(chs []db.Chapter) int {
+	n := 0
+	for _, c := range chs {
+		n += c.WordCount
+	}
+	return n
 }

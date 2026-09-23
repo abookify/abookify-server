@@ -212,6 +212,10 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil || len(p.EbookChapters) == 0 {
 		return nil, false
 	}
+	if chs, err := store.ListChapters(ebookID); err == nil && !AlignmentMatchesChapters(&p, chs) {
+		log.Printf("linker: alignment %d for %q is stale against its ebook chapters — falling back to title/number linking", best.ID, work.Title)
+		return nil, false
+	}
 
 	// Earliest audio second for each ebook chapter, from aligned segments; track
 	// the alignment's furthest audio second (maxSs) — the aligned narration's
