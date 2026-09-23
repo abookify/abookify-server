@@ -247,17 +247,26 @@ func TestFoldFrontMatterLeavesRealSectionsAlone(t *testing.T) {
 
 func TestExtractChapterHeadingPrefersChapterLine(t *testing.T) {
 	h := `<div class="chapter"><h2>D R A C U L A</h2><hr/></div><div class="chapter"><h2><a id="chap01"/>CHAPTER I<br/><br/><small>JONATHAN HARKER’S JOURNAL</small></h2><p>3 May.</p>`
-	if got := extractChapterHeading(h); !strings.HasPrefix(got, "CHAPTER I") {
+	if got := extractChapterHeading(h, "Dracula", "Bram Stoker"); !strings.HasPrefix(got, "CHAPTER I") {
 		t.Errorf("want the CHAPTER I heading, got %q", got)
 	}
-	if got := extractChapterHeading(`<h1>A Preface Note</h1><p>x</p>`); got != "A Preface Note" {
+	if got := extractChapterHeading(`<h1>A Preface Note</h1><p>x</p>`, "Some Book", ""); got != "A Preface Note" {
 		t.Errorf("fallback to first heading broken: %q", got)
 	}
 	// Sherlock: the numbered heading carries its title on a second line, and
 	// a bare <h3>I.</h3> follows it — the first heading wins, title intact.
-	got := extractChapterHeading(`<h2>I.<br/>A SCANDAL IN BOHEMIA</h2><h3>I.</h3><p>To Sherlock Holmes she is always the woman.</p>`)
+	got := extractChapterHeading(`<h2>I.<br/>A SCANDAL IN BOHEMIA</h2><h3>I.</h3><p>To Sherlock Holmes she is always the woman.</p>`, "The Adventures of Sherlock Holmes", "Arthur Conan Doyle")
 	if got != "I.\nA SCANDAL IN BOHEMIA" {
 		t.Errorf("Sherlock chapter I heading: %q, want the two lines joined by one newline", got)
+	}
+	// The first heading wins when it is not a running head — even if a later
+	// sub-heading starts with "Chapter" (Hero with a Thousand Faces).
+	if got := extractChapterHeading(`<h1>ACKNOWLEDGMENTS</h1><p>My thanks…</p><h2>Chapter Notes</h2><p>1. …</p>`, "The Hero with a Thousand Faces", "Joseph Campbell"); got != "ACKNOWLEDGMENTS" {
+		t.Errorf("first non-running-head heading must win: %q", got)
+	}
+	// An author running head is skipped like a title one.
+	if got := extractChapterHeading(`<h1>Joseph Campbell</h1><h2>Prologue</h2><p>x</p>`, "The Hero with a Thousand Faces", "Joseph Campbell"); got != "Prologue" {
+		t.Errorf("author running head not skipped: %q", got)
 	}
 	// A huge "preface" is merged chapters, not a preface: left alone.
 	lump := "PRIDE and PREJUDICE\n\nPREFACE.\n\n" + strings.Repeat("Walt Whitman somewhere has a fine and just distinction between loving by allowance and loving with personal love. ", 200)
@@ -336,5 +345,33 @@ func TestFoldFrontMatterContentsListIsNotAPreface(t *testing.T) {
 	}
 	if !looksLikeContentsList(contents) || looksLikeContentsList(intro) {
 		t.Errorf("contents-list detector wrong")
+	}
+}
+
+// A chapter that had no heading of its own is titled by position; after the
+// fold drops the front matter ahead of it, its number follows it. Publisher
+// front matter runs longer than Gutenberg's: a ~300-word copyright page and
+// a ~160-word dedication are front matter too.
+func TestFoldFrontMatterRenumbersFallbackTitles(t *testing.T) {
+	body := strings.Repeat("It was a bright cold day in April, and the clocks were striking thirteen. ", 40)
+	copyright := "George Orwell\n\n1984\n\n" + strings.Repeat("Copyright 1949 by Harcourt. All rights reserved. No part of this publication may be reproduced. ISBN 978-0. ", 18)
+	dedication := strings.Repeat("Also by George Orwell: Animal Farm, Homage to Catalonia, Down and Out in Paris and London. ", 10)
+	in := []db.Chapter{
+		{Index: 0, Title: "George Orwell", Content: copyright},
+		{Index: 1, Title: "Contents", Content: "Contents\n\nPart I\n\nChapter 1\n\nChapter 2\n\nChapter 3\n\nChapter 4"},
+		{Index: 2, Title: "Chapter 3", Content: dedication},
+		{Index: 3, Title: "Chapter 4", Content: strings.Repeat(body, 2)}, // chapter-length, heading-less: a real chapter
+		{Index: 4, Title: "Chapter 5 A Real Heading", Content: body},
+	}
+	for i := range in {
+		in[i].WordCount = len(strings.Fields(in[i].Content))
+	}
+	got := foldFrontMatter(in, "1984")
+	want := []string{"Chapter 1", "Chapter 5 A Real Heading"}
+	if titles := titlesOf(got); strings.Join(titles, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v, want %v", titles, want)
+	}
+	if !strings.HasPrefix(got[0].Content, "Also by George Orwell") {
+		t.Errorf("the dedication should fold forward into chapter 1: %q", got[0].Content[:40])
 	}
 }

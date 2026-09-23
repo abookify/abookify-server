@@ -152,7 +152,7 @@ func ExtractEPUBChapters(epubPath string, bookID int64) ([]db.Chapter, error) {
 	// Split on chapter headings. nil => no chapter headings detected, so fall
 	// back to the original one-chapter-per-spine-file extraction (correct for
 	// EPUBs that put one chapter per file or use non-standard chapter titles).
-	segments := splitHTMLByHeadings(bookHTML)
+	segments := splitHTMLByHeadings(bookHTML, epubTitle(pkg), epubAuthor(pkg))
 	if segments == nil {
 		perFile, err := extractPerSpineFile(&r.Reader, pkg, manifest, opfDir, tocTitles, bookID)
 		if err != nil {
@@ -390,7 +390,7 @@ func cleanExtractedChapters(chapters []db.Chapter, bookTitle string) []db.Chapte
 // Separately, a chapter whose FIRST LINE is the book's own name (the PG
 // pattern <h2>D R A C U L A</h2> immediately before <h2>CHAPTER I</h2>) loses
 // that line — it is the running title, not the chapter's text.
-const frontMatterMaxWords = 150
+const frontMatterMaxWords = 250
 
 // prefaceMaxWords: above this a "preface" unit is really merged chapters.
 const prefaceMaxWords = 1500
@@ -428,7 +428,20 @@ func isColophonChapter(ch db.Chapter, bookTitle string) bool {
 	if isBookTitle(ch.Title, bookTitle) && ch.WordCount < colophonTitledMaxWords {
 		return true
 	}
-	return ch.WordCount < frontMatterMaxWords && colophonWordsRe.MatchString(ch.Content)
+	// Publisher copyright pages run to ~300 words (imprint, ISBNs, credits).
+	return ch.WordCount < colophonWordedMaxWords && colophonWordsRe.MatchString(ch.Content)
+}
+
+const colophonWordedMaxWords = 500
+
+// isHeadinglessLead: a leading unit that carried no heading of its own (the
+// extractor's positional "Chapter N") and is not chapter-sized is publisher
+// apparatus — praise quotes, "also by", a dedication (Brave New World's lead
+// runs 302 + 158 words). A real first chapter has a heading or real length.
+const headinglessLeadMaxWords = 1000
+
+func isHeadinglessLead(ch db.Chapter) bool {
+	return ch.Title == fmt.Sprintf("Chapter %d", ch.Index+1) && ch.WordCount < headinglessLeadMaxWords
 }
 
 func foldFrontMatter(chapters []db.Chapter, bookTitle string) []db.Chapter {
@@ -439,7 +452,7 @@ func foldFrontMatter(chapters []db.Chapter, bookTitle string) []db.Chapter {
 	// tiny nor boilerplate-titled. Everything before it is front matter.
 	first := -1
 	for i, ch := range chapters {
-		if ch.WordCount >= frontMatterMaxWords && !isBoilerplateTitle(ch.Title) && !isColophonChapter(ch, bookTitle) {
+		if ch.WordCount >= frontMatterMaxWords && !isBoilerplateTitle(ch.Title) && !isColophonChapter(ch, bookTitle) && !isHeadinglessLead(ch) {
 			first = i
 			break
 		}
@@ -484,6 +497,13 @@ func foldFrontMatter(chapters []db.Chapter, bookTitle string) []db.Chapter {
 	}
 	out = append(out, body)
 	out = append(out, chapters[first+1:]...)
+	// A fallback title ("Chapter 3": no heading of its own, numbered by its
+	// extraction position) must follow the chapter to its NEW position.
+	for i := range out {
+		if out[i].Title == fmt.Sprintf("Chapter %d", out[i].Index+1) && out[i].Index != i {
+			out[i].Title = fmt.Sprintf("Chapter %d", i+1)
+		}
+	}
 	return out
 }
 
@@ -765,7 +785,7 @@ func extractPerSpineFile(r *zip.Reader, pkg opfPackage, manifest map[string]mani
 		}
 		title := tocTitles[stripFragment(item.Href)]
 		if title == "" {
-			title = extractChapterHeading(rawHTML)
+			title = extractChapterHeading(rawHTML, epubTitle(pkg), epubAuthor(pkg))
 		}
 		if isHeadingOnly(text, title) {
 			continue // heading-only split document — see isHeadingOnly
@@ -1069,7 +1089,7 @@ type headingStart struct {
 // When the book has no tagged chapter headings at all, numbered title
 // paragraphs ("7. Family planning") are tried instead — see
 // numberedParagraphStarts.
-func splitHTMLByHeadings(rawHTML string) []htmlSegment {
+func splitHTMLByHeadings(rawHTML, bookTitle, author string) []htmlSegment {
 	starts, chapterKind := taggedHeadingStarts(rawHTML)
 	if chapterKind < 2 {
 		// No tagged chapter structure. Numbered title paragraphs may carry it;
@@ -1102,7 +1122,7 @@ func splitHTMLByHeadings(rawHTML string) []htmlSegment {
 		h := rawHTML[s.pos:end]
 		title := s.title
 		if title == "" {
-			title = extractChapterHeading(h)
+			title = extractChapterHeading(h, bookTitle, author)
 		}
 		segs = append(segs, htmlSegment{title: title, html: h})
 	}
@@ -1220,29 +1240,54 @@ var (
 	headingBlankRunRe  = regexp.MustCompile(`\n{3,}`)
 )
 
-// extractChapterHeading prefers the first heading that NAMES a chapter
-// ("CHAPTER I", "Stave One", "IV.") over whatever heading merely comes first.
-// Gutenberg files put the book's own title in an <h2> right before the first
-// chapter's heading, so "first heading" titled Dracula's chapter I
-// "D R A C U L A" while every later chapter got its "CHAPTER N" line.
-func extractChapterHeading(html string) string {
+// extractChapterHeading returns the segment's own heading. The FIRST heading
+// wins unless it is the book's running head — the book title or the author
+// stamped above every chapter (PG: <h2>D R A C U L A</h2> before
+// <h2>CHAPTER I</h2>) — in which case the next chapter-like heading, else
+// simply the next heading, is the chapter's. A blanket "prefer any heading
+// that starts with Chapter" was wrong the other way (Hero with a Thousand
+// Faces: ACKNOWLEDGMENTS lost to a later "Chapter Notes" sub-heading,
+// 2026-09-22): rules keyed on the shape they were tested on cut both ways.
+func extractChapterHeading(html, bookTitle, author string) string {
+	var texts []string
 	for _, m := range anyHeadingRe.FindAllStringSubmatch(html, -1) {
-		// <br/> inside a heading is a line break in its text ("I." / "A
-		// SCANDAL IN BOHEMIA"); keep it so the sub-title survives, and judge
-		// the heading by its FIRST line — the whole text "I. A SCANDAL IN
-		// BOHEMIA" is not a numeral, and losing to a bare <h3>I.</h3> below it
-		// left Sherlock's chapter I titled "I." (server-web, 2026-09-22).
 		// A <br/> beside a source newline is ONE break, so the stored shapes
 		// stay what they were: "II.\nTHE FALLING STAR." (Alice, WotW) and
 		// "CHAPTER II\n\nJONATHAN…" (Dracula's two blank-line breaks).
 		text := strings.TrimSpace(htmlTagRe.ReplaceAllString(headingBrRe.ReplaceAllString(m[1], "\n"), ""))
 		text = headingBlankRunRe.ReplaceAllString(headingLineBreakRe.ReplaceAllString(text, "\n"), "\n\n")
-		first := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
-		if first != "" && chapterHeadingTextRe.MatchString(first) {
-			return text
+		if text != "" {
+			texts = append(texts, text)
 		}
 	}
-	return extractFirstHeading(html)
+	if len(texts) == 0 {
+		return ""
+	}
+	runningHead := func(t string) bool {
+		return isBookTitle(t, bookTitle) || (author != "" && isBookTitle(t, author))
+	}
+	if !runningHead(texts[0]) {
+		return texts[0]
+	}
+	for _, t := range texts[1:] {
+		if !runningHead(t) && chapterHeadingTextRe.MatchString(strings.SplitN(t, "\n", 2)[0]) {
+			return t
+		}
+	}
+	for _, t := range texts[1:] {
+		if !runningHead(t) {
+			return t
+		}
+	}
+	return texts[0]
+}
+
+// epubAuthor is the package's first dc:creator (a running head candidate).
+func epubAuthor(pkg opfPackage) string {
+	if len(pkg.Metadata.Creator) > 0 {
+		return strings.TrimSpace(pkg.Metadata.Creator[0])
+	}
+	return ""
 }
 
 // epubTitle is the package's own dc:title (what the colophon repeats).

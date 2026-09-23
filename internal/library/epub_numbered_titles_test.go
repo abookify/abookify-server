@@ -35,7 +35,7 @@ func numTitle(i int) string {
 }
 
 func TestSplitHTMLByHeadings_NumberedParagraphTitles(t *testing.T) {
-	segs := splitHTMLByHeadings(numberedBook(nil))
+	segs := splitHTMLByHeadings(numberedBook(nil), "", "")
 	if segs == nil {
 		t.Fatal("numbered title paragraphs were not recognised as chapter boundaries")
 	}
@@ -64,7 +64,7 @@ func TestSplitHTMLByHeadings_NumberedParagraphTitles(t *testing.T) {
 // each followed by a sentence must leave the book alone (nil → spine fallback).
 func TestSplitHTMLByHeadings_NumberedListIsNotChapters(t *testing.T) {
 	html := `<p>Some prose.</p><p>1. First rule</p><p>Do this.</p><p>2. Second rule</p><p>Do that.</p><p>3. Third rule</p><p>` + strings.Repeat("closing prose ", 300) + `</p>`
-	if segs := splitHTMLByHeadings(html); segs != nil {
+	if segs := splitHTMLByHeadings(html, "", ""); segs != nil {
 		t.Fatalf("a numbered list split the book into %d segments", len(segs))
 	}
 }
@@ -73,7 +73,7 @@ func TestSplitHTMLByHeadings_NumberedListIsNotChapters(t *testing.T) {
 // down entirely rather than producing a half-right split.
 func TestSplitHTMLByHeadings_NumberedChainMustIncrease(t *testing.T) {
 	bodies := map[int]string{2: strings.Repeat("body ", 120) + `</p><p>1. A list item that reads like a title</p><p>` + strings.Repeat("more body ", 250)}
-	if segs := splitHTMLByHeadings(numberedBook(bodies)); segs != nil {
+	if segs := splitHTMLByHeadings(numberedBook(bodies), "", ""); segs != nil {
 		t.Fatalf("non-monotonic numbered paragraphs still split the book into %d segments", len(segs))
 	}
 }
@@ -82,7 +82,7 @@ func TestSplitHTMLByHeadings_NumberedChainMustIncrease(t *testing.T) {
 // when the book has no <hN> chapter headings at all.
 func TestSplitHTMLByHeadings_TaggedHeadingsWin(t *testing.T) {
 	html := `<h2>Chapter 1</h2><p>1. A numbered aside</p><p>` + strings.Repeat("x ", 300) + `</p><h2>Chapter 2</h2><p>2. Another aside</p><p>` + strings.Repeat("y ", 300) + `</p><p>3. Third aside</p><p>` + strings.Repeat("z ", 300) + `</p>`
-	segs := splitHTMLByHeadings(html)
+	segs := splitHTMLByHeadings(html, "", "")
 	if len(segs) != 2 {
 		t.Fatalf("got %d segments, want the 2 tagged chapters", len(segs))
 	}

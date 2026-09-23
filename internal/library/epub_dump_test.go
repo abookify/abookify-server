@@ -23,7 +23,7 @@ func TestDumpEpubChapters(t *testing.T) {
 		}
 		fmt.Printf("== %s: %d chapters\n", p, len(chapters))
 		for _, c := range chapters {
-			if c.Index < 6 || c.WordCount < 200 {
+			if os.Getenv("EPUB_DUMP_ALL") != "" || c.Index < 6 || c.WordCount < 200 {
 				head := c.Content
 				if len(head) > 110 {
 					head = head[:110]
