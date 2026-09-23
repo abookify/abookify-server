@@ -166,3 +166,20 @@ func TestLinkChapters_NoTextBook(t *testing.T) {
 	}
 	// Should no-op without error.
 }
+
+// Carol's stave01 file opens with a 17-second Preface and then all of Stave
+// One; the file links to the chapter that covers it, not the one at its
+// first second (card 37, 2026-09-22).
+func TestDominantChapter_PrefersCoverageOverFirstSecond(t *testing.T) {
+	timeline := []chapterStartAt{{32.8, 0}, {49.2, 1}, {2318, 2}, {4431, 3}}
+	if got := dominantChapter(timeline, 0, 2315); got != 1 {
+		t.Errorf("stave01 (0–2315 s) should link to Stave One (idx 1), got %d", got)
+	}
+	if got := dominantChapter(timeline, 2318, 4431); got != 2 {
+		t.Errorf("stave02 should link to idx 2, got %d", got)
+	}
+	// A file that ends before every chapter starts links to the first.
+	if got := dominantChapter(timeline, 0, 20); got != 0 {
+		t.Errorf("pre-chapter window should link to the first chapter, got %d", got)
+	}
+}

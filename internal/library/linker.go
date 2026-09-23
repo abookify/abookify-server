@@ -263,13 +263,9 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 	}
 	// (audio second → chapter index), ascending, so a file's StartSec picks the
 	// chapter playing at that moment.
-	type tp struct {
-		sec float64
-		idx int
-	}
-	timeline := make([]tp, 0, len(chapStart))
+	timeline := make([]chapterStartAt, 0, len(chapStart))
 	for ci, sec := range chapStart {
-		timeline = append(timeline, tp{sec, ci})
+		timeline = append(timeline, chapterStartAt{sec, ci})
 	}
 	sort.Slice(timeline, func(i, j int) bool { return timeline[i].sec < timeline[j].sec })
 
@@ -279,14 +275,15 @@ func linkChaptersByAlignment(store *db.Store, work *db.Work) ([]db.ChapterLink, 
 			continue // not part of the aligned narration — leave it unlinked
 		}
 		// Greatest timeline entry whose sec <= this file's start.
-		pick := timeline[0].idx
-		for _, t := range timeline {
-			if t.sec <= af.StartSec {
-				pick = t.idx
-			} else {
-				break
-			}
+		// The chapter that covers MOST of the file, not the one playing at
+		// its first second: Carol's stave01 opens with a 17-second Preface,
+		// and "the chapter at the file's start" linked the whole 38-minute
+		// file to it (2026-09-22, card 37). Stave One covers 98 % of it.
+		fileEnd := af.StartSec + af.Duration
+		if af.Duration <= 0 {
+			fileEnd = af.StartSec + 1
 		}
+		pick := dominantChapter(timeline, af.StartSec, fileEnd)
 		links = append(links, db.ChapterLink{
 			AudioBookID: af.ID,
 			AudioIndex:  i,
@@ -422,4 +419,31 @@ func romanToInt(s string) int {
 		}
 	}
 	return result
+}
+
+// dominantChapter picks, from chapter start times in timeline order, the
+// chapter whose span [start, next start) overlaps [from, to) the most; ties
+// and a window before every chapter go to the earliest chapter.
+// chapterStartAt is one ebook chapter's first aligned second in the narration.
+type chapterStartAt struct {
+	sec float64
+	idx int
+}
+
+func dominantChapter(timeline []chapterStartAt, from, to float64) int {
+	pick, best := timeline[0].idx, -1.0
+	for i, t := range timeline {
+		end := to
+		if i+1 < len(timeline) && timeline[i+1].sec < end {
+			end = timeline[i+1].sec
+		}
+		start := t.sec
+		if start < from {
+			start = from
+		}
+		if ov := end - start; ov > best {
+			best, pick = ov, t.idx
+		}
+	}
+	return pick
 }

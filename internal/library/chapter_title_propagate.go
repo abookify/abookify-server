@@ -153,41 +153,61 @@ func PropagateEbookTitles(store *db.Store, work *db.Work, ebookID int64, dryRun 
 		// Which anchor chapter owns each ebook chapter: the anchor whose start
 		// is nearest the ebook chapter's timed start, within the lead/trail
 		// window; each anchor chapter names at most one ebook chapter.
-		owner := map[int]int{} // names index → chapter index
+		// Each narration row takes the ebook chapter that COVERS most of it —
+		// not the one whose text starts nearest its first second. Carol's
+		// stave01 row (0–2318 s) contains the 17-second Preface and all of
+		// Stave One; nearest-start named the whole row "Preface" (card 37).
+		// A chapter that already named an earlier row names later rows as
+		// "… (continued)": Sherlock's false mid-story boundaries then read
+		// as the story they are in, not as "Chapter 3".
+		owner := map[int]int{} // names index → chapter index (first row)
+		continued := map[int]string{}
 		for _, ch := range chs {
 			if ch.EndSec <= ch.StartSec {
 				continue
 			}
-			best, bestD := -1, 0.0
+			best, bestOv := -1, 0.0
 			for k, n := range names {
-				d := n.start - ch.StartSec // >0: ebook text starts after the announcement
-				if d < -titleLeadSec || d > titleTrailSec {
-					continue
+				lo, hi := n.start, n.end
+				if lo < ch.StartSec {
+					lo = ch.StartSec
 				}
-				if best < 0 || absF(d) < bestD {
-					best, bestD = k, absF(d)
+				if hi > ch.EndSec {
+					hi = ch.EndSec
+				}
+				if ov := hi - lo; ov > bestOv {
+					best, bestOv = k, ov
 				}
 			}
-			if best < 0 {
-				continue
+			if best < 0 || bestOv < 0.25*(ch.EndSec-ch.StartSec) {
+				continue // the row is mostly outside every named chapter
 			}
-			if cur, ok := owner[best]; !ok || bestD < absF(chapterStart(chs, cur)-names[best].start) {
+			if _, taken := owner[best]; !taken {
 				owner[best] = ch.Index
+			} else {
+				continued[ch.Index] = names[best].title + " (continued)"
 			}
 		}
+		apply := map[int]string{}
 		for k, idx := range owner {
+			apply[idx] = names[k].title
+		}
+		for idx, t := range continued {
+			apply[idx] = t
+		}
+		for idx, title := range apply {
 			old := chapterTitle(chs, idx)
-			if normalizeChapterTitle(old) == names[k].title {
+			if normalizeChapterTitle(old) == title {
 				continue
 			}
-			changes = append(changes, fmt.Sprintf("book %d ch %d: %q → %q", bookID, idx, old, names[k].title))
+			changes = append(changes, fmt.Sprintf("book %d ch %d: %q → %q", bookID, idx, old, title))
 			if dryRun {
 				continue
 			}
-			if err := store.UpdateChapterTitle(bookID, idx, names[k].title); err != nil {
+			if err := store.UpdateChapterTitle(bookID, idx, title); err != nil {
 				return changes, fmt.Errorf("update chapter %d/%d title: %w", bookID, idx, err)
 			}
-			log.Printf("propagated ebook title on book %d ch %d: %q → %q (publisher edition %d)", bookID, idx, old, names[k].title, ebookID)
+			log.Printf("propagated ebook title on book %d ch %d: %q → %q (publisher edition %d)", bookID, idx, old, title, ebookID)
 		}
 	}
 	sort.Strings(changes)
