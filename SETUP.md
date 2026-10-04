@@ -108,8 +108,9 @@ A GPU does ~8–15× real-time. See [GPU](#gpu-acceleration-optional).
 ## 4. Engines: local vs. API keys
 
 **Speech (STT/TTS)** runs **locally** in the `whisper` and `kokoro` containers —
-no account, no API key, nothing leaves your machine. This is the default and
-needs no configuration. (Cloud STT/TTS providers are not wired up yet.)
+no account, no API key, and your audio and text are processed on your own
+machine rather than sent to a cloud provider. This is the default and needs no
+configuration. (Cloud STT/TTS providers can be chosen instead in Settings.)
 
 **Book Q&A (the LLM / RAG features)** is **bring-your-own-key**. Without a key
 you still get keyword search; with one you get conversational Q&A grounded in the
@@ -154,6 +155,12 @@ reachable URL. Pick whichever fits you:
 - **Port-forward:** forward 7654 on your router (turn on auth first — see below).
 
 ### Built-in NullBore relay
+
+> **Not end-to-end (verified 2026-10-04).** Your HTTPS session ends at the relay
+> (NullBore, fronted by Cloudflare); the relay forwards plain HTTP to this server
+> inside its own tunnel. Cloudflare and NullBore can therefore read your traffic in
+> transit. For end-to-end privacy use a VPN/mesh (Tailscale, WireGuard) or the LAN
+> (plain HTTP on your own network).
 
 To expose the server through a NullBore relay (gives you a stable
 `https://<id>.abookify.nullbore.com` URL), put your relay credentials in a

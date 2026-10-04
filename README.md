@@ -16,6 +16,8 @@ The core of abookify. Runs on the user's desktop, NAS, or home server as a singl
 
 ## Components
 
+> Design inventory. Items marked *planned* are not built; everything else ships.
+
 ### Core Runtime
 - Single-binary distribution with embedded assets (Go `embed` package)
 - Cross-compilation targets: Linux x86_64, Linux ARM64, macOS Intel, macOS Apple Silicon, Windows x86_64
@@ -39,7 +41,7 @@ The core of abookify. Runs on the user's desktop, NAS, or home server as a singl
 - **sqlite-vec** for vector embeddings (RAG)
 - Cache management for generated TTS audio and Whisper transcripts
 - Backup and restore functionality
-- Optional encryption at rest (user-controlled key)
+- Optional encryption at rest (user-controlled key) — *planned, not built*
 
 ### Text Processing
 - EPUB parser and text extraction
