@@ -161,6 +161,13 @@ func ComputeAnchorAlignment(store *db.Store, workID int64) (float64, error) {
 	} else if len(ch) > 0 {
 		log.Printf("align: propagated %d publisher chapter title(s) on work %d from edition %d", len(ch), workID, authority.ID)
 	}
+	// Report-only until the backfill is approved and applied library-wide
+	// (card 39): says what rows the lead lacks, writes nothing.
+	if rep, err := FillLeadingRows(store, work, authority.ID, true); err != nil {
+		log.Printf("align: fill leading rows for work %d: %v", workID, err)
+	} else if len(rep.Added) > 0 {
+		log.Printf("align: work %d: narration rows begin at %s with %d ebook chapter(s) aligned before them — `fill-leading-rows -work %d -apply` would add them", workID, hms(rep.FirstRowSec), len(rep.Added), workID)
+	}
 	return primary, nil
 }
 
