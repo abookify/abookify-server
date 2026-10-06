@@ -5,7 +5,8 @@
 #
 # THE KEY IS REUSED (--reuse-key): the pin IS the key, and a renewal must never
 # make a paired phone re-pair. Rotate the key only deliberately, and say why in
-# the UI. Runs weekly from cron; lego only renews inside the last 30 days.
+# the UI. Runs weekly from cron; lego 5 has no separate renew — `run` renews
+# only inside --renew-days of expiry and otherwise says so and exits.
 # Interim for PJ's own server; the product path is ACME inside the Go server.
 set -euo pipefail
 SERVER="/home/pj/projects/jarvis/abookify/engineering/server"
@@ -16,7 +17,7 @@ HOST="$(curl -s --max-time 5 http://localhost:7654/api/info | grep -oP '(?<="tls
 docker image inspect lego-nb >/dev/null 2>&1 || { echo "renew: lego-nb image missing (scratch build: goacme/lego + nullbore)"; exit 1; }
 docker run --rm -e NULLBORE_API_KEY="$NULLBORE_API_KEY" -e NULLBORE_SERVER="${NULLBORE_SERVER:-https://tunnel.nullbore.com}" \
   -e EXEC_PATH=/usr/local/bin/nullbore-acme-hook -v legoprod:/data --entrypoint /lego lego-nb \
-  renew --path /data --dns exec --domains "$HOST" --days 30 --reuse-key 2>&1 | tail -3
+  run --email hi@abookify.com --accept-tos --path /data --dns exec --domains "$HOST" --renew-days 30 --reuse-key 2>&1 | tail -3
 docker run --rm -v legoprod:/data -v "$SERVER/data/tls:/tls" alpine sh -c '
   cd /data/certificates; f=$(ls *.crt | grep -v issuer | head -1); k=${f%.crt}.key
   if ! cmp -s "$k" /tls/server.key; then echo "renew: KEY CHANGED — refusing to install (pin would move); investigate"; exit 3; fi
