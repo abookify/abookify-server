@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,13 @@ const (
 	// forwards the phone's TLS to us without terminating it, and the phone
 	// pins our key from the QR. Env NULLBORE_E2E_DOMAIN seeds it.
 	settingRelayE2EDomain = "relay_e2e_domain"
+	// settingRelayE2EPrimary ("1"/"true"; env NULLBORE_E2E_PRIMARY) makes the
+	// end-to-end URL the pairing payload's primary `url`. Until the apps pin
+	// the server's key they cannot talk to a self-signed listener, so the
+	// primary stays the proxied URL and the end-to-end address rides along in
+	// `tls_url` + `tls_spki_sha256` for apps that can. Flip once mobile ships
+	// pinning.
+	settingRelayE2EPrimary = "relay_e2e_primary"
 )
 
 // ServerID returns a stable UUID for this install, minting on first access.
@@ -49,7 +57,7 @@ func (s *Server) PublicURL(r *http.Request) string {
 	if v := os.Getenv("ABOOKIFY_PUBLIC_URL"); v != "" {
 		return v
 	}
-	if s.tlsPin != "" {
+	if s.tlsPin != "" && s.relayE2EPrimary() {
 		if h := s.E2EHost(); h != "" {
 			return "https://" + h
 		}
@@ -82,6 +90,16 @@ func (s *Server) E2EHost() string {
 		return ""
 	}
 	return s.ServerID() + "-e2e." + e2e
+}
+
+// relayE2EPrimary reports whether the end-to-end URL should be the primary
+// pairing address (see settingRelayE2EPrimary).
+func (s *Server) relayE2EPrimary() bool {
+	v, _ := s.store.GetSetting(settingRelayE2EPrimary)
+	if v == "" {
+		v = os.Getenv("NULLBORE_E2E_PRIMARY")
+	}
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // relayE2EDomain returns the configured end-to-end relay namespace, or "".
