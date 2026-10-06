@@ -166,6 +166,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	if s.tlsPin != "" {
 		info["tls_spki_sha256"] = s.tlsPin
 		info["tls_url"] = s.tlsURL(r)
+		info["tls_port"] = s.tlsPort
 	}
 	writeJSON(w, http.StatusOK, info)
 }

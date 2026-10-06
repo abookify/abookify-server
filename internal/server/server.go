@@ -761,6 +761,12 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"tls_port":        s.tlsPort,
 		"tls_spki_sha256": s.tlsPin,
+		"tls_url": func() string {
+			if s.tlsPin == "" {
+				return ""
+			}
+			return s.tlsURL(r)
+		}(),
 		"name":            "abookify",
 		"version":         version,
 		"port":            s.http.Addr,
