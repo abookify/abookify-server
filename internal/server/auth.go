@@ -113,6 +113,14 @@ func (s *Server) devAuthOK(r *http.Request) bool {
 	if s.DevAuthToken == "" {
 		return false
 	}
+	// A dev token is a LAN affordance. Once persisted it would otherwise keep
+	// working on an instance that later became reachable through the relay —
+	// every relay path arrives as HTTPS (the proxied one forwards
+	// X-Forwarded-Proto, the end-to-end one lands on our TLS listener), so
+	// refuse it there outright. Plain-HTTP LAN development is unaffected.
+	if requestIsHTTPS(r) {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(tokenFromRequest(r)), []byte(s.DevAuthToken)) == 1
 }
 
