@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -105,4 +106,49 @@ func SPKIFingerprint(c tls.Certificate) (string, error) {
 	}
 	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
+}
+
+// certReloader serves the current on-disk identity and re-reads it when the
+// files change — so a renewed certificate (Let's Encrypt, every ~60 days)
+// goes live without a restart. The KEY stays the same across renewals (renew
+// with --reuse-key): the pin IS the key, and a renewal must never make a
+// paired phone re-pair. Only a deliberate rotation changes the pin.
+type certReloader struct {
+	certPath, keyPath string
+	mu                sync.Mutex
+	cert              *tls.Certificate
+	certMod, keyMod   time.Time
+	last              time.Time
+}
+
+func newCertReloader(certPath, keyPath string, initial tls.Certificate) *certReloader {
+	r := &certReloader{certPath: certPath, keyPath: keyPath, cert: &initial}
+	r.certMod, r.keyMod = mtime(certPath), mtime(keyPath)
+	return r
+}
+
+func mtime(p string) time.Time {
+	if st, err := os.Stat(p); err == nil {
+		return st.ModTime()
+	}
+	return time.Time{}
+}
+
+// get returns the current certificate, checking the files at most every 10 s.
+func (r *certReloader) get() (*tls.Certificate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if time.Since(r.last) < 10*time.Second {
+		return r.cert, nil
+	}
+	r.last = time.Now()
+	cm, km := mtime(r.certPath), mtime(r.keyPath)
+	if cm.Equal(r.certMod) && km.Equal(r.keyMod) {
+		return r.cert, nil
+	}
+	if c, err := tls.LoadX509KeyPair(r.certPath, r.keyPath); err == nil {
+		r.cert, r.certMod, r.keyMod = &c, cm, km
+	}
+	// A half-written or bad pair keeps serving the last good one.
+	return r.cert, nil
 }

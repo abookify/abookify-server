@@ -45,6 +45,7 @@ type Server struct {
 	handler    http.Handler
 	tlsPort    string
 	tlsPin     string // base64(sha256(SPKI)) of the TLS identity
+	certs      *certReloader
 	Events     *EventBus
 	Generator  *library.Generator
 	rag        atomic.Pointer[llm.RAG]
@@ -625,12 +626,14 @@ func (s *Server) EnableTLS(tlsPort, certDir string, hosts []string) (string, err
 	}
 	s.tlsPort = tlsPort
 	s.tlsPin = pin
+	reloader := newCertReloader(filepath.Join(certDir, "server.crt"), filepath.Join(certDir, "server.key"), cert)
+	s.certs = reloader
 	s.https = &http.Server{
 		Addr:    ":" + tlsPort,
 		Handler: s.handler,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return reloader.get() },
+			MinVersion:     tls.VersionTLS12,
 		},
 	}
 	return pin, nil
@@ -644,9 +647,20 @@ func (s *Server) ListenAndServeTLS() error {
 	return s.https.ListenAndServeTLS("", "")
 }
 
-// TLSPin returns the SPKI SHA-256 pin (base64) of the TLS identity, or "" when
-// TLS is not enabled.
-func (s *Server) TLSPin() string { return s.tlsPin }
+// TLSPin returns the SPKI SHA-256 pin (base64) of the TLS identity currently
+// served, or "" when TLS is not enabled. Re-derived from the live certificate
+// so a deliberate key rotation on disk is reflected without a restart.
+func (s *Server) TLSPin() string {
+	if s.certs == nil {
+		return s.tlsPin
+	}
+	if c, err := s.certs.get(); err == nil && c != nil {
+		if pin, err := SPKIFingerprint(*c); err == nil {
+			s.tlsPin = pin
+		}
+	}
+	return s.tlsPin
+}
 
 // SetReady marks the server booted (or draining). GET /api/ready reflects it.
 // On the boot→ready transition it kicks off a background pre-warm of the voice
@@ -760,7 +774,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{
 		"tls_port":        s.tlsPort,
-		"tls_spki_sha256": s.tlsPin,
+		"tls_spki_sha256": s.TLSPin(),
 		"tls_url": func() string {
 			if s.tlsPin == "" {
 				return ""

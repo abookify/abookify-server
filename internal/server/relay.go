@@ -57,7 +57,7 @@ func (s *Server) PublicURL(r *http.Request) string {
 	if v := os.Getenv("ABOOKIFY_PUBLIC_URL"); v != "" {
 		return v
 	}
-	if s.tlsPin != "" && s.relayE2EPrimary() {
+	if s.TLSPin() != "" && s.relayE2EPrimary() {
 		if h := s.E2EHost(); h != "" {
 			return "https://" + h
 		}
@@ -163,8 +163,8 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		"server_id":  s.ServerID(),
 		"public_url": s.PublicURL(r),
 	}
-	if s.tlsPin != "" {
-		info["tls_spki_sha256"] = s.tlsPin
+	if s.TLSPin() != "" {
+		info["tls_spki_sha256"] = s.TLSPin()
 		info["tls_url"] = s.tlsURL(r)
 		info["tls_port"] = s.tlsPort
 	}
@@ -229,8 +229,8 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 		URL:   s.PublicURL(r),
 		Token: pairing.Issue(),
 	}
-	if s.tlsPin != "" {
-		p.TLSPin = s.tlsPin
+	if s.TLSPin() != "" {
+		p.TLSPin = s.TLSPin()
 		p.TLSURL = s.tlsURL(r)
 	}
 	if s.authEnabled() {
