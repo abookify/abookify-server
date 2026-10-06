@@ -450,19 +450,10 @@ type spanRow struct {
 }
 
 func checkStaleAlignments(sq *sql.DB) {
-	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
-		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+	aligns := loadWordAlignments(sq) // materialized: the pool has ONE connection, so a query inside an open cursor deadlocks
 	stale := 0
-	for rows.Next() {
-		var id, wid, fb, tb int64
-		var pairs, title string
-		if err := rows.Scan(&id, &wid, &fb, &tb, &pairs, &title); err != nil {
-			continue
-		}
+	for _, al := range aligns {
+		id, wid, fb, tb, pairs, title := al.id, al.wid, al.fb, al.tb, al.pairs, al.title
 		var p struct {
 			EbookChapters []spanRow `json:"ebook_chapters"`
 		}
@@ -528,19 +519,10 @@ func checkStaleAlignments(sq *sql.DB) {
 // cover, or rows whose title is still a bare detector label, are skipped:
 // this asserts agreement where both sides make a claim.
 func checkRowTitlesAgainstCoverage(sq *sql.DB) {
-	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
-		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+	aligns := loadWordAlignments(sq) // materialized: the pool has ONE connection, so a query inside an open cursor deadlocks
 	bad, timelines := 0, 0
-	for rows.Next() {
-		var id, wid, fb, tb int64
-		var pairs, title string
-		if err := rows.Scan(&id, &wid, &fb, &tb, &pairs, &title); err != nil {
-			continue
-		}
+	for _, al := range aligns {
+		wid, fb, tb, pairs, title := al.wid, al.fb, al.tb, al.pairs, al.title
 		var p struct {
 			Timeline []struct {
 				EbookChapterIdx int `json:"ci"`
@@ -651,6 +633,32 @@ func chapterRangeStarts(pairs string) []float64 {
 	for _, tl := range p.Timeline {
 		if len(tl.Points) > 0 {
 			out = append(out, tl.Points[0].Sec)
+		}
+	}
+	return out
+}
+
+type wordAlignment struct {
+	id, wid, fb, tb int64
+	pairs, title    string
+}
+
+// loadWordAlignments reads every word alignment into memory. The audit's pool
+// is capped at one connection, so a query issued while a cursor over this
+// table is still open waits for that connection forever — which is why no
+// run of the four payload checks ever finished (2026-09-22 → 10-04).
+func loadWordAlignments(sq *sql.DB) []wordAlignment {
+	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
+		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []wordAlignment
+	for rows.Next() {
+		var a wordAlignment
+		if err := rows.Scan(&a.id, &a.wid, &a.fb, &a.tb, &a.pairs, &a.title); err == nil {
+			out = append(out, a)
 		}
 	}
 	return out

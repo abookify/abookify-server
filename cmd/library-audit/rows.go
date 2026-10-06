@@ -24,19 +24,9 @@ import (
 const lateRowSecs = 600.0
 
 func checkLateFirstRow(sq *sql.DB) {
-	rows, err := sq.Query(`SELECT a.id, a.work_id, a.from_book_id, a.to_book_id, a.pairs, w.title
-		FROM alignments a JOIN works w ON w.id = a.work_id WHERE a.unit = 'word'`)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
 	bad := 0
-	for rows.Next() {
-		var id, wid, fb, tb int64
-		var pairs, title string
-		if err := rows.Scan(&id, &wid, &fb, &tb, &pairs, &title); err != nil {
-			continue
-		}
+	for _, al := range loadWordAlignments(sq) {
+		wid, pairs, title := al.wid, al.pairs, al.title
 		starts := chapterRangeStarts(pairs)
 		if len(starts) == 0 {
 			continue
