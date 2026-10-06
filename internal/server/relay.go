@@ -51,8 +51,11 @@ func (s *Server) ServerID() string {
 	return id
 }
 
-// PublicURL returns the externally-reachable URL for this server.
-// Precedence: ABOOKIFY_PUBLIC_URL env > relay_domain setting + server_id > request-derived.
+// PublicURL returns the externally-reachable URL for this server, as DISPLAYED
+// (settings page, server-info). Precedence: ABOOKIFY_PUBLIC_URL env > the
+// end-to-end hostname when NULLBORE_E2E_PRIMARY is on > relay_domain setting +
+// server_id > request-derived. The PAIRING payload never uses the end-to-end
+// host here: see LegacyPublicURL.
 func (s *Server) PublicURL(r *http.Request) string {
 	if v := os.Getenv("ABOOKIFY_PUBLIC_URL"); v != "" {
 		return v
@@ -61,6 +64,18 @@ func (s *Server) PublicURL(r *http.Request) string {
 		if h := s.E2EHost(); h != "" {
 			return "https://" + h
 		}
+	}
+	return s.LegacyPublicURL(r)
+}
+
+// LegacyPublicURL is the proxied-relay (or request-derived) address, ignoring
+// the end-to-end preference. The pairing payload's `url` is ALWAYS this: the
+// app keys its remembered server by `url` and connects through `tls_url`
+// whenever that is present, so flipping NULLBORE_E2E_PRIMARY must never
+// change `url` under a paired phone (mobile, 2026-10-06).
+func (s *Server) LegacyPublicURL(r *http.Request) string {
+	if v := os.Getenv("ABOOKIFY_PUBLIC_URL"); v != "" {
+		return v
 	}
 	domain, _ := s.store.GetSetting(settingRelayDomain)
 	if domain == "" {
@@ -226,7 +241,7 @@ type PairingPayload struct {
 // Token, which authorizes device registration).
 func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 	p := PairingPayload{
-		URL:   s.PublicURL(r),
+		URL:   s.LegacyPublicURL(r),
 		Token: pairing.Issue(),
 	}
 	if s.TLSPin() != "" {
