@@ -568,6 +568,45 @@ func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64,
 		// front matter while word-by-word karaoke sits one chapter away, unreachable.
 		return ttsChapterAudioRanges(store, work, bookID)
 	}
+	return rangesFromAlignment(store, best, bookID)
+}
+
+// EbookChapterAudioRangesFor is EbookChapterAudioRanges for ONE narration: the
+// word alignment pairing this ebook with this transcript. A work with two
+// narrations has two clocks; naming the second narration's rows from the
+// first's timeline shifted The Call of the Wild's PG-audiobook rows by one
+// chapter (audit, 2026-10-06) — the same class as the Selfish Gene shift.
+func EbookChapterAudioRangesFor(store *db.Store, ebookID, transcriptID int64) (map[int][2]float64, error) {
+	book, err := store.GetBook(ebookID)
+	if err != nil || book == nil {
+		return nil, err
+	}
+	aligns, err := store.ListAlignmentsForWork(book.WorkID)
+	if err != nil {
+		return nil, err
+	}
+	var best *db.Alignment
+	for i := range aligns {
+		a := &aligns[i]
+		if a.Unit != "word" {
+			continue
+		}
+		if (a.FromBookID == ebookID && a.ToBookID == transcriptID) || (a.ToBookID == ebookID && a.FromBookID == transcriptID) {
+			if best == nil || a.Confidence > best.Confidence {
+				best = a
+			}
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return rangesFromAlignment(store, best, ebookID)
+}
+
+// rangesFromAlignment: the per-ebook-chapter book-continuous audio range an
+// alignment payload describes — withheld when the payload is stale against
+// the ebook's current chapters.
+func rangesFromAlignment(store *db.Store, best *db.Alignment, bookID int64) (map[int][2]float64, error) {
 	var p AnchorAlignmentPayload
 	if json.Unmarshal([]byte(best.Pairs), &p) != nil {
 		return nil, nil
@@ -577,17 +616,13 @@ func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64,
 			best.ID, bookID, len(p.EbookChapters), p.EbookWords, len(chs), chapterWordSum(chs))
 		return nil, nil
 	}
-
 	ranges := map[int][2]float64{}
-	// Prefer the already-baked per-chapter timeline (what /word-sync renders from).
 	for _, tl := range p.Timeline {
 		if len(tl.Points) == 0 {
 			continue
 		}
 		ranges[tl.EbookChapterIdx] = [2]float64{tl.Points[0].Sec, tl.Points[len(tl.Points)-1].Sec}
 	}
-	// Fallback for pre-timeline alignments: min StartSec / max EndSec over the
-	// aligned segments overlapping each ebook chapter's token span.
 	if len(ranges) == 0 {
 		for _, s := range p.Segments {
 			if s.Kind != SegAligned || s.StartSec <= 0 {
@@ -615,6 +650,33 @@ func EbookChapterAudioRanges(store *db.Store, bookID int64) (map[int][2]float64,
 		return nil, nil
 	}
 	return ranges, nil
+}
+
+// narrationFilesForTimeline: the audio files of the narration whose chain end
+// best matches a timeline's last second — the files a transcript's clock
+// belongs to. Nil when the work has no sync rows to tell chains apart (then
+// every file is a candidate, as before).
+func narrationFilesForTimeline(store *db.Store, work *db.Work, maxSec float64) map[int64]bool {
+	syncRows, err := store.ListSyncForWork(work.ID)
+	if err != nil || maxSec <= 0 {
+		return nil
+	}
+	var members map[int64]bool
+	bestDiff := -1.0
+	for _, row := range syncRows {
+		m, end := narrationChain(work.AudioFiles, row.AudioBookID)
+		if end <= 0 {
+			continue
+		}
+		diff := end - maxSec
+		if diff < 0 {
+			diff = -diff
+		}
+		if bestDiff < 0 || diff < bestDiff {
+			bestDiff, members = diff, m
+		}
+	}
+	return members
 }
 
 const (

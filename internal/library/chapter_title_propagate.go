@@ -107,40 +107,73 @@ func PropagateEbookTitles(store *db.Store, work *db.Work, ebookID int64, dryRun 
 	if !trusted {
 		return nil, nil
 	}
-	ranges, err := EbookChapterAudioRanges(store, ebookID)
-	if err != nil || len(ranges) == 0 {
-		return nil, err
-	}
 	ebookChs, err := store.ListChapters(ebookID)
 	if err != nil {
 		return nil, err
 	}
-	type named struct {
-		start, end float64
-		title      string
-	}
-	var names []named
-	for _, ch := range ebookChs {
-		rng, ok := ranges[ch.Index]
-		if !ok || rng[1] <= rng[0] || !informativeEbookTitle(ch.Title, work.Title) {
+	// One pass PER NARRATION: each transcript's own alignment supplies the
+	// clock, and only that transcript and the audio files of its chain are
+	// named from it. A work with two narrations has two clocks (The Call of
+	// the Wild: a 7-file LibriVox reading and a single-file PG audiobook);
+	// naming both from the best-scoring alignment shifted the second's rows
+	// by a chapter (audit, 2026-10-06).
+	var changes []string
+	for _, tb := range work.TextFiles {
+		if tb.Origin != "whisper_transcript" && tb.Format != "transcript" {
 			continue
 		}
-		names = append(names, named{rng[0], rng[1], normalizeChapterTitle(ch.Title)})
-	}
-	if len(names) == 0 {
-		return nil, nil
-	}
-	sort.Slice(names, func(i, j int) bool { return names[i].start < names[j].start })
-
-	var targets []int64
-	for _, b := range work.AudioFiles {
-		targets = append(targets, b.ID)
-	}
-	for _, b := range work.TextFiles {
-		if b.Origin == "whisper_transcript" || b.Format == "transcript" {
-			targets = append(targets, b.ID)
+		ranges, err := EbookChapterAudioRangesFor(store, ebookID, tb.ID)
+		if err != nil {
+			return changes, err
+		}
+		if len(ranges) == 0 {
+			continue
+		}
+		var names []namedRange
+		maxSec := 0.0
+		for _, ch := range ebookChs {
+			rng, ok := ranges[ch.Index]
+			if !ok || rng[1] <= rng[0] {
+				continue
+			}
+			if rng[1] > maxSec {
+				maxSec = rng[1]
+			}
+			if !informativeEbookTitle(ch.Title, work.Title) {
+				continue
+			}
+			names = append(names, namedRange{rng[0], rng[1], normalizeChapterTitle(ch.Title)})
+		}
+		if len(names) == 0 {
+			continue
+		}
+		sort.Slice(names, func(i, j int) bool { return names[i].start < names[j].start })
+		members := narrationFilesForTimeline(store, work, maxSec)
+		targets := []int64{tb.ID}
+		for _, b := range work.AudioFiles {
+			if members == nil || members[b.ID] {
+				targets = append(targets, b.ID)
+			}
+		}
+		ch, err := propagateNamesOnto(store, ebookID, names, targets, dryRun)
+		changes = append(changes, ch...)
+		if err != nil {
+			return changes, err
 		}
 	}
+	sort.Strings(changes)
+	return changes, nil
+}
+
+type namedRange struct {
+	start, end float64
+	title      string
+}
+
+// propagateNamesOnto names each target book's rows from the timed names:
+// each row takes the chapter that COVERS most of it; a chapter that already
+// named an earlier row names later rows "(continued)".
+func propagateNamesOnto(store *db.Store, ebookID int64, names []namedRange, targets []int64, dryRun bool) ([]string, error) {
 	var changes []string
 	for _, bookID := range targets {
 		chs, err := store.ListChapters(bookID)

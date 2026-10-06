@@ -86,12 +86,23 @@ func FillLeadingRows(store *db.Store, work *db.Work, ebookID int64, dryRun bool)
 		rep.Skipped = fmt.Sprintf("alignment confidence %.2f below %.2f", conf, leadMinConf)
 		return rep, nil
 	}
-	ranges, err := EbookChapterAudioRanges(store, ebookID)
+	ranges, err := EbookChapterAudioRangesFor(store, ebookID, transcriptID)
 	if err != nil {
 		return rep, err
 	}
 	if len(ranges) == 0 {
 		rep.Skipped = "no chapter ranges (alignment stale or unbaked)"
+		return rep, nil
+	}
+	// The anchor must belong to the narration this transcript's clock describes.
+	maxSec := 0.0
+	for _, r := range ranges {
+		if r[1] > maxSec {
+			maxSec = r[1]
+		}
+	}
+	if members := narrationFilesForTimeline(store, work, maxSec); members != nil && !members[anchor.ID] {
+		rep.Skipped = fmt.Sprintf("anchor book %d is not in the narration the transcript %d describes (two narrations)", anchor.ID, transcriptID)
 		return rep, nil
 	}
 	ebookChs, err := store.ListChapters(ebookID)

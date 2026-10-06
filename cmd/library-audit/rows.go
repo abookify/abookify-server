@@ -25,6 +25,7 @@ const lateRowSecs = 600.0
 
 func checkLateFirstRow(sq *sql.DB) {
 	bad := 0
+	seen := map[int64]bool{} // one finding per row-bearing book, not per alignment
 	for _, al := range loadWordAlignments(sq) {
 		wid, pairs, title := al.wid, al.pairs, al.title
 		starts := chapterRangeStarts(pairs)
@@ -53,9 +54,10 @@ func checkLateFirstRow(sq *sql.DB) {
 					before++
 				}
 			}
-			if before == 0 {
+			if before == 0 || seen[bid] {
 				continue
 			}
+			seen[bid] = true
 			bad++
 			report("HIGH", "narration rows begin late",
 				"work %d %q: %s book %d's first of %d rows starts at %s, with %d ebook chapter(s) aligned before it — the chapter list opens %s into the book",
