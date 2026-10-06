@@ -62,6 +62,12 @@ const WORK_SUB = process.env.E2E_WORK || 'Carol';  // work-title substring to op
 // own API calls carry. On PJ's live server (auth on), use the dev token. Empty
 // for the no-auth fixtures.
 const AUTH_TOKEN = process.env.E2E_AUTH_TOKEN || '';
+// Board #40 (pinned e2e connect): when BOTH are set, the pair link also carries the
+// server's end-to-end address + key fingerprint (the same tls_url/tls_spki_sha256
+// fields the QR carries), so the app connects pinned at E2E_TLS_URL instead of
+// HOST_URL. Pass a deliberately wrong pin to prove the refusal path.
+const TLS_URL = process.env.E2E_TLS_URL || '';
+const TLS_PIN = process.env.E2E_TLS_PIN || '';
 // Targeting a SPECIFIC work in a big library with duplicate titles (e.g. 3
 // "A Christmas Carol"s on the live server): E2E_WORK_ID pins the API side to one
 // work; E2E_SEARCH filters the library first; E2E_CARD_KEY is the node text
@@ -591,7 +597,10 @@ async function connect() {
 
   // Attempt 1 — deep link (one command). auth_token is the dev/bypass token on an
   // auth server (E2E_AUTH_TOKEN), else a throwaway a no-auth server ignores.
-  const deep = `abookify://pair?url=${encodeURIComponent(HOST_URL)}&auth_token=${AUTH_TOKEN || 'e2e'}`;
+  const tlsParams = TLS_URL && TLS_PIN
+    ? `&tls_url=${encodeURIComponent(TLS_URL)}&tls_spki_sha256=${encodeURIComponent(TLS_PIN)}`
+    : '';
+  const deep = `abookify://pair?url=${encodeURIComponent(HOST_URL)}&auth_token=${AUTH_TOKEN || 'e2e'}${tlsParams}`;
   // Double-quote the whole device command so the `&` in the URL survives BOTH
   // the local shell AND the device shell (an unquoted & backgrounds the command
   // and drops the package arg → "com.abookify.app not found").
