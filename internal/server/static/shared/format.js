@@ -33,7 +33,11 @@ export function formatChapterDuration(secs) {
   if (!secs || secs <= 0) return '';
   const s = Math.round(secs);
   if (s < 60) return s + 's';
-  const m = Math.round(s / 60);
+  // Floor the minutes, like the player's clock (formatTimeHuman) does: the
+  // chapter list's "15h 59m total" beside a transport reading "15h 58m" was two
+  // formatters rounding differently, and a stranger reads the gap as missing
+  // audio (card 36). One rule, shared with mobile through this file.
+  const m = Math.floor(s / 60);
   if (m < 60) return m + 'm';
   const h = Math.floor(m / 60);
   const rem = m - h * 60;
