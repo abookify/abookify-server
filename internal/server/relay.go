@@ -50,8 +50,8 @@ func (s *Server) PublicURL(r *http.Request) string {
 		return v
 	}
 	if s.tlsPin != "" {
-		if e2e := s.relayE2EDomain(); e2e != "" {
-			return fmt.Sprintf("https://%s.%s", s.ServerID(), e2e)
+		if h := s.E2EHost(); h != "" {
+			return "https://" + h
 		}
 	}
 	domain, _ := s.store.GetSetting(settingRelayDomain)
@@ -70,6 +70,18 @@ func (s *Server) PublicURL(r *http.Request) string {
 		host = r.Host
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+// E2EHost is this server's hostname in the relay's end-to-end namespace:
+// <server_id>-e2e.<domain>. The suffix keeps the end-to-end tunnel's name
+// distinct from the proxied one (the relay refuses two tunnels of one name),
+// so devices paired on the old URL keep working while they migrate.
+func (s *Server) E2EHost() string {
+	e2e := s.relayE2EDomain()
+	if e2e == "" {
+		return ""
+	}
+	return s.ServerID() + "-e2e." + e2e
 }
 
 // relayE2EDomain returns the configured end-to-end relay namespace, or "".
@@ -218,8 +230,8 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 // tlsURL is where the TLS listener is reachable: the relay's end-to-end
 // hostname when configured, else this host's TLS port.
 func (s *Server) tlsURL(r *http.Request) string {
-	if e2e := s.relayE2EDomain(); e2e != "" {
-		return fmt.Sprintf("https://%s.%s", s.ServerID(), e2e)
+	if h := s.E2EHost(); h != "" {
+		return "https://" + h
 	}
 	host := "localhost"
 	if r != nil {

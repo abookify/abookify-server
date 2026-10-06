@@ -516,8 +516,8 @@ func main() {
 	}()
 	if *tlsPort != "" {
 		hosts := []string{}
-		if e2e := os.Getenv("NULLBORE_E2E_DOMAIN"); e2e != "" {
-			hosts = append(hosts, srv.ServerID()+"."+e2e)
+		if h := srv.E2EHost(); h != "" {
+			hosts = append(hosts, h)
 		}
 		pin, err := srv.EnableTLS(*tlsPort, filepath.Join(*dataDir, "tls"), hosts)
 		if err != nil {
