@@ -8,7 +8,9 @@
 #   MODE=tunnel   remove `adb reverse tcp:PORT` — closes every forwarded TCP socket at once,
 #                 exactly what a relay connection close does to the phone; the device's own
 #                 network stays up.
-#   MODE=radio    airplane mode on/off — the dead-spot case (all connectivity gone).
+#   MODE=radio    airplane mode on/off — the dead-spot case. NOTE (2026-10-06): when the app reaches the
+#                 server over `adb reverse` (loopback), airplane mode does NOT cut the stream — use MODE=adb,
+#                 or a real relayed/LAN address, for a true cut.
 # Reads the result: a STALL = PAUSED/BUFFERING with a frozen position past the restore; a RESTART =
 # position drops to ≈0/chapter start; a LOST POSITION = the position after resume is not continuous
 # with the position before the cut (allowing for the drop itself); CLEAN = PLAYING resumes and the
