@@ -38,6 +38,10 @@ func main() {
 	libraryPath := flag.String("library", envOrDefault("ABOOKIFY_LIBRARY_PATH", filepath.Join(root, "library")), "path to book library")
 	dbPath := flag.String("db", envOrDefault("ABOOKIFY_DB_PATH", filepath.Join(root, "abookify.db")), "path to SQLite database")
 	port := flag.String("port", envOrDefault("ABOOKIFY_PORT", "7654"), "HTTP server port")
+	// A second, TLS listener with a self-signed key that never leaves this
+	// machine — what the relay's end-to-end passthrough forwards into. Default
+	// on: harmless locally, required for a private remote path. "" disables.
+	tlsPort := flag.String("tls-port", envOrDefault("ABOOKIFY_TLS_PORT", "7655"), "HTTPS listener port (self-signed, pinned by paired devices); empty disables")
 	ttsURL := flag.String("tts-url", envOrDefault("ABOOKIFY_TTS_URL", ""), "TTS service URL")
 	sttURL := flag.String("stt-url", envOrDefault("ABOOKIFY_STT_URL", ""), "STT service URL")
 	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", filepath.Join(root, "generated")), "path for generated audio")
@@ -510,6 +514,23 @@ func main() {
 			serveErr <- err
 		}
 	}()
+	if *tlsPort != "" {
+		hosts := []string{}
+		if e2e := os.Getenv("NULLBORE_E2E_DOMAIN"); e2e != "" {
+			hosts = append(hosts, srv.ServerID()+"."+e2e)
+		}
+		pin, err := srv.EnableTLS(*tlsPort, filepath.Join(*dataDir, "tls"), hosts)
+		if err != nil {
+			log.Printf("warning: TLS listener disabled: %v", err)
+		} else {
+			go func() {
+				log.Printf("listening on :%s (TLS, self-signed; pin sha256//%s)", *tlsPort, pin)
+				if err := srv.ListenAndServeTLS(); err != nil && err != http.ErrServerClosed {
+					serveErr <- err
+				}
+			}()
+		}
+	}
 
 	select {
 	case err := <-serveErr:

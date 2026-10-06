@@ -14,6 +14,10 @@ services:
       - ./testdata/library:/library
       - generated-audio:/generated
     environment:
+      - ABOOKIFY_TLS_PORT=${ABOOKIFY_TLS_PORT:-7655}
+      # Set to the relay's end-to-end namespace (e.g. abookify.e2e.nullbore.com)
+      # to advertise https://<server_id>.<domain> as the public URL.
+      - NULLBORE_E2E_DOMAIN=${NULLBORE_E2E_DOMAIN:-}
       - ABOOKIFY_LIBRARY_PATH=/library
       # HOST side of the library bind mount below, shown in the roots UI instead
       # of the container path /library (#220). Set it in .env to your real host
@@ -79,6 +83,8 @@ services:
     environment:
       NULLBORE_SERVER: ${NULLBORE_SERVER:-https://tunnel.nullbore.com}
       NULLBORE_API_KEY: ${NULLBORE_API_KEY:-}
+      # start.sh sets this: server:7654:<id> (proxied) or
+      # server:7655:<id>+tls-passthrough (end-to-end, NULLBORE_E2E_DOMAIN set)
       NULLBORE_TUNNELS: ${NULLBORE_TUNNELS:-server:7654}
       NULLBORE_TLS_SKIP_VERIFY: ${NULLBORE_TLS_SKIP_VERIFY:-false}
     # Pin default_ttl=168h (client default is 1h, no env override for it)

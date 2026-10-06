@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -18,6 +19,12 @@ import (
 const (
 	settingServerID    = "server_install_id"
 	settingRelayDomain = "relay_domain" // e.g. "abookify.nullbore.com"
+	// settingRelayE2EDomain names the relay's end-to-end namespace (e.g.
+	// "abookify.e2e.nullbore.com"). When set AND this server has a TLS
+	// listener, the public URL is https://<server_id>.<e2e-domain>: the relay
+	// forwards the phone's TLS to us without terminating it, and the phone
+	// pins our key from the QR. Env NULLBORE_E2E_DOMAIN seeds it.
+	settingRelayE2EDomain = "relay_e2e_domain"
 )
 
 // ServerID returns a stable UUID for this install, minting on first access.
@@ -42,6 +49,11 @@ func (s *Server) PublicURL(r *http.Request) string {
 	if v := os.Getenv("ABOOKIFY_PUBLIC_URL"); v != "" {
 		return v
 	}
+	if s.tlsPin != "" {
+		if e2e := s.relayE2EDomain(); e2e != "" {
+			return fmt.Sprintf("https://%s.%s", s.ServerID(), e2e)
+		}
+	}
 	domain, _ := s.store.GetSetting(settingRelayDomain)
 	if domain == "" {
 		domain = os.Getenv("NULLBORE_BASE_DOMAIN")
@@ -58,6 +70,14 @@ func (s *Server) PublicURL(r *http.Request) string {
 		host = r.Host
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+// relayE2EDomain returns the configured end-to-end relay namespace, or "".
+func (s *Server) relayE2EDomain() string {
+	if v, _ := s.store.GetSetting(settingRelayE2EDomain); v != "" {
+		return v
+	}
+	return os.Getenv("NULLBORE_E2E_DOMAIN")
 }
 
 // pairingTokens holds short-lived pairing tokens. Each token authorizes one device registration.
@@ -109,10 +129,15 @@ func (p *pairingTokens) gc() {
 // handleServerInfo returns install UUID and public URL. Used by the relay
 // bootstrap script and by admin UI.
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+	info := map[string]any{
 		"server_id":  s.ServerID(),
 		"public_url": s.PublicURL(r),
-	})
+	}
+	if s.tlsPin != "" {
+		info["tls_spki_sha256"] = s.tlsPin
+		info["tls_url"] = s.tlsURL(r)
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 // handleRotateServerID mints a fresh server_install_id, invalidating
@@ -153,6 +178,15 @@ type PairingPayload struct {
 	// endpoints are gated, so only an already-authenticated user can
 	// generate a QR that carries one.
 	AuthToken string `json:"auth_token,omitempty"`
+	// TLSPin is base64(sha256(SPKI)) of this server's self-signed TLS key.
+	// Present whenever the server has a TLS listener. The phone pins it:
+	// a TLS handshake that completes against this key cannot have been
+	// terminated by a relay in between. Rotating the key means re-pairing.
+	TLSPin string `json:"tls_spki_sha256,omitempty"`
+	// TLSURL is the https URL that reaches the TLS listener (the relay's
+	// end-to-end hostname when configured, else the LAN https port). Empty
+	// when TLS is off. URL stays the primary address for compatibility.
+	TLSURL string `json:"tls_url,omitempty"`
 }
 
 // newPairingPayload builds the payload, minting a session-backed auth
@@ -163,6 +197,10 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 	p := PairingPayload{
 		URL:   s.PublicURL(r),
 		Token: pairing.Issue(),
+	}
+	if s.tlsPin != "" {
+		p.TLSPin = s.tlsPin
+		p.TLSURL = s.tlsURL(r)
 	}
 	if s.authEnabled() {
 		if tok, err := db.NewSessionToken(); err == nil {
@@ -175,6 +213,23 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 		}
 	}
 	return p
+}
+
+// tlsURL is where the TLS listener is reachable: the relay's end-to-end
+// hostname when configured, else this host's TLS port.
+func (s *Server) tlsURL(r *http.Request) string {
+	if e2e := s.relayE2EDomain(); e2e != "" {
+		return fmt.Sprintf("https://%s.%s", s.ServerID(), e2e)
+	}
+	host := "localhost"
+	if r != nil {
+		if h, _, err := net.SplitHostPort(r.Host); err == nil {
+			host = h
+		} else {
+			host = r.Host
+		}
+	}
+	return fmt.Sprintf("https://%s:%s", host, s.tlsPort)
 }
 
 // handlePairQR issues a fresh pairing payload and encodes it as JSON in a QR.

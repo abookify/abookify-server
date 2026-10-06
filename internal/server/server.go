@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,10 @@ var staticFiles embed.FS
 type Server struct {
 	store      *db.Store
 	http       *http.Server
+	https      *http.Server // TLS listener (EnableTLS); nil when off
+	handler    http.Handler
+	tlsPort    string
+	tlsPin     string // base64(sha256(SPKI)) of the TLS identity
 	Events     *EventBus
 	Generator  *library.Generator
 	rag        atomic.Pointer[llm.RAG]
@@ -588,12 +593,13 @@ func New(store *db.Store, port string) *Server {
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("GET /", spaFallback(staticFS))
 
+	s.handler = accessLogMiddleware(s.corsMiddleware(s.authMiddleware(mux)))
 	s.http = &http.Server{
 		Addr: ":" + port,
 		// auth is innermost so every request is still logged + CORS-
 		// decorated, and OPTIONS preflight is handled by cors before it
 		// reaches the gate (#197).
-		Handler: accessLogMiddleware(s.corsMiddleware(s.authMiddleware(mux))),
+		Handler: s.handler,
 	}
 
 	return s
@@ -602,6 +608,45 @@ func New(store *db.Store, port string) *Server {
 func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
 }
+
+// EnableTLS adds a second listener on tlsPort that serves the same handler over
+// TLS with the install's self-signed identity (see tlscert.go). This is what
+// the relay's end-to-end passthrough mode forwards into: the phone's TLS bytes
+// reach us untouched, so the key that terminates them must live here and only
+// here. hosts become SANs. Returns the SPKI SHA-256 pin the pairing QR carries.
+func (s *Server) EnableTLS(tlsPort, certDir string, hosts []string) (string, error) {
+	cert, err := EnsureSelfSignedCert(certDir, hosts)
+	if err != nil {
+		return "", err
+	}
+	pin, err := SPKIFingerprint(cert)
+	if err != nil {
+		return "", err
+	}
+	s.tlsPort = tlsPort
+	s.tlsPin = pin
+	s.https = &http.Server{
+		Addr:    ":" + tlsPort,
+		Handler: s.handler,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+	return pin, nil
+}
+
+// ListenAndServeTLS serves the TLS listener enabled by EnableTLS.
+func (s *Server) ListenAndServeTLS() error {
+	if s.https == nil {
+		return nil
+	}
+	return s.https.ListenAndServeTLS("", "")
+}
+
+// TLSPin returns the SPKI SHA-256 pin (base64) of the TLS identity, or "" when
+// TLS is not enabled.
+func (s *Server) TLSPin() string { return s.tlsPin }
 
 // SetReady marks the server booted (or draining). GET /api/ready reflects it.
 // On the boot→ready transition it kicks off a background pre-warm of the voice
@@ -621,6 +666,9 @@ func (s *Server) SetReady(v bool) {
 // ingest queue, and DB after this returns.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.ready.Store(false)
+	if s.https != nil {
+		_ = s.https.Shutdown(ctx)
+	}
 	return s.http.Shutdown(ctx)
 }
 
@@ -711,10 +759,12 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		version = "dev"
 	}
 	out := map[string]any{
-		"name":    "abookify",
-		"version": version,
-		"port":    s.http.Addr,
-		"ready":   s.ready.Load(),
+		"tls_port":        s.tlsPort,
+		"tls_spki_sha256": s.tlsPin,
+		"name":            "abookify",
+		"version":         version,
+		"port":            s.http.Addr,
+		"ready":           s.ready.Load(),
 	}
 	// compute_mode is the user's preference; stt_device/gpu_available report what
 	// transcription is ACTUALLY running on (probed from the STT engine). Mobile +
