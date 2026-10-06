@@ -519,7 +519,10 @@ func main() {
 		if h := srv.E2EHost(); h != "" {
 			hosts = append(hosts, h)
 		}
-		pin, err := srv.EnableTLS(*tlsPort, filepath.Join(*dataDir, "tls"), hosts)
+		// The identity lives beside the database (persistent in Docker, where
+		// data-dir itself is the container's own filesystem) — the pin must
+		// survive every recreate or every paired device breaks.
+		pin, err := srv.EnableTLS(*tlsPort, filepath.Join(filepath.Dir(*dbPath), "tls"), hosts)
 		if err != nil {
 			log.Printf("warning: TLS listener disabled: %v", err)
 		} else {
