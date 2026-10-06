@@ -767,10 +767,10 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			return s.tlsURL(r)
 		}(),
-		"name":            "abookify",
-		"version":         version,
-		"port":            s.http.Addr,
-		"ready":           s.ready.Load(),
+		"name":    "abookify",
+		"version": version,
+		"port":    s.http.Addr,
+		"ready":   s.ready.Load(),
 	}
 	// compute_mode is the user's preference; stt_device/gpu_available report what
 	// transcription is ACTUALLY running on (probed from the STT engine). Mobile +
