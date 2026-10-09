@@ -8,7 +8,7 @@
 #   MODE=tunnel   remove `adb reverse tcp:PORT` — closes every forwarded TCP socket at once,
 #                 exactly what a relay connection close does to the phone; the device's own
 #                 network stays up.
-#   MODE=radios   `svc wifi disable; svc data disable` for DROP s — the real dead spot on a RELAY path (throttle: `adb emu network speed edge`).
+#   MODE=radios   `svc wifi disable; svc data disable` for DROP s (restore re-enables Wi-Fi only if it was on) — the real dead spot on a RELAY path (throttle: `adb emu network speed edge`).
 #   MODE=radio    airplane mode on/off — the dead-spot case. NOTE (2026-10-06): when the app reaches the
 #                 server over `adb reverse` (loopback), airplane mode does NOT cut the stream — use MODE=adb,
 #                 or a real relayed/LAN address, for a true cut.
@@ -42,8 +42,8 @@ sample() {
 # "no NEW connections". MODE=adb kills the adb transport, which resets every forwarded socket at once
 # (the FIN/RST a relay close delivers); the device cannot be sampled while adb is down, so that mode
 # samples before and after only — the after phase tells the story.
-cut_on()  { case "$MODE" in radio) adb shell cmd connectivity airplane-mode enable;; radios) adb shell "svc wifi disable; svc data disable";; adb) adb kill-server;; *) adb reverse --remove tcp:$PORT;; esac; }
-cut_off() { case "$MODE" in radios) adb shell "svc wifi enable; svc data enable";; radio) adb shell cmd connectivity airplane-mode disable;; adb) adb start-server >/dev/null 2>&1; sleep 2; adb wait-for-device; adb reverse tcp:$PORT tcp:$PORT >/dev/null;; *) adb reverse tcp:$PORT tcp:$PORT >/dev/null;; esac; }
+cut_on()  { case "$MODE" in radio) adb shell cmd connectivity airplane-mode enable;; radios) WIFI_WAS=$(adb shell dumpsys wifi 2>/dev/null | grep -c "Wi-Fi is enabled"); adb shell "svc wifi disable; svc data disable";; adb) adb kill-server;; *) adb reverse --remove tcp:$PORT;; esac; }
+cut_off() { case "$MODE" in radios) adb shell "svc data enable"; [ "${WIFI_WAS:-0}" -gt 0 ] && adb shell svc wifi enable;; radio) adb shell cmd connectivity airplane-mode disable;; adb) adb start-server >/dev/null 2>&1; sleep 2; adb wait-for-device; adb reverse tcp:$PORT tcp:$PORT >/dev/null;; *) adb reverse tcp:$PORT tcp:$PORT >/dev/null;; esac; }
 printf '%-5s %-7s %-10s %-9s %-9s %-9s %s\n' secs phase state live_s raw_s buf_s speed
 t0=$(date +%s); el() { echo $(( $(date +%s) - t0 )); }
 while [ "$(el)" -lt "$PRE" ]; do sample "$(el)" before; sleep "$STEP"; done
