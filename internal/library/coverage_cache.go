@@ -62,8 +62,12 @@ func (c *AlignmentSummaryCache) Loads() int64 {
 	return c.loads.Load()
 }
 
+// summaryKey is (id, rev): the id is never reissued (AUTOINCREMENT) and rev
+// moves on every rewrite of the row. Deliberately nothing derived from the
+// payload itself — length(pairs) on a TEXT column reads the whole value, and
+// so does any column stored after it (see rebuildAlignmentsBlobLast).
 func summaryKey(a *db.Alignment) string {
-	return fmt.Sprintf("%d|%d|%d", a.ID, a.Rev, a.PairsLen)
+	return fmt.Sprintf("%d|%d", a.ID, a.Rev)
 }
 
 // summaryFor returns the row's summary, from the cache when the row's stamp
@@ -71,18 +75,12 @@ func summaryKey(a *db.Alignment) string {
 // when the blob is missing or unparseable — the same rows BuildCoverage
 // skipped before.
 //
-// a may come from ListAlignmentMetaForWork (Pairs empty, PairsLen set) or
-// from ListAlignmentsForWork (Pairs loaded): a loaded blob is parsed
-// directly and still cached under its stamp.
+// a may come from ListAlignmentMetaForWork (Pairs empty) or from
+// ListAlignmentsForWork (Pairs loaded): a loaded blob is parsed directly
+// and still cached under its stamp.
 func (c *AlignmentSummaryCache) summaryFor(store *db.Store, a *db.Alignment) (coverageSummary, bool) {
-	if a.Pairs == "" && a.PairsLen == 0 {
-		return coverageSummary{}, false
-	}
 	var key string
 	if c != nil {
-		if a.PairsLen == 0 {
-			a.PairsLen = len(a.Pairs)
-		}
 		key = summaryKey(a)
 		c.mu.Lock()
 		s, hit := c.m[key]

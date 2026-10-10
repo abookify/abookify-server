@@ -98,12 +98,12 @@ type Alignment struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	// Rev counts rewrites of the row (0 at insert, +1 per upsert): with ID it
-	// identifies this exact payload, which is what a cache of it keys on.
-	Rev int64 `json:"-"`
-	// PairsLen is length(pairs) in bytes. Set by the *Meta accessors, which
-	// leave Pairs empty so a caller can key a cache on the row without
+	// identifies this exact payload, which is what a cache of it keys on. The
+	// id is AUTOINCREMENT, so a deleted row's id is never reissued and (id,
+	// rev) can't collide across a delete + re-insert. The *Meta accessors
+	// fill everything but Pairs, so a caller can key on the row without
 	// reading the blob (anchor payloads run to 30 MB; the library holds ~190 MB).
-	PairsLen int `json:"-"`
+	Rev int64 `json:"-"`
 }
 
 type Paragraph struct {
@@ -444,6 +444,12 @@ func migrate(db *sql.DB) error {
 		-- Pairwise alignments between peer sources (audio, transcript, epub, etc.).
 		-- Each row links two books and stores a JSON blob of mapped position pairs.
 		-- Composable: audio→transcript + transcript→epub = audio→epub.
+		-- pairs is the LAST column on purpose: SQLite reaches a column by
+		-- walking the row past every column before it, overflow pages
+		-- included, so any column after a 30 MB payload costs the whole
+		-- payload to read (the works list paid ~190 MB per request for
+		-- created_at/updated_at/rev). rebuildAlignmentsBlobLast moves it on
+		-- DBs created with the old order.
 		CREATE TABLE IF NOT EXISTS alignments (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			work_id       INTEGER NOT NULL,
@@ -452,10 +458,10 @@ func migrate(db *sql.DB) error {
 			unit          TEXT NOT NULL DEFAULT 'word',
 			confidence    REAL NOT NULL DEFAULT 0,
 			method        TEXT NOT NULL DEFAULT '',
-			pairs         TEXT NOT NULL DEFAULT '[]',
 			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			rev           INTEGER NOT NULL DEFAULT 0,
+			pairs         TEXT NOT NULL DEFAULT '[]',
 			FOREIGN KEY (work_id) REFERENCES works(id),
 			FOREIGN KEY (from_book_id) REFERENCES books(id),
 			FOREIGN KEY (to_book_id) REFERENCES books(id),
@@ -788,6 +794,10 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migration %q: %w", stmt, err)
 		}
+	}
+
+	if err := rebuildAlignmentsBlobLast(db); err != nil {
+		return err
 	}
 
 	// One-time recreate: widen chapter_links' UNIQUE key from (work_id,
@@ -2743,10 +2753,85 @@ type BestAlignment struct {
 	Confidence float64
 }
 
-// ListAlignmentMetaForWork is ListAlignmentsForWork WITHOUT the pairs blob:
-// every column but pairs, plus PairsLen. The list surfaces (GET /api/works)
-// need each row's identity and size to decide whether a cached summary of
-// the payload is still current — never the ~190 MB of JSON itself.
+// rebuildAlignmentsBlobLast moves alignments.pairs to the last column on a
+// DB created before the table declared it there. Column order is physical:
+// to read a column SQLite walks the row past every earlier one, and a 30 MB
+// payload spills across overflow pages that are read page by page to get
+// there. With pairs in the middle, selecting created_at/updated_at/rev read
+// ~190 MB per works-list request; with it last, the same select reads only
+// the pages the short columns sit on. SQLite can't reorder in place, so this
+// is a copy under one transaction: the AUTOINCREMENT counter follows the
+// explicit ids, so no id is ever reused. Idempotent: a no-op once pairs is
+// last.
+func rebuildAlignmentsBlobLast(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(alignments)`)
+	if err != nil {
+		return err
+	}
+	var cols []string
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		cols = append(cols, name)
+	}
+	rows.Close()
+	if len(cols) == 0 || cols[len(cols)-1] == "pairs" {
+		return nil
+	}
+	start := time.Now()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		`CREATE TABLE alignments_new (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_id       INTEGER NOT NULL,
+			from_book_id  INTEGER NOT NULL,
+			to_book_id    INTEGER NOT NULL,
+			unit          TEXT NOT NULL DEFAULT 'word',
+			confidence    REAL NOT NULL DEFAULT 0,
+			method        TEXT NOT NULL DEFAULT '',
+			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			rev           INTEGER NOT NULL DEFAULT 0,
+			pairs         TEXT NOT NULL DEFAULT '[]',
+			FOREIGN KEY (work_id) REFERENCES works(id),
+			FOREIGN KEY (from_book_id) REFERENCES books(id),
+			FOREIGN KEY (to_book_id) REFERENCES books(id),
+			UNIQUE(from_book_id, to_book_id, unit)
+		)`,
+		`INSERT INTO alignments_new (id, work_id, from_book_id, to_book_id, unit, confidence, method, created_at, updated_at, rev, pairs)
+		 SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, created_at, updated_at, rev, pairs FROM alignments`,
+		`DROP TABLE alignments`,
+		`ALTER TABLE alignments_new RENAME TO alignments`,
+		`CREATE INDEX IF NOT EXISTS idx_alignments_work ON alignments(work_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_alignments_from ON alignments(from_book_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_alignments_to   ON alignments(to_book_id)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("alignments rebuild (pairs last): %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	applog.Infof("db", "alignments table rebuilt with pairs as the last column in %d ms", time.Since(start).Milliseconds())
+	return nil
+}
+
+// ListAlignmentMetaForWork is ListAlignmentsForWork WITHOUT the pairs blob.
+// The list surfaces (GET /api/works) need each row's identity and rev to
+// decide whether a cached summary of the payload is still current — never
+// the ~190 MB of JSON itself. No expression over pairs either: length() of
+// a TEXT column counts characters, which reads the whole value.
 func (s *Store) ListAlignmentMetaForWork(workID int64) ([]Alignment, error) {
 	return s.listAlignmentMeta("WHERE work_id = ?", workID)
 }
@@ -2759,7 +2844,7 @@ func (s *Store) ListAlignmentMeta() ([]Alignment, error) {
 
 func (s *Store) listAlignmentMeta(where string, args ...any) ([]Alignment, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, length(pairs), created_at, updated_at, rev
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, created_at, updated_at, rev
 		FROM alignments `+where+` ORDER BY id
 	`, args...)
 	if err != nil {
@@ -2770,7 +2855,7 @@ func (s *Store) listAlignmentMeta(where string, args ...any) ([]Alignment, error
 	for rows.Next() {
 		var a Alignment
 		if err := rows.Scan(&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
-			&a.Confidence, &a.Method, &a.PairsLen, &a.CreatedAt, &a.UpdatedAt, &a.Rev); err != nil {
+			&a.Confidence, &a.Method, &a.CreatedAt, &a.UpdatedAt, &a.Rev); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
