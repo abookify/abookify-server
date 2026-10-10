@@ -39,18 +39,22 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	store      *db.Store
-	http       *http.Server
-	https      *http.Server // TLS listener (EnableTLS); nil when off
-	handler    http.Handler
-	tlsPort    string
-	tlsPin     string // base64(sha256(SPKI)) of the TLS identity
-	certs      *certReloader
-	Events     *EventBus
-	Generator  *library.Generator
-	rag        atomic.Pointer[llm.RAG]
-	Ingest     *library.IngestQueue
-	LibraryDir string
+	store *db.Store
+	// covSummaries memoises each alignment payload's coverage summary so the
+	// work list doesn't re-parse ~190 MB of anchor JSON per request; warmed
+	// on the boot→ready edge.
+	covSummaries *library.AlignmentSummaryCache
+	http         *http.Server
+	https        *http.Server // TLS listener (EnableTLS); nil when off
+	handler      http.Handler
+	tlsPort      string
+	tlsPin       string // base64(sha256(SPKI)) of the TLS identity
+	certs        *certReloader
+	Events       *EventBus
+	Generator    *library.Generator
+	rag          atomic.Pointer[llm.RAG]
+	Ingest       *library.IngestQueue
+	LibraryDir   string
 	// LibraryHostPath is the HOST side of the library bind mount when the server
 	// runs in a container (#220 finding 2 / item 2). Docker hides the real path
 	// behind the container mount (/library), so compose passes the host path in
@@ -407,6 +411,7 @@ func spaFallback(staticFS fs.FS) http.Handler {
 func New(store *db.Store, port string) *Server {
 	s := &Server{
 		store:         store,
+		covSummaries:  library.NewAlignmentSummaryCache(),
 		Events:        NewEventBus(),
 		embedInFlight: make(map[int64]bool),
 		alignInFlight: make(map[int64]bool),
@@ -668,10 +673,19 @@ func (s *Server) TLSPin() string {
 func (s *Server) SetReady(v bool) {
 	s.ready.Store(v)
 	if v {
+		go s.warmCoverageSummaries()
 		go s.prewarmVoicePreviews()
 		s.startWhisperDeviceMonitor()  // watch for a mid-run cuda→cpu downgrade
 		go s.reprobeEmptyCredentials() // populate capabilities for migrated/older keys
 	}
+}
+
+// warmCoverageSummaries parses every alignment payload once in the background
+// so the first GET /api/works after boot doesn't pay the ~190 MB parse itself.
+func (s *Server) warmCoverageSummaries() {
+	start := time.Now()
+	n := s.covSummaries.Warm(s.store)
+	applog.Infof("server", "coverage summaries warmed: %d payloads parsed in %d ms", n, time.Since(start).Milliseconds())
 }
 
 // Shutdown gracefully drains the HTTP server: stop accepting new connections,
@@ -967,7 +981,7 @@ func (s *Server) handleListWorks(w http.ResponseWriter, r *http.Request) {
 			// QUALITY/SCOPE/edition without an N+1 per-work fetch. Only aligned works
 			// hit this (best[] present). Pick the pair with the highest QUALITY (the
 			// trust signal) as the one the card leads with.
-			if wc, err := library.BuildCoverage(s.store, wk.ID); err == nil && len(wc.Pairs) > 0 {
+			if wc, err := library.BuildCoverageWith(s.store, s.covSummaries, wk.ID); err == nil && len(wc.Pairs) > 0 {
 				bp := wc.Pairs[0]
 				for _, p := range wc.Pairs[1:] {
 					if p.AudioToEbook > bp.AudioToEbook {

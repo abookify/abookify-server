@@ -97,6 +97,13 @@ type Alignment struct {
 	Pairs      string    `json:"pairs"` // JSON blob of []AlignmentPair
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// Rev counts rewrites of the row (0 at insert, +1 per upsert): with ID it
+	// identifies this exact payload, which is what a cache of it keys on.
+	Rev int64 `json:"-"`
+	// PairsLen is length(pairs) in bytes. Set by the *Meta accessors, which
+	// leave Pairs empty so a caller can key a cache on the row without
+	// reading the blob (anchor payloads run to 30 MB; the library holds ~190 MB).
+	PairsLen int `json:"-"`
 }
 
 type Paragraph struct {
@@ -448,6 +455,7 @@ func migrate(db *sql.DB) error {
 			pairs         TEXT NOT NULL DEFAULT '[]',
 			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			rev           INTEGER NOT NULL DEFAULT 0,
 			FOREIGN KEY (work_id) REFERENCES works(id),
 			FOREIGN KEY (from_book_id) REFERENCES books(id),
 			FOREIGN KEY (to_book_id) REFERENCES books(id),
@@ -699,6 +707,11 @@ func migrate(db *sql.DB) error {
 	// so we swallow "duplicate column" errors — everything else surfaces.
 	for _, stmt := range []string{
 		`ALTER TABLE chapters ADD COLUMN start_sec  REAL NOT NULL DEFAULT 0`,
+		// rev counts rewrites of an alignments row (SaveAlignment bumps it on
+		// conflict): the exact, timestamp-free stamp the coverage summary cache
+		// keys on — CURRENT_TIMESTAMP is whole seconds, and two re-alignments
+		// in one second with same-length payloads would otherwise look alike.
+		`ALTER TABLE alignments ADD COLUMN rev INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE chapters ADD COLUMN end_sec    REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE chapters ADD COLUMN confidence REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE books ADD COLUMN origin     TEXT NOT NULL DEFAULT 'user_upload'`,
@@ -2673,7 +2686,8 @@ func (s *Store) SaveAlignment(a Alignment) error {
 			confidence = excluded.confidence,
 			method     = excluded.method,
 			pairs      = excluded.pairs,
-			updated_at = CURRENT_TIMESTAMP
+			updated_at = CURRENT_TIMESTAMP,
+			rev        = alignments.rev + 1
 	`, a.WorkID, a.FromBookID, a.ToBookID, a.Unit, a.Confidence, a.Method, a.Pairs)
 	return err
 }
@@ -2702,7 +2716,7 @@ func (s *Store) GetAlignment(bookA, bookB int64, unit string) (*Alignment, error
 // ListAlignmentsForWork returns all alignments associated with a work.
 func (s *Store) ListAlignmentsForWork(workID int64) ([]Alignment, error) {
 	rows, err := s.db.Query(`
-		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs, created_at, updated_at
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, pairs, created_at, updated_at, rev
 		FROM alignments WHERE work_id = ?
 	`, workID)
 	if err != nil {
@@ -2713,7 +2727,7 @@ func (s *Store) ListAlignmentsForWork(workID int64) ([]Alignment, error) {
 	for rows.Next() {
 		var a Alignment
 		if err := rows.Scan(&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
-			&a.Confidence, &a.Method, &a.Pairs, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Confidence, &a.Method, &a.Pairs, &a.CreatedAt, &a.UpdatedAt, &a.Rev); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2727,6 +2741,51 @@ func (s *Store) ListAlignmentsForWork(workID int64) ([]Alignment, error) {
 type BestAlignment struct {
 	Method     string
 	Confidence float64
+}
+
+// ListAlignmentMetaForWork is ListAlignmentsForWork WITHOUT the pairs blob:
+// every column but pairs, plus PairsLen. The list surfaces (GET /api/works)
+// need each row's identity and size to decide whether a cached summary of
+// the payload is still current — never the ~190 MB of JSON itself.
+func (s *Store) ListAlignmentMetaForWork(workID int64) ([]Alignment, error) {
+	return s.listAlignmentMeta("WHERE work_id = ?", workID)
+}
+
+// ListAlignmentMeta is ListAlignmentMetaForWork for the whole library, in
+// row order; used to pre-warm the coverage summary cache at boot.
+func (s *Store) ListAlignmentMeta() ([]Alignment, error) {
+	return s.listAlignmentMeta("")
+}
+
+func (s *Store) listAlignmentMeta(where string, args ...any) ([]Alignment, error) {
+	rows, err := s.db.Query(`
+		SELECT id, work_id, from_book_id, to_book_id, unit, confidence, method, length(pairs), created_at, updated_at, rev
+		FROM alignments `+where+` ORDER BY id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alignment
+	for rows.Next() {
+		var a Alignment
+		if err := rows.Scan(&a.ID, &a.WorkID, &a.FromBookID, &a.ToBookID, &a.Unit,
+			&a.Confidence, &a.Method, &a.PairsLen, &a.CreatedAt, &a.UpdatedAt, &a.Rev); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// GetAlignmentPairs reads one row's pairs blob by id ("" if the row is gone).
+func (s *Store) GetAlignmentPairs(id int64) (string, error) {
+	var pairs string
+	err := s.db.QueryRow(`SELECT pairs FROM alignments WHERE id = ?`, id).Scan(&pairs)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return pairs, err
 }
 
 func (s *Store) BestAlignmentByWork() (map[int64]BestAlignment, error) {

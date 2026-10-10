@@ -108,6 +108,13 @@ func narratedExtraWords(segs []Segment) int {
 // transFallback are token-stream lengths used only when the payload omits the
 // word counts (older rows); pass 0 to skip.
 func directionalFrom(p AnchorAlignmentPayload, ebookFallback, transFallback int) DirectionalCoverage {
+	return directionalFromSummary(summarizePayload(p), ebookFallback, transFallback)
+}
+
+// directionalFromSummary is directionalFrom on the reduced payload (see
+// coverage_cache.go) — the single formula both the cached list path and
+// the per-work endpoints use.
+func directionalFromSummary(p coverageSummary, ebookFallback, transFallback int) DirectionalCoverage {
 	eb := p.EbookWords
 	if eb == 0 {
 		eb = ebookFallback
@@ -130,7 +137,7 @@ func directionalFrom(p AnchorAlignmentPayload, ebookFallback, transFallback int)
 		}
 		return float64(n) / float64(d)
 	}
-	extra := narratedExtraWords(p.Segments)
+	extra := p.Extra
 	return DirectionalCoverage{
 		EbookWords:         eb,
 		TransWords:         tr,
@@ -437,7 +444,16 @@ func BuildDiff(store *db.Store, workID int64) (*WorkDiff, bool, error) {
 // span detail — cheap for the listing/work readouts. Empty pairs (not an error)
 // when the work has no word-level alignment yet.
 func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
-	aligns, err := store.ListAlignmentsForWork(workID)
+	return BuildCoverageWith(store, nil, workID)
+}
+
+// BuildCoverageWith is BuildCoverage with a payload-summary cache: the rows'
+// metadata is read from the table, and each payload is parsed only when its
+// row's stamp isn't cached (see AlignmentSummaryCache). The list handler
+// calls this for every aligned work on every request, so with a nil cache it
+// is the ~190 MB-per-request parse that GET /api/works used to be.
+func BuildCoverageWith(store *db.Store, cache *AlignmentSummaryCache, workID int64) (*WorkCoverage, error) {
+	aligns, err := store.ListAlignmentMetaForWork(workID)
 	if err != nil {
 		return nil, err
 	}
@@ -451,8 +467,8 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		if a.Method != "embedding" {
 			continue
 		}
-		var p AnchorAlignmentPayload
-		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+		p, ok := cache.summaryFor(store, a)
+		if !ok {
 			continue
 		}
 		// Rows written before match_quality existed carry 0 — that is absence
@@ -461,7 +477,7 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		if p.MatchQuality == 0 {
 			continue
 		}
-		d := directionalFrom(p, 0, 0)
+		d := directionalFromSummary(p, 0, 0)
 		embFor[[2]int64{a.FromBookID, a.ToBookID}] = embSignal{quality: p.MatchQuality, share: d.AudioToEbook}
 	}
 
@@ -477,13 +493,13 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		if a.Unit != "word" {
 			continue // embedding rows are emitted below, labeled by unit
 		}
-		var p AnchorAlignmentPayload
-		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+		p, ok := cache.summaryFor(store, a)
+		if !ok {
 			continue
 		}
 		ebook, _ := store.GetBook(a.FromBookID)
 		trans, _ := store.GetBook(a.ToBookID)
-		dir := directionalFrom(p, 0, 0)
+		dir := directionalFromSummary(p, 0, 0)
 		emb, hasEmb := embFor[[2]int64{a.FromBookID, a.ToBookID}]
 		out.Pairs = append(out.Pairs, PairCoverage{
 			Ebook:               DiffSource{BookID: a.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
@@ -511,13 +527,13 @@ func BuildCoverage(store *db.Store, workID int64) (*WorkCoverage, error) {
 		if a.Method != "embedding" || wordPair[[2]int64{a.FromBookID, a.ToBookID}] {
 			continue
 		}
-		var p AnchorAlignmentPayload
-		if json.Unmarshal([]byte(a.Pairs), &p) != nil {
+		p, ok := cache.summaryFor(store, a)
+		if !ok {
 			continue
 		}
 		ebook, _ := store.GetBook(a.FromBookID)
 		trans, _ := store.GetBook(a.ToBookID)
-		dir := directionalFrom(p, 0, 0)
+		dir := directionalFromSummary(p, 0, 0)
 		emb, hasEmb := embFor[[2]int64{a.FromBookID, a.ToBookID}]
 		out.Pairs = append(out.Pairs, PairCoverage{
 			Ebook:               DiffSource{BookID: a.FromBookID, Origin: originOf(ebook), Label: bookLabel(ebook)},
