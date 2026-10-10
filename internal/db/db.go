@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2823,7 +2824,10 @@ func rebuildAlignmentsBlobLast(db *sql.DB) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	applog.Infof("db", "alignments table rebuilt with pairs as the last column in %d ms", time.Since(start).Milliseconds())
+	// log, not applog: migrations run before applog.Init attaches a sink, and
+	// applog drops lines until then. The standard logger reaches stderr now
+	// and the console tee once Init runs.
+	log.Printf("alignments table rebuilt with pairs as the last column in %d ms", time.Since(start).Milliseconds())
 	return nil
 }
 
