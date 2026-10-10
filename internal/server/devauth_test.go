@@ -29,3 +29,16 @@ func TestDevAuthRefusedOverHTTPS(t *testing.T) {
 		t.Fatal("request on the TLS listener must be refused")
 	}
 }
+
+func TestRemoteIsLoopback(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"127.0.0.1:51234": true, "[::1]:51234": true, "192.168.1.73:40000": false,
+		"172.18.0.5:33000": false, "garbage": false,
+	} {
+		r := httptest.NewRequest("GET", "/api/works", nil)
+		r.RemoteAddr = addr
+		if got := remoteIsLoopback(r); got != want {
+			t.Errorf("remoteIsLoopback(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}

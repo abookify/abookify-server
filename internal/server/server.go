@@ -71,6 +71,13 @@ type Server struct {
 	// Version is the build version (stamped via -ldflags), surfaced on
 	// /api/info + /api/ready so the desktop shell can show + update-check.
 	Version string
+	// LaunchID is the nonce the desktop shell passed on this launch (flag
+	// --launch-id). Echoed on /api/info so the shell can prove the server on
+	// its port is the one it spawned, not another user's or Docker's (ux2 P0:
+	// a second Mac account's shell navigated to the first account's server).
+	// Non-empty also means "managed by the desktop shell", which the settings
+	// page uses to drop Docker-only relay text. Not a secret.
+	LaunchID string
 
 	// ready flips true once the boot sequence (scan/migrate/link) is done.
 	// GET /api/ready reports it; the desktop shell polls that before showing
@@ -799,6 +806,9 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"version": version,
 		"port":    s.http.Addr,
 		"ready":   s.ready.Load(),
+		// launch_id / managed_by: see Server.LaunchID.
+		"launch_id":  s.LaunchID,
+		"managed_by": s.managedBy(),
 	}
 	// compute_mode is the user's preference; stt_device/gpu_available report what
 	// transcription is ACTUALLY running on (probed from the STT engine). Mobile +

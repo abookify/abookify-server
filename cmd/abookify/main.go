@@ -46,6 +46,11 @@ func main() {
 	sttURL := flag.String("stt-url", envOrDefault("ABOOKIFY_STT_URL", ""), "STT service URL")
 	generatedPath := flag.String("generated", envOrDefault("ABOOKIFY_GENERATED_PATH", filepath.Join(root, "generated")), "path for generated audio")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	// The desktop shell passes a per-launch nonce and checks it on /api/info
+	// before it points its window at the port: a server answering there that
+	// does NOT carry this launch's id is somebody else's (another user's copy,
+	// Docker) and the shell must not show it as ours.
+	launchID := flag.String("launch-id", envOrDefault("ABOOKIFY_LAUNCH_ID", ""), "per-launch id a managing desktop shell checks on /api/info (empty: not shell-managed)")
 	flag.Parse()
 
 	// A --data-dir FLAG must re-seed every per-path default that wasn't
@@ -343,6 +348,7 @@ func main() {
 	// Set up HTTP server
 	srv := server.New(store, *port)
 	srv.Version = version
+	srv.LaunchID = *launchID
 	srv.LibraryDir = *libraryPath
 	// Host path of the library mount when containerized (#220): compose passes
 	// ABOOKIFY_LIBRARY_HOST_PATH so the roots UI shows the real host path, not

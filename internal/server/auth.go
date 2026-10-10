@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,20 @@ func (s *Server) authEnabled() bool {
 // directly or through the relay (which terminates TLS and forwards
 // X-Forwarded-Proto). Used to set the cookie's Secure flag only when
 // it won't break plain-HTTP localhost/LAN access.
+// remoteIsLoopback reports whether the request came from this machine (the
+// desktop shell's own window, a local CLI): the peer address is loopback. A
+// relay-forwarded request arrives from the relay client on this host too, so
+// this is only meaningful on an install with no relay, which is the desktop
+// case it exists for.
+func remoteIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func requestIsHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -131,6 +146,13 @@ func (s *Server) devAuthOK(r *http.Request) bool {
 // valid cookie, bearer token, or ?access_token= query param.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// PENDING PJ's DECISION (ux1, 2026-10-10): the desktop build binds the
+		// LAN with no auth, so anyone on the same Wi-Fi can read and change the
+		// library. The rule "LAN requests need a paired-device token; loopback
+		// is free" plugs in HERE: when auth is off, s.managedBy()=="desktop" and
+		// !remoteIsLoopback(r), fall through to the token check below instead of
+		// passing, with newPairingPayload always issuing an AuthToken (today it
+		// does so only when a password is set). Not wired until PJ decides.
 		if !s.authEnabled() || isAuthExempt(r) {
 			next.ServeHTTP(w, r)
 			return

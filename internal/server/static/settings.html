@@ -250,7 +250,11 @@
             Open the abookify app on your phone and scan this QR code,<br>
             or enter the server URL manually.
           </div>
-          <div style="margin-top:14px;">
+          <div class="hint" id="lan-hint" style="display:none; margin-top:8px;">
+            <strong>Your phone must be on the same Wi-Fi as this computer.</strong>
+            <span id="lan-others"></span>
+          </div>
+          <div style="margin-top:14px;" id="rotate-block">
             <button type="button" id="rotate-tunnel-btn" onclick="rotateTunnel()"
               style="background:transparent; color:var(--text-muted); border:1px solid var(--text-muted); padding:6px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">
               Rotate tunnel URL
@@ -267,7 +271,7 @@
 
     <div class="section">
       <h2>Security</h2>
-      <div class="callout" style="margin-bottom:12px;">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
+      <div class="callout" style="margin-bottom:12px;" id="auth-callout">Optional but <strong>highly recommended</strong> — without a password, anyone with your server's public URL can read your library, stream audio, and use the AI features. The password gates everything except the login screen.</div>
       <div id="auth-state" style="font-size:0.85rem; margin-bottom:12px;"></div>
       <div class="field">
         <label>Username</label>
@@ -1246,6 +1250,29 @@
         const info = await fetch('/api/server-info').then(r => r.json());
         document.getElementById('server-url').textContent = info.public_url;
         document.getElementById('qr-img').src = '/api/pair-qr?_=' + Date.now();
+        // No relay: the URL above is this machine's LAN address (the server
+        // swaps loopback for it), which only works from the same network. Say
+        // so, list the other addresses if the machine has several, and hide
+        // the relay-container instructions, which only apply to the Docker
+        // install with a tunnel.
+        const lan = info.lan_urls || [];
+        const others = lan.filter(u => u !== info.public_url);
+        const lanHint = document.getElementById('lan-hint');
+        if (!info.has_relay) {
+          lanHint.style.display = 'block';
+          document.getElementById('lan-others').textContent =
+            others.length ? ' Other addresses of this computer: ' + others.join(', ') : '';
+        } else {
+          lanHint.style.display = 'none';
+        }
+        document.getElementById('rotate-block').style.display =
+          (info.managed_by === 'desktop' || !info.has_relay) ? 'none' : '';
+        if (!info.has_relay) {
+          document.getElementById('auth-callout').innerHTML =
+            'Optional but <strong>highly recommended</strong> — without a password, anyone on the same ' +
+            'Wi-Fi network as this computer can read your library, stream audio, change settings and use the ' +
+            'AI features. The password gates everything except the login screen.';
+        }
       } catch {}
     }
     refreshPairing();

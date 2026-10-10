@@ -92,7 +92,10 @@ func (s *Server) LegacyPublicURL(r *http.Request) string {
 	if r != nil {
 		host = r.Host
 	}
-	return fmt.Sprintf("%s://%s", scheme, host)
+	// A loopback host is what the desktop shell's own window sees (it loads
+	// http://127.0.0.1:<port>), and a phone can never reach it. Hand out this
+	// machine's LAN address instead when there is one.
+	return fmt.Sprintf("%s://%s", scheme, reachableHostPort(host, lanIPs()))
 }
 
 // E2EHost is this server's hostname in the relay's end-to-end namespace:
@@ -177,6 +180,13 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	info := map[string]any{
 		"server_id":  s.ServerID(),
 		"public_url": s.PublicURL(r),
+		// lan_urls: this machine's addresses on the local network, the ones a
+		// phone on the same Wi-Fi can reach. public_url is one of them when
+		// there is no relay. managed_by: "desktop" under the shell (the
+		// settings page hides Docker-only relay instructions then).
+		"lan_urls":   s.lanURLs(),
+		"managed_by": s.managedBy(),
+		"has_relay":  s.hasRelay(),
 	}
 	if s.TLSPin() != "" {
 		info["tls_spki_sha256"] = s.TLSPin()
@@ -275,6 +285,7 @@ func (s *Server) tlsURL(r *http.Request) string {
 			host = r.Host
 		}
 	}
+	host, _ = reachableHost(host, lanIPs())
 	return fmt.Sprintf("https://%s:%s", host, s.tlsPort)
 }
 
