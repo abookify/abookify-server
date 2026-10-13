@@ -172,3 +172,24 @@ func TestServerInfoReportsLanLock(t *testing.T) {
 		t.Fatalf("unmanaged server: lan_locked must be false: %s", w.Body.String())
 	}
 }
+
+// /api/info is open (no token) and tells a phone that typed the address, before
+// its first 401, that this desktop wants the pairing QR.
+func TestInfoReportsLanLockWithoutAToken(t *testing.T) {
+	srv, _ := lockedServer(t)
+	w := through(srv, "GET", "/api/info", lan, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/api/info from the LAN without a token: %d", w.Code)
+	}
+	var info map[string]any
+	json.Unmarshal(w.Body.Bytes(), &info)
+	if info["lan_locked"] != true || info["managed_by"] != "desktop" {
+		t.Fatalf("locked desktop: %s", w.Body.String())
+	}
+	srv.LaunchID = ""
+	w = through(srv, "GET", "/api/info", lan, "", nil)
+	json.Unmarshal(w.Body.Bytes(), &info)
+	if info["lan_locked"] != false {
+		t.Fatalf("bare server must report lan_locked false: %s", w.Body.String())
+	}
+}

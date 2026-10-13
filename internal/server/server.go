@@ -806,9 +806,12 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"version": version,
 		"port":    s.http.Addr,
 		"ready":   s.ready.Load(),
-		// launch_id / managed_by: see Server.LaunchID.
+		// launch_id / managed_by: see Server.LaunchID. lan_locked: a passwordless
+		// desktop that turns the Wi-Fi away (auth.go lanLocked) — open here so a
+		// phone given a typed address can say "scan the QR" BEFORE its first 401.
 		"launch_id":  s.LaunchID,
 		"managed_by": s.managedBy(),
+		"lan_locked": s.lanLocked(),
 	}
 	// compute_mode is the user's preference; stt_device/gpu_available report what
 	// transcription is ACTUALLY running on (probed from the STT engine). Mobile +
@@ -818,6 +821,10 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		mode = "auto"
 	}
 	out["compute_mode"] = mode
+	if s.Generator == nil {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	if c := s.Generator.STTClient(); c != nil {
 		if info, err := c.Info(); err == nil {
 			out["stt_device"] = info.Device
