@@ -1006,6 +1006,7 @@
       const pwHint = document.getElementById('auth-password-hint');
       try {
         const st = await fetch('/api/auth/status').then(r => r.json());
+        stateEl.dataset.authOn = st.auth_enabled ? '1' : '';
         if (st.auth_enabled) {
           stateEl.innerHTML = '<span style="color:var(--epub);">&#9679; Password protection is ON</span>'
             + (st.username ? ` &middot; user <code>${escapeHtmlAttr(st.username)}</code>` : '');
@@ -1014,6 +1015,8 @@
           pwHint.textContent = 'Leave blank to keep the current password, or type a new one to change it.';
           if (st.username) document.getElementById('auth-username').value = st.username;
         } else {
+          // Overwritten by refreshPairing() when the LAN lock is on (desktop,
+          // no password): that server is not "unprotected".
           stateEl.innerHTML = '<span style="color:var(--danger);">&#9679; Your server is currently unprotected</span> — anyone with the URL can access it.';
           disableBtn.style.display = 'none';
           logoutBtn.style.display = 'none';
@@ -1267,7 +1270,18 @@
         }
         document.getElementById('rotate-block').style.display =
           (info.managed_by === 'desktop' || !info.has_relay) ? 'none' : '';
-        if (!info.has_relay) {
+        if (info.lan_locked) {
+          // Passwordless desktop: the LAN lock is on. Phones get in by
+          // pairing; nothing else on the Wi-Fi can. Say that, not "unprotected".
+          document.getElementById('auth-callout').innerHTML =
+            'Only this computer and phones you\'ve paired can open your library. Anyone else on your Wi-Fi ' +
+            'is turned away until they scan the QR code above. Add a password if other people use this ' +
+            'computer: it puts a login in front of this window too.';
+          const stateEl = document.getElementById('auth-state');
+          if (stateEl && !stateEl.dataset.authOn) {
+            stateEl.innerHTML = '<span style="color:var(--epub);">&#9679; Only this computer and phones you\'ve paired can open your library.</span>';
+          }
+        } else if (!info.has_relay) {
           document.getElementById('auth-callout').innerHTML =
             'Optional but <strong>highly recommended</strong> — without a password, anyone on the same ' +
             'Wi-Fi network as this computer can read your library, stream audio, change settings and use the ' +

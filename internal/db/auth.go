@@ -13,6 +13,11 @@ import (
 // lost on every bounce.
 const DefaultSessionTTL = 30 * 24 * time.Hour
 
+// PairedDeviceSessionTTL is the life of the token a pairing QR hands a phone
+// on a passwordless desktop (the LAN lock): there is no login to renew it,
+// so it is a device credential — revoked by re-pairing/rotating, not by time.
+const PairedDeviceSessionTTL = 10 * 365 * 24 * time.Hour
+
 // NewSessionToken mints a 32-byte base64url token. Caller persists it
 // via CreateAuthSession.
 func NewSessionToken() (string, error) {
@@ -97,4 +102,11 @@ func (s *Store) DeleteAuthSession(token string) error {
 func (s *Store) PurgeExpiredAuthSessions() error {
 	_, err := s.db.Exec(`DELETE FROM auth_sessions WHERE expires_at < ?`, time.Now().UTC())
 	return err
+}
+
+// AuthSessionExpiresAt reports when a session token stops validating.
+func (s *Store) AuthSessionExpiresAt(token string) (time.Time, error) {
+	var expires time.Time
+	err := s.db.QueryRow(`SELECT expires_at FROM auth_sessions WHERE token = ?`, token).Scan(&expires)
+	return expires, err
 }

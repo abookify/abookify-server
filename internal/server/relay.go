@@ -187,6 +187,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		"lan_urls":   s.lanURLs(),
 		"managed_by": s.managedBy(),
 		"has_relay":  s.hasRelay(),
+		"lan_locked": s.lanLocked(),
 	}
 	if s.TLSPin() != "" {
 		info["tls_spki_sha256"] = s.TLSPin()
@@ -258,12 +259,20 @@ func (s *Server) newPairingPayload(r *http.Request) PairingPayload {
 		p.TLSPin = s.TLSPin()
 		p.TLSURL = s.tlsURL(r)
 	}
-	if s.authEnabled() {
+	// A paired phone needs a token when there is a password (a login) AND on
+	// a passwordless desktop (the LAN lock). On the latter it is a device
+	// credential with no password behind it to renew, so it lives for
+	// years, not DefaultSessionTTL's 30 days.
+	if s.authEnabled() || s.lanLocked() {
+		ttl := db.DefaultSessionTTL
+		if !s.authEnabled() {
+			ttl = db.PairedDeviceSessionTTL
+		}
 		if tok, err := db.NewSessionToken(); err == nil {
 			user, _ := s.store.GetSetting("auth_username")
 			// The paired device inherits the pairing admin's reader identity, so
 			// their position/bookmarks/Q&A follow them onto the phone.
-			if err := s.store.CreateAuthSession(tok, userIDFromContext(r), user, db.DefaultSessionTTL); err == nil {
+			if err := s.store.CreateAuthSession(tok, userIDFromContext(r), user, ttl); err == nil {
 				p.AuthToken = tok
 			}
 		}

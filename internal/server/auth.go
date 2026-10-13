@@ -146,14 +146,16 @@ func (s *Server) devAuthOK(r *http.Request) bool {
 // valid cookie, bearer token, or ?access_token= query param.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// PENDING PJ's DECISION (ux1, 2026-10-10): the desktop build binds the
-		// LAN with no auth, so anyone on the same Wi-Fi can read and change the
-		// library. The rule "LAN requests need a paired-device token; loopback
-		// is free" plugs in HERE: when auth is off, s.managedBy()=="desktop" and
-		// !remoteIsLoopback(r), fall through to the token check below instead of
-		// passing, with newPairingPayload always issuing an AuthToken (today it
-		// does so only when a password is set). Not wired until PJ decides.
-		if !s.authEnabled() || isAuthExempt(r) {
+		if isAuthExempt(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Auth off: open, EXCEPT on a passwordless desktop build where only
+		// the shell's own window (loopback) is free and anything arriving over
+		// the Wi-Fi needs the token a paired phone got from the QR (ux1 →
+		// PJ's decision 2026-10-12, "lock the desktop app"). Docker/bare
+		// servers are unchanged.
+		if !s.authEnabled() && !s.lanLockApplies(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -167,9 +169,46 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		// server:"abookify" lets a client distinguish a real auth challenge from
 		// this server (re-login) from a 401 off some unrelated host — pairs with the
-		// X-Abookify response header set in corsMiddleware.
+		// X-Abookify response header set in corsMiddleware. lan_locked tells a
+		// client there is no password to type: the way in is the pairing QR.
+		if s.lanLockApplies(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error":      "authentication required",
+				"server":     "abookify",
+				"lan_locked": true,
+				"hint":       "This library is on a computer running Abookify. Pair your phone by scanning the QR code in its Settings.",
+			})
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required", "server": "abookify"})
 	})
+}
+
+// lanLocked: a desktop build (the shell passed a launch id) with no password.
+// Then the LAN bind is not open to the Wi-Fi: see lanLockApplies.
+func (s *Server) lanLocked() bool {
+	return !s.authEnabled() && s.managedBy() == "desktop"
+}
+
+// lanLockApplies reports whether THIS request must carry a paired-device
+// token. Free: the shell's own window (plain HTTP from loopback). Not free:
+// any other address, and anything that reached loopback through a relay
+// client on the same machine (the proxied tunnel marks X-Forwarded-Proto
+// https; the end-to-end one lands on our TLS listener) — that is the
+// internet, not the window. Device registration is reachable without a
+// session because the one-time pairing token guards it on its own.
+func (s *Server) lanLockApplies(r *http.Request) bool {
+	if !s.lanLocked() {
+		return false
+	}
+	if lanLockExempt(r) {
+		return false
+	}
+	return !remoteIsLoopback(r) || requestIsHTTPS(r)
+}
+
+func lanLockExempt(r *http.Request) bool {
+	return r.Method == http.MethodPost && r.URL.Path == "/api/devices/register"
 }
 
 // handleAuthStatus is unauthenticated so a client can discover whether
