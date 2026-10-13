@@ -51,6 +51,7 @@ func main() {
 	// does NOT carry this launch's id is somebody else's (another user's copy,
 	// Docker) and the shell must not show it as ours.
 	launchID := flag.String("launch-id", envOrDefault("ABOOKIFY_LAUNCH_ID", ""), "per-launch id a managing desktop shell checks on /api/info (empty: not shell-managed)")
+	parentPID := flag.Int("parent-pid", envIntOrDefault("ABOOKIFY_PARENT_PID", 0), "pid of the desktop shell that spawned us: exit when it is gone, so a shell that dies without quitting never leaves the server up (0: off)")
 	flag.Parse()
 
 	// A --data-dir FLAG must re-seed every per-path default that wasn't
@@ -93,6 +94,19 @@ func main() {
 	// hard-terminate. It's handled the moment boot reaches the serve loop.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	if *parentPID > 0 {
+		// The shell that spawned us may vanish without any quit path running
+		// (crash, force-quit, SIGKILL). Linux covers that with PR_SET_PDEATHSIG;
+		// macOS/Windows have nothing like it, so we watch our parent ourselves
+		// and take the same drain path as a SIGTERM.
+		go watchParent(*parentPID, os.Getppid, 2*time.Second, func() {
+			log.Printf("desktop shell (pid %d) is gone; shutting down", *parentPID)
+			select {
+			case sig <- syscall.SIGTERM:
+			default:
+			}
+		})
+	}
 
 	log.Printf("abookify server starting (version %s)", version)
 	log.Printf("  data-dir:  %s", *dataDir)
